@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Money Manager Quick View",
+  "version": "1.0.0",
+  "description": "Quickly view your budget and from any website",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "https://*.amazon.com/*",
+    "https://*.walmart.com/*",
+    "https://*.target.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.amazon.com/*",
+        "https://*.walmart.com/*",
+        "https://*.target.com/*",
+        "https://*.bestbuy.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles/content.css"]
+    }
+  ],
+  "options_page": "options.html"
+}

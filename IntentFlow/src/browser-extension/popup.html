@@ -1,0 +1,122 @@
+<!-- browser-extension/popup.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Money Manager</title>
+  <link rel="stylesheet" href="styles/popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>💰 Money Manager</h1>
+      <div class="status" id="connectionStatus">● Connected</div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Ready to Assign</div>
+        <div class="stat-value" id="readyToAssign">$0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">In Budget</div>
+        <div class="stat-value" id="inBudget">$0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Spent Today</div>
+        <div class="stat-value" id="spentToday">$0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Upcoming Bills</div>
+        <div class="stat-value" id="upcomingBills">$0</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="budget">Budget</button>
+      <button class="tab" data-tab="recent">Recent</button>
+      <button class="tab" data-tab="cards">Cards</button>
+      <button class="tab" data-tab="add">Quick Add</button>
+    </div>
+
+    <!-- Budget Tab -->
+    <div class="tab-content active" id="budget-tab">
+      <div class="category-list" id="categoryList">
+        <!-- Categories will be loaded here -->
+        <div class="loading">Loading categories...</div>
+      </div>
+      <button class="view-all-btn" id="viewAllBudget">View Full Budget →</button>
+    </div>
+
+    <!-- Recent Transactions Tab -->
+    <div class="tab-content" id="recent-tab">
+      <div class="transaction-list" id="transactionList">
+        <!-- Transactions will be loaded here -->
+        <div class="loading">Loading transactions...</div>
+      </div>
+      <button class="view-all-btn" id="viewAllTransactions">View All →</button>
+    </div>
+
+    <!-- Credit Cards Tab -->
+    <div class="tab-content" id="cards-tab">
+      <div class="card-list" id="cardList">
+        <!-- Cards will be loaded here -->
+        <div class="loading">Loading cards...</div>
+      </div>
+      <button class="view-all-btn" id="viewAllCards">Manage Cards →</button>
+    </div>
+
+    <!-- Quick Add Tab -->
+    <div class="tab-content" id="add-tab">
+      <form id="quickAddForm">
+        <div class="form-group">
+          <input type="number" id="amount" placeholder="Amount" step="0.01" required>
+        </div>
+        <div class="form-group">
+          <input type="text" id="description" placeholder="Description" required>
+        </div>
+        <div class="form-group">
+          <select id="category" required>
+            <option value="">Select Category</option>
+            <!-- Categories will be loaded here -->
+          </select>
+        </div>
+        <div class="form-group">
+          <select id="account" required>
+            <option value="">Select Account</option>
+            <!-- Accounts will be loaded here -->
+          </select>
+        </div>
+        <button type="submit" class="add-btn">Add Transaction</button>
+      </form>
+      
+      <!-- Quick Capture from Current Page -->
+      <div class="page-detection" id="pageDetection" style="display: none;">
+        <div class="divider">or</div>
+        <div class="detected-item">
+          <div class="item-info">
+            <span class="item-site" id="detectedSite"></span>
+            <span class="item-price" id="detectedPrice"></span>
+          </div>
+          <button class="capture-btn" id="captureItem">Capture Item</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div class="connection-info">
+        <span>Desktop: </span>
+        <span id="desktopStatus">Checking...</span>
+        <button class="retry-btn" id="retryConnection" style="display: none;">Retry</button>
+      </div>
+      <a href="#" id="openDesktop">Open Desktop App</a>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

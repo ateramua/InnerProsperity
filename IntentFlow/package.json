@@ -1,0 +1,103 @@
+{
+  "name": "intentflow",
+  "version": "1.0.0",
+  "description": "Money Manager Desktop - Zero-based budgeting app",
+  "main": "src/main/index.cjs",
+  "scripts": {
+    "next-dev": "next dev",
+    "next-build": "next build",
+    "next-export": "next export",
+    "build": "next build",
+    "start": "cross-env NODE_ENV=production electron .",
+    "dev": "concurrently \"npm run next-dev\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
+    "electron": "electron .",
+    "electron-dev": "cross-env NODE_ENV=development electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "pack": "npm run build && electron-builder --dir",
+    "postinstall": "electron-builder install-app-deps",
+    "clean": "rm -rf .next out release dist",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "migrate": "node src/db/migrations/index.cjs",
+    "migrate:reset": "node src/db/migrations/index.cjs --reset"
+  },
+  "keywords": [
+    "budget",
+    "finance",
+    "electron",
+    "nextjs",
+    "SoulFunds",
+    "money-manager"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "build": {
+    "appId": "com.intentflow.moneymanager",
+    "productName": "Money Manager",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "icon": "assets/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Finance"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^7.2.0",
+    "crypto-js": "^4.2.0",
+    "electron-squirrel-startup": "^1.0.1",
+    "next": "^14.2.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^3.8.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "uuid": "^9.0.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.27",
+    "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^40.7.0",
+    "electron-builder": "^26.8.1",
+    "electron-rebuild": "^3.2.9",
+    "nodemon": "^3.1.14",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
+    "wait-on": "^7.2.0"
+  }
+}

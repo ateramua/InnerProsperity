@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .splash {
+      background: linear-gradient(135deg, #1a1e2b 0%, #2d3748 100%);
+      border-radius: 20px;
+      padding: 40px;
+      text-align: center;
+      color: white;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      border: 1px solid #4a5568;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      background: linear-gradient(135deg, #3B82F6, #8B5CF6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 4px solid #2d3748;
+      border-top-color: #3B82F6;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    .message {
+      color: #a0aec0;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="splash">
+    <h1>💰 Money Manager</h1>
+    <div class="spinner"></div>
+    <div class="message" id="message">Loading your budget...</div>
+  </div>
+  <script>
+    const messages = [
+      'Loading your budget...',
+      'Connecting to database...',
+      'Almost there...',
+      'Ready to manage your money!'
+    ];
+    let index = 0;
+    setInterval(() => {
+      document.getElementById('message').textContent = messages[index];
+      index = (index + 1) % messages.length;
+    }, 800);
+  </script>
+</body>
+</html>

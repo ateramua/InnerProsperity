@@ -1,0 +1,9 @@
+{
+  "name": "com.moneymanager.desktop",
+  "description": "Money Manager Desktop App",
+  "path": "YOUR_FULL_PATH_HERE/start-native-host.sh",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://YOUR_EXTENSION_ID_HERE/"
+  ]
+}

@@ -1,0 +1,322 @@
+// src/services/accountService.cjs
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+
+class AccountService {
+    constructor(dbPath) {
+        this.dbPath = dbPath || path.join(__dirname, '..', '..', 'db', 'data', 'app.db');
+    }
+
+    async getDb() {
+        return open({
+            filename: this.dbPath,
+            driver: sqlite3.Database
+        });
+    }
+
+    // ==================== BASIC CRUD OPERATIONS ====================
+
+    async getAllAccounts(userId) {
+        const db = await this.getDb();
+        try {
+            const accounts = await db.all(`
+                SELECT * FROM accounts 
+                WHERE user_id = ? 
+                ORDER BY 
+                    account_type_category DESC, -- 'budget' first, then 'tracking'
+                    type,
+                    name
+            `, userId);
+            return accounts;
+        } finally {
+            await db.close();
+        }
+    }
+
+    async getAccountById(id, userId) {
+        const db = await this.getDb();
+        try {
+            const account = await db.get(`
+                SELECT * FROM accounts 
+                WHERE id = ? AND user_id = ?
+            `, id, userId);
+            return account;
+        } finally {
+            await db.close();
+        }
+    }
+
+    async createAccount(accountData) {
+        const db = await this.getDb();
+        try {
+            const id = uuidv4();
+            const {
+                userId,
+                name,
+                type,
+                accountTypeCategory = 'budget',
+                balance = 0,
+                currency = 'USD',
+                institution = '',
+                creditLimit = null,
+                interestRate = null,
+                dueDate = null,
+                minimumPayment = null
+            } = accountData;
+
+            // REMOVED: account_number and routing_number - they don't exist in your schema
+            await db.run(`
+            INSERT INTO accounts (
+                id, user_id, name, type, account_type_category,
+                balance, cleared_balance, working_balance,
+                currency, institution,
+                credit_limit, interest_rate, due_date, minimum_payment,
+                is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+        `, [
+                id, userId, name, type, accountTypeCategory,
+                balance, balance, balance,
+                currency, institution,
+                creditLimit, interestRate, dueDate, minimumPayment
+            ]);
+
+            return this.getAccountById(id, userId);
+        } finally {
+            await db.close();
+        }
+    }
+
+    async updateAccount(id, userId, updates) {
+        const db = await this.getDb();
+        try {
+            const allowedUpdates = [
+                'name', 'type', 'account_type_category', 'institution',
+                'account_number', 'routing_number', 'credit_limit',
+                'interest_rate', 'due_date', 'minimum_payment', 'is_active'
+            ];
+
+            const setClauses = [];
+            const values = [];
+
+            for (const [key, value] of Object.entries(updates)) {
+                if (allowedUpdates.includes(key)) {
+                    setClauses.push(`${key} = ?`);
+                    values.push(value);
+                }
+            }
+
+            if (setClauses.length === 0) return null;
+
+            setClauses.push('updated_at = datetime("now")');
+            values.push(id, userId);
+
+            await db.run(`
+                UPDATE accounts 
+                SET ${setClauses.join(', ')}
+                WHERE id = ? AND user_id = ?
+            `, values);
+
+            return this.getAccountById(id, userId);
+        } finally {
+            await db.close();
+        }
+    }
+
+    async deleteAccount(id, userId) {
+        const db = await this.getDb();
+        try {
+            // Soft delete by setting is_active = 0
+            await db.run(`
+                UPDATE accounts 
+                SET is_active = 0, updated_at = datetime('now')
+                WHERE id = ? AND user_id = ?
+            `, id, userId);
+            return true;
+        } finally {
+            await db.close();
+        }
+    }
+
+    // ==================== BALANCE OPERATIONS ====================
+
+    async getAccountBalances(accountId, userId) {
+        const db = await this.getDb();
+        try {
+            const account = await db.get(`
+                SELECT 
+                    balance,
+                    cleared_balance,
+                    working_balance
+                FROM accounts 
+                WHERE id = ? AND user_id = ?
+            `, accountId, userId);
+            return account;
+        } finally {
+            await db.close();
+        }
+    }
+
+    async updateBalances(accountId) {
+        const db = await this.getDb();
+        try {
+            // Calculate working balance (sum of all transactions)
+            await db.run(`
+                UPDATE accounts 
+                SET working_balance = (
+                    SELECT COALESCE(SUM(amount), 0) 
+                    FROM transactions 
+                    WHERE account_id = ?
+                )
+                WHERE id = ?
+            `, accountId, accountId);
+
+            // Calculate cleared balance (sum of cleared transactions)
+            await db.run(`
+                UPDATE accounts 
+                SET cleared_balance = (
+                    SELECT COALESCE(SUM(amount), 0) 
+                    FROM transactions 
+                    WHERE account_id = ? AND is_cleared IN (1, 2)
+                )
+                WHERE id = ?
+            `, accountId, accountId);
+
+            return this.getAccountBalances(accountId);
+        } finally {
+            await db.close();
+        }
+    }
+
+    // ==================== SUMMARY OPERATIONS ====================
+
+    async getAccountsSummary(userId) {
+        console.log('🔍 getAccountsSummary called with userId:', userId);
+        const db = await this.getDb();
+        try {
+            console.log('📊 Executing query for user_id:', userId);
+            const accounts = await db.all(`
+            SELECT * FROM v_account_summary 
+            WHERE user_id = ?
+            ORDER BY 
+                account_type_category DESC,
+                type,
+                name
+        `, userId);
+
+            console.log(`📊 Query returned ${accounts?.length || 0} accounts`);
+            if (accounts && accounts.length > 0) {
+                console.log('📋 First account:', accounts[0]);
+            }
+
+            return accounts || [];
+        } catch (error) {
+            console.error('❌ Error in getAccountsSummary:', error);
+            return [];
+        } finally {
+            await db.close();
+        }
+    }
+
+    async getTotalsByType(userId) {
+        const db = await this.getDb();
+        try {
+            const totals = await db.all(`
+                SELECT 
+                    account_type_category,
+                    COUNT(*) as account_count,
+                    SUM(working_balance) as total_balance,
+                    SUM(CASE WHEN working_balance > 0 THEN working_balance ELSE 0 END) as total_assets,
+                    SUM(CASE WHEN working_balance < 0 THEN working_balance ELSE 0 END) as total_liabilities
+                FROM accounts 
+                WHERE user_id = ? AND is_active = 1
+                GROUP BY account_type_category
+            `, userId);
+
+            // Calculate grand total
+            const grandTotal = totals.reduce((sum, cat) => sum + (cat.total_balance || 0), 0);
+
+            return {
+                byCategory: totals,
+                grandTotal,
+                netWorth: grandTotal // This will be refined later with tracking accounts
+            };
+        } finally {
+            await db.close();
+        }
+    }
+
+    // ==================== RECONCILIATION OPERATIONS ====================
+
+    async startReconciliation(accountId, userId, statementBalance, statementDate) {
+        const db = await this.getDb();
+        try {
+            const id = uuidv4();
+            const account = await this.getAccountById(accountId, userId);
+
+            await db.run(`
+                INSERT INTO reconciliations (
+                    id, account_id, reconciliation_date, 
+                    statement_balance, calculated_balance,
+                    difference, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
+            `, [
+                id, accountId, statementDate,
+                statementBalance, account.working_balance,
+                statementBalance - account.working_balance
+            ]);
+
+            return this.getReconciliation(id);
+        } finally {
+            await db.close();
+        }
+    }
+
+    async getReconciliation(id) {
+        const db = await this.getDb();
+        try {
+            return await db.get(`
+                SELECT * FROM reconciliations WHERE id = ?
+            `, id);
+        } finally {
+            await db.close();
+        }
+    }
+
+    // ==================== CREDIT CARD SPECIFIC ====================
+
+    async getCreditCardDetails(accountId, userId) {
+        const db = await this.getDb();
+        try {
+            const account = await db.get(`
+                SELECT 
+                    id, name, working_balance as current_balance,
+                    credit_limit, interest_rate, due_date, minimum_payment
+                FROM accounts 
+                WHERE id = ? AND user_id = ? AND type = 'credit'
+            `, accountId, userId);
+
+            if (!account) return null;
+
+            // Calculate available credit
+            account.available_credit = (account.credit_limit || 0) - Math.abs(account.current_balance || 0);
+
+            // Get upcoming payments
+            const upcomingPayments = await db.all(`
+                SELECT * FROM credit_card_payments 
+                WHERE credit_card_account_id = ? 
+                AND is_paid = 0
+                ORDER BY payment_date
+            `, accountId);
+
+            account.upcoming_payments = upcomingPayments;
+
+            return account;
+        } finally {
+            await db.close();
+        }
+    }
+}
+
+module.exports = AccountService;
