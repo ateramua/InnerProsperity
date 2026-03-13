@@ -23,23 +23,23 @@ try {
       return ipcRenderer.invoke('get-current-user');
     },
     // ==================== REAL-TIME UPDATE METHODS ====================
-subscribeToEvent: (eventType, callback) => {
-    console.log(`📞 Preload: subscribeToEvent called for ${eventType}`);
-    
-    // Set up listener
-    const listener = (_, data) => callback(data);
-    ipcRenderer.on(`update:${eventType}`, listener);
-    
-    // Return unsubscribe function
-    return () => {
+    subscribeToEvent: (eventType, callback) => {
+      console.log(`📞 Preload: subscribeToEvent called for ${eventType}`);
+      
+      // Set up listener
+      const listener = (_, data) => callback(data);
+      ipcRenderer.on(`update:${eventType}`, listener);
+      
+      // Return unsubscribe function
+      return () => {
         ipcRenderer.removeListener(`update:${eventType}`, listener);
-    };
-},
+      };
+    },
 
-publishEvent: (eventType, data) => {
-    console.log(`📞 Preload: publishEvent called for ${eventType}`);
-    return ipcRenderer.invoke('publish-event', eventType, data);
-},
+    publishEvent: (eventType, data) => {
+      console.log(`📞 Preload: publishEvent called for ${eventType}`);
+      return ipcRenderer.invoke('publish-event', eventType, data);
+    },
     listUsers: () => {
       console.log('📞 Preload: listUsers called');
       return ipcRenderer.invoke('list-users');
@@ -130,7 +130,6 @@ publishEvent: (eventType, data) => {
       return ipcRenderer.invoke('accounts:getCreditCardDetails', accountId, userId);
     },
 
-
     // ==================== CATEGORY GROUP METHODS ====================
     getCategoryGroups: (userId) => {
       console.log('📞 Preload: getCategoryGroups called');
@@ -152,6 +151,24 @@ publishEvent: (eventType, data) => {
       console.log('📞 Preload: deleteCategoryGroup called', { id, userId });
       return ipcRenderer.invoke('categoryGroups:delete', id, userId);
     },
+
+    // ==================== CATEGORY METHODS ====================
+    createCategory: (categoryData) => {
+      console.log('📞 Preload: createCategory called', categoryData);
+      return ipcRenderer.invoke('createCategory', categoryData);
+    },
+    
+    // 🔥 NEW: Update category (for assigned amounts, targets, etc.)
+    updateCategory: (categoryId, updates) => {
+      console.log('📞 Preload: updateCategory called', { categoryId, updates });
+      return ipcRenderer.invoke('updateCategory', categoryId, updates);
+    },
+
+    deleteCategory: (categoryId) => {
+      console.log('📞 Preload: deleteCategory called', categoryId);
+      return ipcRenderer.invoke('deleteCategory', categoryId);
+    },
+
     // ==================== FORECAST METHODS ====================
     generateForecast: (userId, options) => {
       console.log('📞 Preload: generateForecast called');
@@ -173,15 +190,8 @@ publishEvent: (eventType, data) => {
       console.log('📞 Preload: getRecommendations called');
       return ipcRenderer.invoke('forecast:recommendations', userId);
     },
-    // ==================== FORECAST METHODS ====================
-    generateForecast: (userId, options) => {
-      console.log('📞 Preload: generateForecast called');
-      return ipcRenderer.invoke('generateForecast', userId, options);
-    },
-    getDailyForecast: (userId) => {
-      console.log('📞 Preload: getDailyForecast called');
-      return ipcRenderer.invoke('getDailyForecast', userId);
-    },
+    
+    // ==================== FORECAST METHODS (Legacy) ====================
     getWeeklyForecast: (userId, weeks) => {
       console.log('📞 Preload: getWeeklyForecast called');
       return ipcRenderer.invoke('getWeeklyForecast', userId, weeks);
@@ -194,11 +204,13 @@ publishEvent: (eventType, data) => {
       console.log('📞 Preload: getRecommendations called');
       return ipcRenderer.invoke('getRecommendations', userId);
     },
+    
     // ==================== MONEY MAP METHODS ====================
     buildMoneyMap: (userId) => {
       console.log('📞 Preload: buildMoneyMap called');
       return ipcRenderer.invoke('buildMoneyMap', userId);
     },
+    
     // ==================== PROSPERITY OPTIMIZER METHODS ====================
     optimizeProsperityMap: (userId, totalIncome) => {
       console.log('📞 Preload: optimizeProsperityMap called');
@@ -208,6 +220,7 @@ publishEvent: (eventType, data) => {
       console.log('📞 Preload: refreshMoneyMap called');
       return ipcRenderer.invoke('refreshMoneyMap', moneyMap, budgetData);
     },
+    
     // ==================== SETTINGS / GROUPS / CATEGORIES ====================
     saveSettings: (settings) => {
       console.log('📞 Preload: saveSettings called');
@@ -232,10 +245,6 @@ publishEvent: (eventType, data) => {
     createCategory: (categoryData) => {
       console.log('📞 Renderer calling createCategory');
       return ipcRenderer.invoke('create-category', categoryData);
-    },
-    updateCategory: (categoryId, name) => {
-      console.log('📞 Renderer calling updateCategory');
-      return ipcRenderer.invoke('update-category', { categoryId, name });
     },
     deleteCategory: (categoryId) => {
       console.log('📞 Renderer calling deleteCategory');

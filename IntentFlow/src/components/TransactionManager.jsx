@@ -227,17 +227,17 @@ const styles = {
         color: 'white'
     },
     tableContainer: {
-        background: '#1F2937',
+        background: '#000000',
         borderRadius: '0.75rem',
         overflow: 'hidden',
-        border: '1px solid #374151'
+        border: '1px solid #000000'
     },
     table: {
         width: '100%',
         borderCollapse: 'collapse'
     },
     tableHead: {
-        background: '#111827'
+        background: '#000000'
     },
     tableHeader: {
         padding: '1rem',
@@ -245,10 +245,10 @@ const styles = {
         color: '#9CA3AF',
         fontWeight: '500',
         fontSize: '0.875rem',
-        borderBottom: '2px solid #374151'
+        borderBottom: '2px solid #000000'
     },
     tableRow: {
-        borderBottom: '1px solid #374151'
+        borderBottom: '1px solid #000000'
     },
     tableCell: {
         padding: '0.75rem 1rem',
@@ -286,7 +286,7 @@ const styles = {
         zIndex: 1000
     },
     modalContent: {
-        background: '#1F2937',
+        background: '#000000',
         padding: '2rem',
         borderRadius: '1rem',
         width: '90%',
@@ -312,8 +312,8 @@ const styles = {
     input: {
         width: '100%',
         padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
+        background: '#000000',
+        border: '1px solid #000000',
         borderRadius: '0.5rem',
         color: 'white',
         fontSize: '1rem'
@@ -321,8 +321,8 @@ const styles = {
     select: {
         width: '100%',
         padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
+        background: '#000000',
+        border: '1px solid #000000',
         borderRadius: '0.5rem',
         color: 'white',
         fontSize: '1rem'

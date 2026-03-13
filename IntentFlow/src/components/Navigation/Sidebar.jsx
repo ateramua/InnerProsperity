@@ -220,7 +220,7 @@ const styles = {
     sidebar: {
         width: '280px',
         height: '100vh',
-        background: '#0f2e1c',
+        background: '#0047AB',
         color: '#FFFFFF',
         display: 'flex',
         flexDirection: 'column',

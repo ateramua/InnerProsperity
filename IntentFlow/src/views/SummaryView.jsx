@@ -8,7 +8,9 @@ const SummaryView = ({
   unassigned = 0,
   month = new Date().toLocaleString('default', { month: 'long', year: 'numeric' }),
   categories = [],
-  onAutoAssign = null
+  onAutoAssign = null,
+  underfundedTotal = 0, // Added this prop
+  
 }) => {
   const [showAutoAssignOptions, setShowAutoAssignOptions] = useState(false);
   const [selectedStrategy, setSelectedStrategy] = useState('underfunded');
@@ -18,12 +20,39 @@ const SummaryView = ({
   // Calculate percentages for visual indicators
   const assignedPercentage = totalAvailable > 0 ? (totalAssigned / totalAvailable) * 100 : 0;
 
+  // Calculate underfunded total from categories if not provided via props
+  const calculateUnderfundedTotal = () => {
+    if (underfundedTotal > 0) return underfundedTotal;
+    
+    let total = 0;
+    categories.forEach(cat => {
+      // Check for monthly targets
+      if (cat.target_type === 'monthly' && cat.target_amount) {
+        const needed = Math.max(0, cat.target_amount - (cat.assigned || 0));
+        total += needed;
+      }
+      // Check for balance goals
+      if (cat.target_type === 'balance' && cat.target_amount) {
+        const needed = Math.max(0, cat.target_amount - (cat.available || 0));
+        total += needed;
+      }
+      // Check for by_date goals
+      if (cat.target_type === 'by_date' && cat.target_amount && cat.target_date) {
+        const needed = Math.max(0, cat.target_amount - (cat.available || 0));
+        total += needed;
+      }
+    });
+    return total;
+  };
+
+  const localUnderfundedTotal = calculateUnderfundedTotal();
+
   // Auto-Assign Strategies
   const strategies = [
     {
       id: 'underfunded',
       name: 'Assign to Underfunded',
-      description: 'Fund categories with targets or negative balances',
+      description: `Fund categories with targets ($${localUnderfundedTotal.toFixed(0)} needed)`,
       icon: '🎯',
       color: '#3B82F6',
       priority: 1
@@ -59,10 +88,10 @@ const SummaryView = ({
     const priorityGroups = {
       overspent: categories.filter(c => (c.available || 0) < 0),
       fixed: categories.filter(c => 
-        ['Rent', 'Mortgage', 'Insurance', 'Utilities', 'Internet', 'Phone'].includes(c.name)
+        ['Rent', 'Mortgage', 'Insurance', 'Utilities', 'Internet', 'Phone', 'Housing', 'Transportation'].includes(c.name)
       ),
       variable: categories.filter(c => 
-        ['Groceries', 'Food & Dining', 'Transportation', 'Gas'].includes(c.name)
+        ['Groceries', 'Food & Dining', 'Healthcare', 'Gas'].includes(c.name)
       ),
       discretionary: categories.filter(c => 
         ['Shopping', 'Entertainment', 'Dining Out'].includes(c.name)
@@ -388,12 +417,18 @@ const SummaryView = ({
           </span>
         </div>
         <div style={styles.statItem}>
+          <span style={styles.statLabel}>Underfunded</span>
+          <span style={{...styles.statValue, color: localUnderfundedTotal > 0 ? '#F59E0B' : '#4ADE80'}}>
+            {formatCurrency(localUnderfundedTotal)}
+          </span>
+        </div>
+        <div style={styles.statItem}>
           <span style={styles.statLabel}>Budget Health</span>
           <span style={{
             ...styles.statValue,
-            color: assignedPercentage <= 100 && stats.overspentCategories === 0 ? '#4ADE80' : '#F87171'
+            color: assignedPercentage <= 100 && stats.overspentCategories === 0 && localUnderfundedTotal === 0 ? '#4ADE80' : '#F87171'
           }}>
-            {assignedPercentage <= 100 && stats.overspentCategories === 0 ? 'Healthy' : 'Needs Attention'}
+            {assignedPercentage <= 100 && stats.overspentCategories === 0 && localUnderfundedTotal === 0 ? 'Healthy' : 'Needs Attention'}
           </span>
         </div>
       </div>
@@ -406,7 +441,17 @@ const SummaryView = ({
             style={styles.autoAssignToggle}
             onClick={() => setShowAutoAssignOptions(!showAutoAssignOptions)}
           >
-            {showAutoAssignOptions ? '▼' : '▶'} {unassigned > 0 ? `${formatCurrency(unassigned)} to assign` : 'No funds to assign'}
+            {showAutoAssignOptions ? '▼' : '▶'} 
+            {unassigned > 0 
+              ? `${formatCurrency(unassigned)} to assign` 
+              : unassigned < 0 
+                ? `Overspent ${formatCurrency(Math.abs(unassigned))}` 
+                : 'No funds to assign'}
+            {localUnderfundedTotal > 0 && unassigned > 0 && (
+              <span style={{ color: '#F59E0B', marginLeft: '8px', fontSize: '0.8rem' }}>
+                (${localUnderfundedTotal.toFixed(0)} needed)
+              </span>
+            )}
           </button>
         </div>
 
@@ -419,8 +464,8 @@ const SummaryView = ({
                   key={strategy.id}
                   style={{
                     ...styles.strategyCard,
-                    borderColor: selectedStrategy === strategy.id ? strategy.color : '#0f2e1c',
-                    background: selectedStrategy === strategy.id ? `${strategy.color}20` : '#0f2e1c'
+                    borderColor: selectedStrategy === strategy.id ? strategy.color : '#374151',
+                    background: selectedStrategy === strategy.id ? `${strategy.color}20` : '#111827'
                   }}
                   onClick={() => handleStrategySelect(strategy.id)}
                 >
@@ -548,7 +593,7 @@ const styles = {
   container: {
     width: '100%',
     maxWidth: '400px',
-    background: '#0f2e1c',
+    background: '#0047AB',
     borderRadius: '1rem',
     padding: '1.5rem',
     border: '1px solid #374151',
@@ -566,7 +611,7 @@ const styles = {
   },
   month: {
     fontSize: '0.875rem',
-    color: '#9CA3AF'
+    color: '#000000'
   },
   metricsContainer: {
     display: 'flex',
@@ -579,9 +624,9 @@ const styles = {
     alignItems: 'center',
     gap: '1rem',
     padding: '1rem',
-    background: '#0f2e1c',
+    background: '#000000',
     borderRadius: '0.75rem',
-    border: '1px solid #374151'
+    border: '1px solid #000000'
   },
   metricIcon: {
     fontSize: '2rem'
@@ -615,7 +660,7 @@ const styles = {
   },
   progressTitle: {
     fontSize: '0.875rem',
-    color: '#9CA3AF'
+    color: '#000000'
   },
   progressPercentage: {
     fontSize: '0.875rem',
@@ -624,7 +669,7 @@ const styles = {
   },
   progressBarBackground: {
     height: '8px',
-    background: '#374151',
+    background: '#000000',
     borderRadius: '4px',
     overflow: 'hidden'
   },
@@ -641,7 +686,7 @@ const styles = {
   },
   statItem: {
     padding: '0.75rem',
-    background: '#0f2e1c',
+    background: '#000000',
     borderRadius: '0.5rem',
     textAlign: 'center'
   },

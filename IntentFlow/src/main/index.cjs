@@ -271,8 +271,9 @@ function setupIpcHandlers() {
         ipcMain.removeHandler('getCategories');
         ipcMain.removeHandler('get-categories');
         ipcMain.removeHandler('create-category');
-        ipcMain.removeHandler('update-category');
         ipcMain.removeHandler('delete-category');
+        ipcMain.removeHandler('update-category');
+        ipcMain.removeHandler('updateCategory');
 
         // Group handlers
         ipcMain.removeHandler('get-groups');
@@ -337,6 +338,96 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+
+    // ==================== CATEGORY UPDATE HANDLER ====================
+    ipcMain.handle('updateCategory', async (event, categoryId, updates) => {
+        console.log('📝 Updating category:', categoryId, updates);
+        console.log('📝 MAIN PROCESS: updateCategory called');
+        console.log('📝 MAIN PROCESS - categoryId:', categoryId);
+        console.log('📝 MAIN PROCESS - updates:', updates);
+        console.log('📝 MAIN PROCESS - updates type:', typeof updates);
+        console.log('📝 MAIN PROCESS - updates keys:', Object.keys(updates || {}));
+        console.log('📝 MAIN PROCESS - updates.assigned:', updates?.assigned);
+        console.log('📝 MAIN PROCESS - updates.assigned type:', typeof updates?.assigned);
+        try {
+            const db = await getDatabase();
+
+            const setClauses = [];
+            const values = [];
+
+            if (updates.assigned !== undefined) {
+                setClauses.push('assigned = ?');
+                values.push(updates.assigned);
+            }
+            if (updates.target_amount !== undefined) {
+                setClauses.push('target_amount = ?');
+                values.push(updates.target_amount);
+            }
+            if (updates.target_type !== undefined) {
+                setClauses.push('target_type = ?');
+                values.push(updates.target_type);
+            }
+            if (updates.name !== undefined) {
+                setClauses.push('name = ?');
+                values.push(updates.name);
+            }
+
+            values.push(categoryId);
+
+            if (setClauses.length === 0) {
+                return { success: false, error: 'No updates provided' };
+            }
+
+            const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
+            const result = await db.run(query, values);
+
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('❌ Error updating category:', error);
+            return { success: false, error: error.message };
+        }
+    });
+    ipcMain.handle('update-category', async (event, categoryId, updates) => {
+        console.log('📝 Updating category (update-category):', categoryId, updates);
+        try {
+            const db = await getDatabase();
+
+            const setClauses = [];
+            const values = [];
+
+            if (updates.assigned !== undefined) {
+                setClauses.push('assigned = ?');
+                values.push(updates.assigned);
+            }
+            if (updates.target_amount !== undefined) {
+                setClauses.push('target_amount = ?');
+                values.push(updates.target_amount);
+            }
+            if (updates.target_type !== undefined) {
+                setClauses.push('target_type = ?');
+                values.push(updates.target_type);
+            }
+            if (updates.name !== undefined) {
+                setClauses.push('name = ?');
+                values.push(updates.name);
+            }
+
+            values.push(categoryId);
+
+            if (setClauses.length === 0) {
+                return { success: false, error: 'No updates provided' };
+            }
+
+            const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
+            const result = await db.run(query, values);
+
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('❌ Error updating category:', error);
+            return { success: false, error: error.message };
+        }
+    });
+    console.log('✅ Category update handler registered (update-category)');
 
     // ==================== FORECAST HANDLERS ====================
     ipcMain.handle('generateForecast', async (event, userId, options) => {
@@ -888,33 +979,70 @@ function setupIpcHandlers() {
         }
     });
 
+    // Add this temporarily to your IPC handlers
+    ipcMain.handle('debug-category-schema', async () => {
+        try {
+            const db = await getDatabase();
+            const tableInfo = await db.all("PRAGMA table_info(categories)");
+            console.log('📋 Categories table schema:', tableInfo);
+            return { success: true, data: tableInfo };
+        } catch (error) {
+            console.error('Error checking schema:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     // ==================== CATEGORY HANDLERS ====================
     ipcMain.handle('getCategories', async (event, userId) => {
-        console.log('📞 IPC: getCategories called');
+        console.log('📞 IPC: getCategories called with userId:', userId);
+
         try {
+            const dbConnection = await getDatabase();
+
             let targetUserId = userId;
+
             if (!targetUserId) {
                 const currentUser = userService.getCurrentUser();
                 targetUserId = currentUser?.id;
+                console.log('📋 Using current user from session:', targetUserId);
             }
-            if (!targetUserId) targetUserId = 1;
 
-            console.log('🔍 Getting database connection...');
-            const dbConnection = await getDatabase();
-            console.log('✅ Got database connection');
+            if (!targetUserId) {
+                console.log('⚠️ No user ID - returning empty array');
+                return { success: true, data: [] };
+            }
 
-            // ONLY select columns that exist in your schema
+            console.log('🔍 Executing query for user_id:', targetUserId);
+
             const categories = await dbConnection.all(`
-                SELECT id, name, group_id, target_type, target_amount, target_date
+                SELECT 
+                    id, 
+                    name, 
+                    group_id,
+                    assigned,
+                    activity,
+                    available,
+                    target_type, 
+                    target_amount, 
+                    target_date,
+                    priority,
+                    last_month_assigned,
+                    average_spending
                 FROM categories 
                 WHERE user_id = ?
             `, [targetUserId]);
 
-            console.log(`📊 Found ${categories.length} categories`);
-            return { success: true, data: categories || [] };
+            console.log(`📊 Found ${categories.length} categories for user ${targetUserId}`);
+
+            if (categories.length > 0) {
+                console.log('📋 First category:', categories[0]);
+            }
+
+            return { success: true, data: categories };
+
         } catch (error) {
             console.error('❌ Error in getCategories:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -1061,30 +1189,10 @@ function setupIpcHandlers() {
     });
 
     // ==================== CATEGORY MANAGEMENT (Legacy) ====================
-    ipcMain.handle('get-categories', async (event, budgetId) => {
-        try {
-            // const categories = await accountService.getCategories();
-            const categories = []; // Placeholder
-            return { success: true, data: categories };
-        } catch (error) {
-            return { success: false, error: error.message };
-        }
-    });
-
     ipcMain.handle('create-category', async (event, category) => {
         try {
             // const result = await categoryService.createCategory(category);
             const result = { id: 1, ...category }; // Placeholder
-            return { success: true, data: result };
-        } catch (error) {
-            return { success: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle('update-category', async (event, categoryId, updates) => {
-        try {
-            // const result = await categoryService.updateCategory(categoryId, updates);
-            const result = { id: categoryId, ...updates }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };

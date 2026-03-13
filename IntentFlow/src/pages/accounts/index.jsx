@@ -477,13 +477,13 @@ const styles = {
     container: {
         display: 'flex',
         minHeight: '100vh',
-        background: '#0f2e1c'
+        background: '#0047AB'
     },
     main: {
         flex: 1,
         marginLeft: '280px',
         padding: '2rem',
-        background: '#0f2e1c',
+        background: '#0047AB',
         color: 'white',
         minHeight: '100vh'
     },
@@ -520,7 +520,7 @@ const styles = {
         gap: '1rem'
     },
     summaryCard: (color) => ({
-        background: '#0f2e1c',
+        background: '#0047AB',
         padding: '1.5rem',
         borderRadius: '0.75rem',
         borderLeft: `4px solid ${
@@ -556,7 +556,7 @@ const styles = {
         color: '#9CA3AF'
     },
     accountList: {
-        background: '##0f2e1c',
+        background: '#0047AB',
         borderRadius: '0.75rem',
         overflow: 'hidden'
     },
@@ -617,7 +617,7 @@ const styles = {
         zIndex: 1000
     },
     modalContent: {
-        background: '#0f2e1c',
+        background: '#000000',
         padding: '2rem',
         borderRadius: '1rem',
         width: '90%',

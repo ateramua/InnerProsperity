@@ -126,7 +126,7 @@ const handleAddTransaction = async () => {
     return (
       <div style={{
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
+        background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 100%)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -140,7 +140,7 @@ const handleAddTransaction = async () => {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
+      background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 100%)',
       color: 'white'
     }}>
       {/* Navigation Header (copy from your index.jsx) */}

@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { useCategoryGoalSync } from '../hooks/useCategoryGoalSync';
 
 export default function GoalsManager({ goals: initialGoals, categories, accounts, onUpdate }) {
   const [goals, setGoals] = useState(initialGoals || []);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingGoal, setEditingGoal] = useState(null);
+  // Update the newGoal state (around line 15-20)
   const [newGoal, setNewGoal] = useState({
     name: '',
     target_amount: '',
@@ -11,36 +13,93 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
     target_date: '',
     category_id: '',
     account_id: '',
+    target_type: 'balance', // 'balance', 'monthly', 'by_date'
     notes: ''
   });
 
   // Calculate goal progress and projections
+  // Update calculateGoalProgress function (around line 25-40)
   const calculateGoalProgress = (goal) => {
-    const progress = (goal.current_amount / goal.target_amount) * 100;
-    const remaining = goal.target_amount - goal.current_amount;
+    switch (goal.target_type) {
+      case 'monthly':
+        const progress = (goal.current_amount / goal.target_amount) * 100;
+        return {
+          progress: Math.min(progress, 100),
+          remaining: goal.target_amount - goal.current_amount,
+          isCompleted: progress >= 100,
+          displayType: 'monthly',
+          neededThisMonth: Math.max(0, goal.target_amount - goal.current_amount)
+        };
 
-    // Calculate months until target date
-    const today = new Date();
-    const targetDate = new Date(goal.target_date);
-    const monthsRemaining = (targetDate.getFullYear() - today.getFullYear()) * 12 +
-      (targetDate.getMonth() - today.getMonth());
+      case 'balance':
+        const balanceProgress = (goal.current_amount / goal.target_amount) * 100;
+        return {
+          progress: Math.min(balanceProgress, 100),
+          remaining: goal.target_amount - goal.current_amount,
+          isCompleted: balanceProgress >= 100,
+          displayType: 'balance'
+        };
 
-    // Monthly contribution needed
-    const monthlyNeeded = monthsRemaining > 0 ? remaining / monthsRemaining : remaining;
+      case 'by_date':
+        const dateProgress = (goal.current_amount / goal.target_amount) * 100;
+        const today = new Date();
+        const targetDate = new Date(goal.target_date);
+        const monthsRemaining = (targetDate.getFullYear() - today.getFullYear()) * 12 +
+          (targetDate.getMonth() - today.getMonth());
+        const remaining = goal.target_amount - goal.current_amount;
+        const monthlyNeeded = monthsRemaining > 0 ? remaining / monthsRemaining : remaining;
 
-    return {
-      progress: Math.min(progress, 100),
-      remaining,
-      monthsRemaining: Math.max(0, monthsRemaining),
-      monthlyNeeded: Math.max(0, monthlyNeeded),
-      isCompleted: progress >= 100,
-      isBehind: monthsRemaining > 0 && remaining > 0 && monthlyNeeded > 1000 // Example threshold
-    };
+        return {
+          progress: Math.min(dateProgress, 100),
+          remaining,
+          isCompleted: dateProgress >= 100,
+          displayType: 'by_date',
+          monthsRemaining: Math.max(0, monthsRemaining),
+          monthlyNeeded: Math.max(0, monthlyNeeded)
+        };
+
+      default:
+        return {
+          progress: (goal.current_amount / goal.target_amount) * 100,
+          remaining: goal.target_amount - goal.current_amount,
+          isCompleted: goal.current_amount >= goal.target_amount
+        };
+    }
   };
+  
+  // Enhanced sync function that updates both local state and database
+const syncGoalWithCategory = async (goalId, newAmount, category) => {
+  // Update local state
+  setGoals(prevGoals => 
+    prevGoals.map(g => {
+      if (g.id === goalId) {
+        console.log(`✅ Syncing goal "${g.name}" to $${newAmount} (from category "${category?.name}")`);
+        return {
+          ...g,
+          current_amount: newAmount
+        };
+      }
+      return g;
+    })
+  );
+  
+  // Update database if API available
+  if (window.electronAPI?.updateGoal) {
+    try {
+      await window.electronAPI.updateGoal(goalId, {
+        current_amount: newAmount
+      });
+    } catch (error) {
+      console.error('Error syncing goal with database:', error);
+    }
+  }
+};
 
+  // Add this with your other state and hooks
+  const { syncGoal } = useCategoryGoalSync(goals, categories, syncGoalWithCategory);
   const handleAddGoal = async (e) => {
     e.preventDefault();
-    
+
     // Validate inputs
     if (!newGoal.name.trim()) {
       alert('Please enter a goal name');
@@ -57,7 +116,7 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
 
     try {
       console.log('Creating goal:', newGoal);
-      
+
       // TODO: Add IPC handler for creating goals
       // For now, simulate success
       const mockResult = {
@@ -74,7 +133,7 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
         // Add to local state
         const updatedGoals = [...goals, mockResult.data];
         setGoals(updatedGoals);
-        
+
         setShowAddForm(false);
         setNewGoal({
           name: '',
@@ -85,7 +144,7 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
           account_id: '',
           notes: ''
         });
-        
+
         if (onUpdate) onUpdate();
         alert('✅ Goal created successfully!');
       } else {
@@ -99,15 +158,15 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
 
   const handleUpdateGoal = async () => {
     if (!editingGoal) return;
-    
+
     try {
       console.log('Updating goal:', editingGoal);
-      
+
       // TODO: Add IPC handler for updating goals
       const mockResult = { success: true };
 
       if (mockResult.success) {
-        const updatedGoals = goals.map(g => 
+        const updatedGoals = goals.map(g =>
           g.id === editingGoal.id ? editingGoal : g
         );
         setGoals(updatedGoals);
@@ -128,7 +187,7 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
 
     try {
       console.log('Deleting goal:', goalId);
-      
+
       // TODO: Add IPC handler for deleting goals
       const mockResult = { success: true };
 
@@ -292,7 +351,7 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
           background: '#1F2937',
           padding: '15px',
           borderRadius: '8px',
-          borderLeft: '4px solid #F59E0B' 
+          borderLeft: '4px solid #F59E0B'
         }}>
           <div style={{ color: '#9CA3AF', fontSize: '12px' }}>Total Saved</div>
           <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#F59E0B' }}>
@@ -303,13 +362,13 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
           background: '#1F2937',
           padding: '15px',
           borderRadius: '8px',
-          borderLeft: '4px solid #8B5CF6' 
+          borderLeft: '4px solid #8B5CF6'
         }}>
           <div style={{ color: '#9CA3AF', fontSize: '12px' }}>Overall Progress</div>
           <div style={{ fontSize: '24px', fontWeight: 'bold' }}>
-            {goals.length > 0 
+            {goals.length > 0
               ? ((goals.reduce((sum, g) => sum + g.current_amount, 0) /
-                 goals.reduce((sum, g) => sum + g.target_amount, 0)) * 100).toFixed(1)
+                goals.reduce((sum, g) => sum + g.target_amount, 0)) * 100).toFixed(1)
               : 0}%
           </div>
         </div>
@@ -407,6 +466,29 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
+            {/* Add this after your existing form fields, before the notes textarea */}
+
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', color: '#9CA3AF' }}>
+                Target Type
+              </label>
+              <select
+                value={newGoal.target_type}
+                onChange={(e) => setNewGoal({ ...newGoal, target_type: e.target.value })}
+                style={{
+                  width: '100%',
+                  background: '#111827',
+                  border: '1px solid #374151',
+                  color: 'white',
+                  padding: '10px',
+                  borderRadius: '4px'
+                }}
+              >
+                <option value="balance">Balance Goal (Save a specific amount)</option>
+                <option value="monthly">Monthly Funding Goal (Assign each month)</option>
+                <option value="by_date">Target Date Goal (Save by a date)</option>
+              </select>
+            </div>
             <textarea
               placeholder="Notes (optional)"
               value={newGoal.notes}
@@ -614,7 +696,7 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
                 overflow: 'hidden'
               }}
             >
-              {/* Status Badge */}
+              {/* Status Badge (if completed) */}
               {stats.isCompleted && (
                 <div style={{
                   position: 'absolute',
@@ -631,25 +713,24 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
                 </div>
               )}
 
-              {stats.isBehind && !stats.isCompleted && (
-                <div style={{
-                  position: 'absolute',
-                  top: '10px',
-                  right: '10px',
-                  background: '#F59E0B',
-                  color: 'white',
-                  padding: '4px 8px',
-                  borderRadius: '4px',
-                  fontSize: '12px',
-                  fontWeight: 'bold'
-                }}>
-                  ⚠ Behind Schedule
-                </div>
-              )}
-
-              {/* Goal Header */}
+              {/* Goal Header - with target type badge */}
               <div style={{ marginBottom: '15px' }}>
-                <h3 style={{ margin: 0, fontSize: '18px' }}>{goal.name}</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ margin: 0, fontSize: '18px' }}>{goal.name}</h3>
+                  <span style={{
+                    background: goal.target_type === 'monthly' ? '#3B82F620' :
+                      goal.target_type === 'balance' ? '#10B98120' : '#8B5CF620',
+                    color: goal.target_type === 'monthly' ? '#3B82F6' :
+                      goal.target_type === 'balance' ? '#10B981' : '#8B5CF6',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '10px',
+                    fontWeight: 'bold'
+                  }}>
+                    {goal.target_type === 'monthly' ? 'Monthly' :
+                      goal.target_type === 'balance' ? 'Balance Goal' : 'Target Date'}
+                  </span>
+                </div>
                 {goal.notes && (
                   <div style={{ color: '#9CA3AF', fontSize: '12px', marginTop: '4px' }}>
                     {goal.notes}
@@ -706,44 +787,59 @@ export default function GoalsManager({ goals: initialGoals, categories, accounts
                 </div>
               </div>
 
-              {/* Goal Details */}
+              {/* Goal Details - shows different info based on target type */}
               <div style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: '10px',
-                marginBottom: '15px',
                 background: '#111827',
                 padding: '12px',
-                borderRadius: '6px'
+                borderRadius: '6px',
+                marginBottom: '15px'
               }}>
-                <div>
-                  <div style={{ color: '#9CA3AF', fontSize: '11px' }}>Target Date</div>
-                  <div style={{ fontSize: '14px', fontWeight: 'bold' }}>
-                    {formatDate(goal.target_date)}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ color: '#9CA3AF', fontSize: '11px' }}>Time Left</div>
-                  <div style={{ fontSize: '14px', fontWeight: 'bold' }}>
-                    {stats.monthsRemaining} months
-                  </div>
-                </div>
-                <div>
-                  <div style={{ color: '#9CA3AF', fontSize: '11px' }}>Remaining</div>
-                  <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#EF4444' }}>
-                    {formatCurrency(stats.remaining)}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ color: '#9CA3AF', fontSize: '11px' }}>Needed/Month</div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: 'bold',
-                    color: stats.monthlyNeeded > 1000 ? '#F59E0B' : '#10B981'
-                  }}>
-                    {formatCurrency(stats.monthlyNeeded)}
-                  </div>
-                </div>
+                {/* Monthly target specific info */}
+                {stats.displayType === 'monthly' && (
+                  <>
+                    <div style={{ fontSize: '12px', color: '#9CA3AF', marginBottom: '4px' }}>
+                      Monthly Progress
+                    </div>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold' }}>
+                      {formatCurrency(goal.current_amount)} / {formatCurrency(goal.target_amount)}
+                    </div>
+                    <div style={{ fontSize: '12px', color: stats.neededThisMonth > 0 ? '#F59E0B' : '#10B981' }}>
+                      {stats.neededThisMonth > 0
+                        ? `Need ${formatCurrency(stats.neededThisMonth)} more this month`
+                        : 'Monthly target met!'}
+                    </div>
+                  </>
+                )}
+
+                {/* Balance target specific info */}
+                {stats.displayType === 'balance' && (
+                  <>
+                    <div style={{ fontSize: '12px', color: '#9CA3AF', marginBottom: '4px' }}>
+                      Remaining
+                    </div>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#EF4444' }}>
+                      {formatCurrency(stats.remaining)}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
+                      To reach your goal
+                    </div>
+                  </>
+                )}
+
+                {/* By-date target specific info */}
+                {stats.displayType === 'by_date' && stats.monthsRemaining > 0 && (
+                  <>
+                    <div style={{ fontSize: '12px', color: '#9CA3AF', marginBottom: '4px' }}>
+                      Monthly Contribution Needed
+                    </div>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#F59E0B' }}>
+                      {formatCurrency(stats.monthlyNeeded)} / month
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
+                      {stats.monthsRemaining} months remaining until {new Date(goal.target_date).toLocaleDateString()}
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Action Buttons */}

@@ -121,7 +121,7 @@ const styles = {
     display: 'flex',
     minHeight: '100vh',
     background:
-      'linear-gradient(135deg, #0f2e1c 0%, #0f2e1c 40%, ##0f2e1c 100%)',
+      'linear-gradient(135deg, #0047AB 0%, #0047AB 40%, ##0f2e1c 100%)',
     fontFamily: 'Inter, system-ui, sans-serif'
   },
 
@@ -135,7 +135,7 @@ const styles = {
 
   mainGlass: {
     backdropFilter: 'blur(16px)',
-    background: 'rgba(255,255,255,0.04)',
+    background: '#0047AB',
     borderRadius: '18px',
     padding: '2rem',
     border: '1px solid rgba(255,255,255,0.08)',
@@ -147,7 +147,7 @@ const styles = {
   loadingContainer: {
     minHeight: '100vh',
     background:
-      'linear-gradient(135deg, #1e1b4b, #111827, #0f172a)',
+      'linear-gradient(135deg, #0047AB, #0047AB, #0047AB)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',

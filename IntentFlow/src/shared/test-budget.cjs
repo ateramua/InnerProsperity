@@ -1,5 +1,5 @@
 // src/shared/test-budget.cjs
-const BudgetEngine = require('./budgetEngine.js').default;
+const BudgetEngine = require('./budgetEngine.mjs').default;
 
 const budgetEngine = new BudgetEngine();
 

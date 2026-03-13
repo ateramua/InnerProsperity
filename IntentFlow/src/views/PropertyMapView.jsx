@@ -1,10 +1,10 @@
 // src/views/PropertyMapView.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import SummaryView from './SummaryView';
 import AutoAssignView from './AutoAssignView';
 import FutureMonthsView from './FutureMonthsView';
-// Add near other imports
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
+import BudgetEngine from "../shared/budgetEngine.mjs";
 
 const PropertyMapView = () => {
   const [categoryGroups, setCategoryGroups] = useState([]);
@@ -20,11 +20,17 @@ const PropertyMapView = () => {
   const [editingGroup, setEditingGroup] = useState(null);
   const [newGroupName, setNewGroupName] = useState('');
   const [editGroupName, setEditGroupName] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [newCategoryData, setNewCategoryData] = useState({
     name: '',
     assigned: 0,
     groupId: null
   });
+
+  // Initialize BudgetEngine with empty data first
+  const [budgetEngine] = useState(() => new BudgetEngine());
+  const hasLoadedCategories = useRef(false);
+
   const [incomeData, setIncomeData] = useState({
     amount: '',
     date: new Date().toISOString().split('T')[0],
@@ -37,6 +43,16 @@ const PropertyMapView = () => {
     date: new Date().toISOString().split('T')[0],
     memo: ''
   });
+
+  // Add with your other state declarations (around line 50-60)
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [editCategoryData, setEditCategoryData] = useState({
+    name: '',
+    assigned: 0,
+    target_amount: 0,
+    target_type: 'monthly'
+  });
+
   const [moveMoneyData, setMoveMoneyData] = useState({
     amount: '',
     fromCategoryId: '',
@@ -44,28 +60,241 @@ const PropertyMapView = () => {
   });
   const [userId, setUserId] = useState(2); // Default to user 2 for now
 
-  // Budget summary data - calculated from categories using correct formula
+  // Track total cash in budget accounts (checking, savings, cash)
+  const [totalCashInAccounts, setTotalCashInAccounts] = useState(0);
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+
+  // Budget summary data
   const [budgetSummary, setBudgetSummary] = useState({
-    totalAvailable: 0,
+    totalAvailable: 0,      // This is Ready to Assign
     totalActivity: 0,
     totalAssigned: 0,
-    unassigned: 0
+    unassigned: 0           // This should be Ready to Assign
   });
 
-  // Sample initial categories
+  // ==================== BUDGET DATA STATE ====================
   const [budgetData, setBudgetData] = useState({
-    categories: [
-      { id: 'cat1', name: 'Housing', assigned: 1500, activity: -1500, available: 0, groupId: 'fixed', priority: 1, target_amount: 1500 },
-      { id: 'cat2', name: 'Utilities', assigned: 300, activity: -85.00, available: 215.00, groupId: 'fixed', priority: 1, target_amount: 300 },
-      { id: 'cat3', name: 'Transportation', assigned: 400, activity: -120.50, available: 279.50, groupId: 'fixed', priority: 1, target_amount: 400 },
-      { id: 'cat4', name: 'Food & Dining', assigned: 800, activity: -450.67, available: 349.33, groupId: 'variable', priority: 2, target_amount: 800 },
-      { id: 'cat5', name: 'Entertainment', assigned: 200, activity: -89.99, available: 110.01, groupId: 'variable', priority: 3, target_amount: 200 },
-      { id: 'cat6', name: 'Shopping', assigned: 500, activity: -245.78, available: 254.22, groupId: 'variable', priority: 3, target_amount: 500 },
-      { id: 'cat7', name: 'Healthcare', assigned: 250, activity: 0, available: 250, groupId: 'variable', priority: 1, target_amount: 250 },
-      { id: 'cat8', name: 'Savings', assigned: 1000, activity: 0, available: 1000, groupId: 'savings', priority: 4, target_amount: 1000 },
-      { id: 'cat9', name: 'Debt Payment', assigned: 450, activity: -450.32, available: -0.32, groupId: 'debt', priority: 1, target_amount: 450 },
-    ]
+    categories: []
   });
+
+  // Add this right after your other state declarations
+  useEffect(() => {
+    console.log('🔍 COMPONENT MOUNTED - checking electronAPI:', {
+      hasGetCategories: !!window.electronAPI?.getCategories,
+      hasGetCategoryGroups: !!window.electronAPI?.getCategoryGroups,
+      userId: userId
+    });
+  }, []);
+
+  // ==================== TARGET CALCULATIONS ====================
+  const calculateTargetProgress = (category) => {
+    if (!category.target_amount || category.target_amount === 0) {
+      return { progress: null, status: 'no-target', needed: 0 };
+    }
+
+    switch (category.target_type) {
+      case 'monthly':
+        // Monthly target: progress based on assigned amount
+        const progress = (category.assigned / category.target_amount) * 100;
+        const needed = Math.max(0, category.target_amount - category.assigned);
+        return {
+          progress,
+          status: progress >= 100 ? 'funded' : progress > 0 ? 'partial' : 'unfunded',
+          needed,
+          targetAmount: category.target_amount,
+          currentAmount: category.assigned
+        };
+
+      case 'balance':
+        // Balance target: progress based on available amount
+        const balanceProgress = ((category.available || 0) / category.target_amount) * 100;
+        const balanceNeeded = Math.max(0, category.target_amount - (category.available || 0));
+        return {
+          progress: balanceProgress,
+          status: balanceProgress >= 100 ? 'completed' : balanceProgress > 0 ? 'in-progress' : 'not-started',
+          needed: balanceNeeded,
+          targetAmount: category.target_amount,
+          currentAmount: category.available || 0
+        };
+
+      case 'by_date':
+        // Date-based target: calculate monthly contribution needed
+        if (!category.target_date) return { progress: null, status: 'no-date', needed: 0 };
+
+        const today = new Date();
+        const targetDate = new Date(category.target_date);
+        const monthsRemaining = (targetDate.getFullYear() - today.getFullYear()) * 12 +
+          (targetDate.getMonth() - today.getMonth());
+
+        const totalNeeded = category.target_amount - (category.available || 0);
+        const monthlyNeeded = monthsRemaining > 0 ? totalNeeded / monthsRemaining : totalNeeded;
+        const dateProgress = ((category.available || 0) / category.target_amount) * 100;
+
+        return {
+          progress: dateProgress,
+          status: dateProgress >= 100 ? 'completed' : 'in-progress',
+          needed: totalNeeded,
+          monthlyNeeded: Math.max(0, monthlyNeeded),
+          targetAmount: category.target_amount,
+          currentAmount: category.available || 0,
+          monthsRemaining: Math.max(0, monthsRemaining)
+        };
+
+      default:
+        return { progress: null, status: 'no-target', needed: 0 };
+    }
+  };
+
+  const calculateUnderfundedCategories = () => {
+    return budgetData.categories.filter(cat => {
+      const targetInfo = calculateTargetProgress(cat);
+      return targetInfo.status === 'partial' ||
+        targetInfo.status === 'unfunded' ||
+        targetInfo.status === 'in-progress';
+    });
+  };
+
+  const getTotalUnderfunded = () => {
+    let total = 0;
+    budgetData.categories.forEach(cat => {
+      const targetInfo = calculateTargetProgress(cat);
+      if (targetInfo.needed && targetInfo.needed > 0) {
+        total += targetInfo.needed;
+      }
+    });
+    return total;
+  };
+
+  // Update progress for all categories
+  const updateAllProgress = () => {
+    setBudgetData(prev => ({
+      ...prev,
+      categories: prev.categories.map(cat => ({
+        ...cat,
+        progress: calculateTargetProgress(cat).progress || 0
+      }))
+    }));
+  };
+
+  // ==================== READY TO ASSIGN CALCULATION ====================
+  const calculateReadyToAssign = () => {
+    const categories = budgetData.categories;
+
+    // Total assigned (sum of all assigned amounts)
+    const totalAssigned = categories.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
+
+    // Total activity (sum of all activity)
+    const totalActivity = categories.reduce((sum, cat) => sum + (cat.activity || 0), 0);
+
+    let readyToAssign = 0;
+
+    if (budgetEngine && typeof budgetEngine.calculateReadyToAssign === 'function') {
+      try {
+        readyToAssign = budgetEngine.calculateReadyToAssign(
+          totalCashInAccounts,
+          totalAssigned
+        );
+      } catch (error) {
+        console.error('Error calculating ready to assign with budgetEngine:', error);
+        readyToAssign = totalCashInAccounts - totalAssigned;
+      }
+    } else {
+      readyToAssign = totalCashInAccounts - totalAssigned;
+    }
+
+    setBudgetSummary({
+      totalAvailable: readyToAssign,
+      totalActivity,
+      totalAssigned,
+      unassigned: readyToAssign
+    });
+
+    console.log('📊 Budget Summary Calculated:', {
+      totalCashInAccounts,
+      totalAssigned,
+      readyToAssign,
+      totalActivity
+    });
+  };
+
+  // Calculate Ready to Assign whenever categories or cash changes
+  useEffect(() => {
+    calculateReadyToAssign();
+  }, [budgetData.categories, totalCashInAccounts]);
+
+  // 👇 ADD THE DEBUG EFFECT HERE 👇
+  useEffect(() => {
+    console.log('🔍 CURRENT STATE AFTER LOAD:');
+    console.log('- budgetData.categories:', budgetData.categories);
+    console.log('- categories state:', categories);
+    console.log('- categoryGroups:', categoryGroups);
+    console.log('- totalCashInAccounts:', totalCashInAccounts);
+    console.log('- userId:', userId);
+  }, [budgetData, categories, categoryGroups, totalCashInAccounts, userId]);
+
+  // Debug useEffect for categories updates
+  useEffect(() => {
+    console.log('📊 budgetData.categories UPDATED:', {
+      count: budgetData.categories.length,
+      categories: budgetData.categories.map(c => ({
+        id: c.id,
+        name: c.name,
+        assigned: c.assigned
+      }))
+    });
+  }, [budgetData.categories]);
+
+  // // Sync BudgetEngine with categories
+  // useEffect(() => {
+  //   if (budgetData && budgetData.categories) {
+  //     try {
+  //       console.log('🔄 Syncing budgetEngine with categories:', budgetData.categories.length);
+
+  //       if (Array.isArray(budgetData.categories)) {
+  //         budgetEngine.setCategories(budgetData.categories);
+  //         console.log('✅ BudgetEngine synced successfully');
+  //       } else {
+  //         console.error('❌ budgetData.categories is not an array:', budgetData.categories);
+  //       }
+  //     } catch (error) {
+  //       console.error('❌ Error syncing BudgetEngine:', error);
+  //     }
+  //   }
+  // }, [budgetData, budgetEngine]);
+
+  // Debug useEffect for initial data
+  useEffect(() => {
+    console.log('🔍 Initial categories loaded:', budgetData.categories.map(c => ({ id: c.id, name: c.name })));
+    console.log('🔍 Total cash in accounts:', totalCashInAccounts);
+  }, []);
+
+  // ==================== REALTIME UPDATES ====================
+  const { lastUpdate } = useRealtimeUpdates(['prosperity:updated'], () => {
+    // Refresh data
+    loadCategoryGroups();
+    loadCategoriesFromDB();
+    calculateReadyToAssign();
+  });
+
+  // Also listen for manual refresh events
+  useEffect(() => {
+    const handleRefresh = () => {
+      loadCategoryGroups();
+      loadCategoriesFromDB();
+      calculateReadyToAssign();
+    };
+
+    window.addEventListener('refresh-prosperity-map', handleRefresh);
+
+    return () => {
+      window.removeEventListener('refresh-prosperity-map', handleRefresh);
+    };
+  }, []);
+
+  // Calculate progress whenever relevant data changes
+  useEffect(() => {
+    updateAllProgress();
+  }, [budgetData.categories.map(cat => cat.available + cat.assigned + (cat.activity || 0)).join(',')]);
 
   // ==================== WINDOW HANDLERS FOR QUICK ACTIONS ====================
   useEffect(() => {
@@ -73,19 +302,19 @@ const PropertyMapView = () => {
       console.log('💰 Add Income clicked - opening modal');
       setShowAddIncomeModal(true);
     };
-    
+
     window.onRecordPaymentClick = () => {
       console.log('💳 Record Payment clicked - opening modal');
       setShowRecordPaymentModal(true);
     };
-    
+
     window.onMoveMoneyClick = () => {
       console.log('🔄 Move Money clicked - opening modal');
       setShowMoveMoneyModal(true);
     };
-    
+
     console.log('✅ Quick Action handlers registered');
-    
+
     return () => {
       window.onAddIncomeClick = null;
       window.onRecordPaymentClick = null;
@@ -93,53 +322,105 @@ const PropertyMapView = () => {
     };
   }, []);
 
-  // Calculate budget summary whenever categories change - CORRECTED FORMULA
-  useEffect(() => {
-    calculateBudgetSummary();
-  }, [budgetData.categories]);
+  // ==================== QUICK ASSIGN FUNCTIONS ====================
+  const handleQuickAssign = (method) => {
+    if (budgetSummary.unassigned <= 0) {
+      alert('No funds available to assign');
+      return;
+    }
 
-  const calculateBudgetSummary = () => {
-    const categories = budgetData.categories;
-    
-    // Total Available = Sum of (Assigned – Activity) for all categories
-    const totalAvailable = categories.reduce((sum, cat) => {
-      return sum + ((cat.assigned || 0) + (cat.activity || 0)); // Activity is already negative for expenses
-    }, 0);
-    
-    // Total assigned (sum of all assigned amounts)
-    const totalAssigned = categories.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
-    
-    // Total activity (sum of all activity)
-    const totalActivity = categories.reduce((sum, cat) => sum + (cat.activity || 0), 0);
-    
-    // Unassigned would be totalAvailable - totalAssigned
-    const unassigned = totalAvailable - totalAssigned;
+    let allocations = [];
+    let remainingFunds = budgetSummary.unassigned;
 
-    setBudgetSummary({
-      totalAvailable,
-      totalActivity,
-      totalAssigned,
-      unassigned
-    });
-    
-    console.log('📊 Budget Summary Calculated:', {
-      totalAvailable,
-      totalActivity,
-      totalAssigned,
-      unassigned
-    });
-  };
+    switch (method) {
+      case 'underfunded':
+        // Prioritize: overspent → monthly targets → savings goals
+        const overspent = budgetData.categories.filter(c => (c.available || 0) < 0);
+        const monthlyTargets = budgetData.categories.filter(c =>
+          c.target_type === 'monthly' && (c.assigned || 0) < (c.target_amount || 0)
+        );
+        const savingsGoals = budgetData.categories.filter(c =>
+          c.target_type === 'balance' && (c.available || 0) < (c.target_amount || 0)
+        );
 
-  // Update category available amount based on assigned and activity
-  const updateCategoryAvailable = (categoryId) => {
-    setBudgetData(prev => ({
-      ...prev,
-      categories: prev.categories.map(cat => 
-        cat.id === categoryId 
-          ? { ...cat, available: (cat.assigned || 0) + (cat.activity || 0) }
-          : cat
-      )
-    }));
+        // First, fix overspent categories
+        overspent.forEach(cat => {
+          const needed = Math.abs(cat.available || 0);
+          if (remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed });
+            remainingFunds -= needed;
+          }
+        });
+
+        // Then fund monthly targets
+        monthlyTargets.forEach(cat => {
+          const needed = (cat.target_amount || 0) - (cat.assigned || 0);
+          if (needed > 0 && remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed });
+            remainingFunds -= needed;
+          }
+        });
+
+        // Finally, contribute to savings goals
+        savingsGoals.forEach(cat => {
+          const needed = (cat.target_amount || 0) - (cat.available || 0);
+          if (needed > 0 && remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed });
+            remainingFunds -= needed;
+          }
+        });
+        break;
+
+      case 'last-month':
+        // Use last month's assigned amounts
+        budgetData.categories.forEach(cat => {
+          const lastMonthAmount = cat.last_month_assigned || cat.assigned || 0;
+          const currentAssigned = cat.assigned || 0;
+          const needed = Math.max(0, lastMonthAmount - currentAssigned);
+
+          if (needed > 0 && remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed });
+            remainingFunds -= needed;
+          }
+        });
+        break;
+
+      case 'average':
+        // Use average spending
+        budgetData.categories.forEach(cat => {
+          const avgSpend = cat.average_spending || cat.assigned || 0;
+          const currentAssigned = cat.assigned || 0;
+          const needed = Math.max(0, avgSpend - currentAssigned);
+
+          if (needed > 0 && remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed });
+            remainingFunds -= needed;
+          }
+        });
+        break;
+    }
+
+    // Apply allocations if any
+    if (allocations.length > 0) {
+      setBudgetData(prev => ({
+        ...prev,
+        categories: prev.categories.map(cat => {
+          const allocation = allocations.find(a => a.categoryId === cat.id);
+          if (allocation) {
+            return {
+              ...cat,
+              assigned: (cat.assigned || 0) + allocation.amount,
+              available: (cat.available || 0) + allocation.amount
+            };
+          }
+          return cat;
+        })
+      }));
+
+      alert(`✅ Assigned $${allocations.reduce((sum, a) => sum + a.amount, 0).toFixed(2)} to ${allocations.length} categories`);
+    } else {
+      alert('No categories need funding');
+    }
   };
 
   // ==================== ADD INCOME FUNCTIONALITY ====================
@@ -150,26 +431,14 @@ const PropertyMapView = () => {
       return;
     }
 
-    // Add to unassigned funds by creating a temporary income category
-    const tempIncomeCategory = {
-      id: `income-${Date.now()}`,
-      name: 'Ready to Assign',
-      assigned: amount,
-      activity: 0,
-      available: amount,
-      groupId: 'income',
-      priority: 0
-    };
-    
-    setBudgetData(prev => ({
-      ...prev,
-      categories: [...prev.categories, tempIncomeCategory]
-    }));
+    // Add to total cash in accounts (increases Ready to Assign)
+    setTotalCashInAccounts(prev => prev + amount);
 
-    console.log('Income added:', {
+    console.log('Income added to Ready to Assign:', {
       amount,
       date: incomeData.date,
-      memo: incomeData.memo
+      memo: incomeData.memo,
+      newReadyToAssign: totalCashInAccounts + amount - budgetSummary.totalAssigned
     });
 
     // Reset form and close modal
@@ -209,16 +478,19 @@ const PropertyMapView = () => {
     // Update the category activity and available
     setBudgetData(prev => ({
       ...prev,
-      categories: prev.categories.map(cat => 
+      categories: prev.categories.map(cat =>
         cat.id === paymentData.categoryId
-          ? { 
-              ...cat, 
-              activity: (cat.activity || 0) - amount,
-              available: (cat.available || 0) - amount
-            }
+          ? {
+            ...cat,
+            activity: (cat.activity || 0) - amount,
+            available: (cat.available || 0) - amount
+          }
           : cat
       )
     }));
+
+    // Also reduce total cash in accounts (money left the account)
+    setTotalCashInAccounts(prev => prev - amount);
 
     console.log('Payment recorded:', {
       amount,
@@ -307,9 +579,51 @@ const PropertyMapView = () => {
     alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
   };
 
+  // ==================== ASSIGN MONEY TO CATEGORIES ====================
+  const handleAssignToCategory = (categoryId, amount) => {
+    console.log('💰 Assigning to category:', { categoryId, amount });
+
+    // Update local state first
+    setBudgetData(prev => ({
+      ...prev,
+      categories: prev.categories.map(cat =>
+        cat.id === categoryId
+          ? {
+            ...cat,
+            assigned: (cat.assigned || 0) + amount,
+            available: (cat.available || 0) + amount
+          }
+          : cat
+      )
+    }));
+
+    // Then save to database
+    const category = budgetData.categories.find(c => c.id === categoryId);
+    if (category) {
+      const newAssigned = (category.assigned || 0) + amount;
+      console.log('💾 Saving to database:', { categoryId, newAssigned });
+      updateCategoryAssigned(categoryId, newAssigned);
+    }
+  };
+
+  // ==================== MOVE FROM CATEGORY BACK TO READY TO ASSIGN ====================
+  const handleMoveToReadyToAssign = (categoryId, amount) => {
+    setBudgetData(prev => ({
+      ...prev,
+      categories: prev.categories.map(cat =>
+        cat.id === categoryId
+          ? {
+            ...cat,
+            assigned: (cat.assigned || 0) - amount,
+            available: (cat.available || 0) - amount
+          }
+          : cat
+      )
+    }));
+  };
+
   // ==================== AUTO-ASSIGN FUNCTIONALITY ====================
   const handleAutoAssign = (allocations) => {
-    // Apply the allocations from the auto-assign preview
     setBudgetData(prev => ({
       ...prev,
       categories: prev.categories.map(cat => {
@@ -324,63 +638,198 @@ const PropertyMapView = () => {
         return cat;
       })
     }));
-    
+
     alert('✅ Auto-assign completed successfully!');
+  };
+
+  // ==================== INLINE CATEGORY EDITING ====================
+  const handleEditCategory = (category) => {
+    setEditingCategory(category.id);
+    setEditCategoryData({
+      name: category.name,
+      assigned: category.assigned || 0,
+      target_amount: category.target_amount || 0,
+      target_type: category.target_type || 'monthly'
+    });
+  };
+
+
+  const handleSaveCategoryEdit = async (categoryId) => {
+    if (!editCategoryData.name.trim()) return;
+
+    try {
+      // Update local state first
+      setBudgetData(prev => ({
+        ...prev,
+        categories: prev.categories.map(cat =>
+          cat.id === categoryId
+            ? {
+              ...cat,
+              name: editCategoryData.name,
+              assigned: editCategoryData.assigned,
+              target_amount: editCategoryData.target_amount,
+              target_type: editCategoryData.target_type,
+              available: editCategoryData.assigned - (cat.activity || 0),
+            }
+            : cat
+        )
+      }));
+
+      // Save to database - FIXED: Create updates object first
+      if (window.electronAPI?.updateCategory) {
+        // Create the updates object
+        const updates = {
+          name: editCategoryData.name,
+          assigned: editCategoryData.assigned,
+          target_amount: editCategoryData.target_amount,
+          target_type: editCategoryData.target_type
+        };
+
+        console.log('📤 Saving category edit:', { categoryId, updates });
+        console.log('📤 Saving category edit:', { categoryId, updates });
+        console.log('🔍 editCategoryData full object:', editCategoryData);
+        console.log('🔍 updates.assigned value:', updates.assigned);
+        console.log('🔍 typeof updates.assigned:', typeof updates.assigned);
+
+        // Call with two separate parameters: categoryId and updates
+        const result = await window.electronAPI.updateCategory(categoryId, updates);
+        console.log('📥 Update result:', result);
+      }
+
+      // Exit edit mode
+      setEditingCategory(null);
+      setEditCategoryData({
+        name: '',
+        assigned: 0,
+        target_amount: 0,
+        target_type: 'monthly'
+      });
+
+    } catch (error) {
+      console.error('❌ Error updating category:', error);
+      setEditingCategory(null);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingCategory(null);
+    setEditCategoryData({
+      name: '',
+      assigned: 0,
+      target_amount: 0,
+      target_type: 'monthly'
+    });
+  };
+
+  const handleDeleteCategory = async (categoryId) => {
+    if (!confirm('Are you sure you want to delete this category?')) return;
+
+    try {
+      // Remove from local state
+      setBudgetData(prev => ({
+        ...prev,
+        categories: prev.categories.filter(cat => cat.id !== categoryId)
+      }));
+
+      // Delete from database
+      const deleteResult = await window.electronAPI.deleteCategory(categoryId);
+
+      if (deleteResult.success) {
+        console.log('✅ Category deleted successfully');
+      } else {
+        console.error('❌ Failed to delete category');
+        // Optionally reload from DB if delete failed
+        await loadCategoriesFromDB();
+      }
+    } catch (error) {
+      console.error('Error deleting category:', error);
+      alert('Failed to delete category');
+    }
+  };
+
+  // ==================== DATABASE UPDATE FUNCTIONS ====================
+  const updateCategoryAssigned = async (categoryId, newAssigned) => {
+    console.log('📤 Sending update to main process:', { categoryId, newAssigned });
+
+    try {
+      const result = await window.electronAPI.updateCategory(categoryId, {
+        assigned: newAssigned
+      });
+
+      console.log('📥 Response from main process:', result);
+
+      if (!result.success) {
+        console.error('Failed to update category assigned amount:', result.error);
+      } else {
+        console.log('✅ Category updated successfully in DB');
+      }
+    } catch (error) {
+      console.error('❌ Error updating category:', error);
+    }
   };
 
   const handleCreateCategory = async () => {
     if (!newCategoryData.name.trim()) return;
-    
+
     try {
-      const tempId = `temp-cat-${Date.now()}`;
-      const newCategory = {
-        id: tempId,
+      setLoading(true);
+
+      const categoryData = {
         name: newCategoryData.name,
         assigned: newCategoryData.assigned,
-        activity: 0,
-        available: newCategoryData.assigned,
-        groupId: newCategoryData.groupId,
+        group_id: newCategoryData.groupId,
         user_id: userId,
-        priority: 2, // Default priority
-        target_amount: newCategoryData.assigned
+        target_amount: newCategoryData.assigned,
+        target_type: 'monthly',
+        target_date: null
       };
-      
-      setBudgetData(prev => ({
-        ...prev,
-        categories: [...prev.categories, newCategory]
-      }));
-      
-      setShowAddCategoryModal(false);
-      setNewCategoryData({ name: '', assigned: 0, groupId: null });
-      setSelectedGroupForCategory(null);
-      
+
+      // Save to database
+      const result = await window.electronAPI.createCategory(categoryData);
+
+      if (result.success) {
+        // Add the new category to local state with the real ID from database
+        const newCategory = {
+          id: result.data.id, // Use the real ID from database
+          name: categoryData.name,
+          assigned: categoryData.assigned,
+          activity: 0,
+          available: categoryData.assigned,
+          groupId: categoryData.group_id,
+          user_id: userId,
+          priority: 2,
+          target_amount: categoryData.assigned,
+          target_type: 'monthly',
+          target_date: null,
+          progress: categoryData.assigned > 0 ? 100 : 0,
+          last_month_assigned: 0,
+          average_spending: 0
+        };
+
+        setBudgetData(prev => ({
+          ...prev,
+          categories: [...prev.categories, newCategory]
+        }));
+
+        // Also update the categories state if you use it separately
+        setCategories(prev => [...prev, newCategory]);
+
+        // Close modal and reset form
+        setShowAddCategoryModal(false);
+        setNewCategoryData({ name: '', assigned: 0, groupId: null });
+        setSelectedGroupForCategory(null);
+
+        alert('✅ Category created successfully!');
+      } else {
+        alert('❌ Failed to create category: ' + (result.error || 'Unknown error'));
+      }
     } catch (error) {
       console.error('Error creating category:', error);
+      alert('Error creating category: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
-
-  // Inside the component, add:
-const { lastUpdate } = useRealtimeUpdates(['prosperity:updated'], () => {
-    // Refresh data
-    loadCategoryGroups();
-    loadCategories();
-    calculateBudgetSummary();
-});
-
-// Also listen for manual refresh events
-useEffect(() => {
-    const handleRefresh = () => {
-        loadCategoryGroups();
-        loadCategories();
-        calculateBudgetSummary();
-    };
-    
-    window.addEventListener('refresh-prosperity-map', handleRefresh);
-    
-    return () => {
-        window.removeEventListener('refresh-prosperity-map', handleRefresh);
-    };
-}, []);
 
   // Default groups
   const defaultGroups = [
@@ -390,33 +839,194 @@ useEffect(() => {
     { id: 'debt', name: 'Debt' }
   ];
 
-  useEffect(() => {
-    loadCategoryGroups();
-    loadCategories();
-  }, []);
+  // Replace your initialization useEffect with this:
+  // Replace your initialization useEffect (around line 700-730) with this:
 
-  const loadCategoryGroups = async () => {
-    setLoading(true);
+  useEffect(() => {
+    const initializeData = async () => {
+      console.log('🚀 INITIALIZE DATA STARTED for userId:', userId);
+
+      if (!userId) {
+        console.log('⚠️ No userId yet, skipping initialization');
+        return;
+      }
+
+      // Wait longer for session to fully restore
+      console.log('⏳ Waiting for session to stabilize...');
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Increased to 1 second
+
+      try {
+        setLoading(true);
+
+        // Load groups first
+        console.log('📋 Loading category groups for userId:', userId);
+        await loadCategoryGroups();
+
+        // Load categories from DB
+        console.log('📋 Loading categories from DB for userId:', userId);
+        await loadCategoriesFromDB();
+
+        // Set initial cash balance
+        setTotalCashInAccounts(5400);
+
+        setInitialLoadComplete(true);
+        console.log('✅ initializeData completed for userId:', userId);
+      } catch (error) {
+        console.error('❌ Error during initialization:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeData();
+  }, [userId]); // This runs when userId changes (after login)
+  // ==================== LOAD CATEGORIES FROM DATABASE ====================
+  // ==================== LOAD CATEGORIES FROM DATABASE ====================
+  // ==================== LOAD CATEGORIES FROM DATABASE ====================
+  const loadCategoriesFromDB = async (retryCount = 0) => {
+    console.log('📥 ===== loadCategoriesFromDB CALLED ===== (attempt:', retryCount + 1, ')');
+    console.log('📥 Current userId:', userId);
+
+    if (!window.electronAPI?.getCategories) {
+      console.error('❌ electronAPI.getCategories is not available!');
+      return;
+    }
+
+    if (!userId) {
+      console.warn('⚠️ No userId provided to loadCategoriesFromDB');
+      return;
+    }
+
     try {
-      const result = await window.electronAPI.getCategoryGroups(userId);
-      if (result.success) {
-        if (result.data && result.data.length > 0) {
-          setCategoryGroups(result.data);
+      setLoading(true);
+      console.log('📥 Calling getCategories with userId:', userId);
+
+      const result = await window.electronAPI.getCategories(userId);
+      console.log('📥 Raw result:', result);
+
+      // If we got empty data but this is not a retry, try again after a delay
+      if (result && result.success && result.data && result.data.length === 0 && retryCount < 3) {
+        console.log(`⚠️ Got empty data, retrying in 300ms... (attempt ${retryCount + 1}/3)`);
+        setTimeout(() => {
+          loadCategoriesFromDB(retryCount + 1);
+        }, 300);
+        return;
+      }
+
+      // Update budgetData with database results
+      if (result && result.success && result.data) {
+        console.log('✅ Successfully loaded categories from DB:', result.data.length);
+
+        if (result.data.length > 0) {
+          console.log('📋 First category from DB:', result.data[0]);
+
+          // Transform database fields to match your UI structure
+          const dbCategories = result.data.map(cat => ({
+            id: cat.id,
+            name: cat.name,
+            assigned: cat.assigned || 0,
+            activity: cat.activity || 0,
+            available: cat.available || 0,
+            groupId: cat.group_id,
+            user_id: cat.user_id,
+            priority: cat.priority || 2,
+            target_amount: cat.target_amount,
+            target_type: cat.target_type || 'monthly',
+            target_date: cat.target_date,
+            progress: 0, // Will be calculated
+            last_month_assigned: cat.last_month_assigned || 0,
+            average_spending: cat.average_spending || 0
+          }));
+
+          console.log('📋 Transformed categories:', dbCategories.length);
+
+          // Update both budgetData and categories state
+          setBudgetData(prev => ({
+            ...prev,
+            categories: dbCategories
+          }));
+          setCategories(dbCategories);
+
+          console.log('✅ State updated with DB categories:', dbCategories.length);
         } else {
-          setCategoryGroups(defaultGroups);
+          console.warn('⚠️ No categories found in DB or invalid response', result);
+
+          // If no data, set empty array
+          setBudgetData(prev => ({
+            ...prev,
+            categories: []
+          }));
+          setCategories([]);
         }
-      } else {
-        setCategoryGroups(defaultGroups);
       }
     } catch (error) {
-      console.error('Error loading category groups:', error);
-      setCategoryGroups(defaultGroups);
+      console.error('❌ Error loading categories:', error);
     } finally {
       setLoading(false);
     }
   };
 
+
+  // ==================== LOAD CATEGORY GROUPS ====================
+  // Replace your loadCategoryGroups function with this:
+  const loadCategoryGroups = async () => {
+    try {
+      setLoading(true);
+      console.log('📋 Loading category groups for userId:', userId);
+
+      const result = await window.electronAPI.getCategoryGroups(userId);
+      console.log('📋 Category groups result:', result);
+
+      if (result.success && result.data && result.data.length > 0) {
+        // Use groups from database
+        setCategoryGroups(result.data);
+        console.log('✅ Loaded groups from DB:', result.data);
+      } else {
+        // Only create default groups if absolutely no groups exist
+        console.log('⚠️ No groups found in DB, creating defaults...');
+
+        // Create default groups in database
+        const defaultGroups = [
+          { name: 'Fixed Expenses', order: 0 },
+          { name: 'Variable Expenses', order: 1 },
+          { name: 'Savings Goals', order: 2 },
+          { name: 'Debt', order: 3 }
+        ];
+
+        const createdGroups = [];
+        for (const group of defaultGroups) {
+          try {
+            const createResult = await window.electronAPI.createCategoryGroup(
+              userId,
+              group.name,
+              group.order
+            );
+            if (createResult.success && createResult.data) {
+              createdGroups.push(createResult.data);
+            }
+          } catch (err) {
+            console.error('Error creating group:', group.name, err);
+          }
+        }
+
+        if (createdGroups.length > 0) {
+          setCategoryGroups(createdGroups);
+        } else {
+          // Fallback to empty array if creation failed
+          setCategoryGroups([]);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading category groups:', error);
+      setCategoryGroups([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Keep this for backward compatibility but mark as deprecated
   const loadCategories = async () => {
+    console.warn('⚠️ Deprecated: use loadCategoriesFromDB instead');
     try {
       const result = await window.electronAPI.getCategories(userId);
       if (result.success && result.data) {
@@ -433,7 +1043,7 @@ useEffect(() => {
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return;
-    
+
     try {
       const tempId = `temp-${Date.now()}`;
       const newGroup = {
@@ -441,21 +1051,21 @@ useEffect(() => {
         name: newGroupName,
         user_id: userId
       };
-      
+
       setCategoryGroups(prevGroups => [...prevGroups, newGroup]);
       setShowAddGroupModal(false);
       setNewGroupName('');
-      
+
       try {
         const result = await window.electronAPI.createCategoryGroup(
           userId,
           newGroupName,
           categoryGroups.length
         );
-        
+
         if (result.success && result.data) {
-          setCategoryGroups(prevGroups => 
-            prevGroups.map(g => 
+          setCategoryGroups(prevGroups =>
+            prevGroups.map(g =>
               g.id === tempId ? result.data : g
             )
           );
@@ -463,7 +1073,7 @@ useEffect(() => {
       } catch (dbError) {
         console.error('Error saving to database:', dbError);
       }
-      
+
     } catch (error) {
       console.error('Error creating category group:', error);
     }
@@ -487,18 +1097,18 @@ useEffect(() => {
 
   const handleUpdateGroup = async () => {
     if (!editGroupName.trim() || !editingGroup) return;
-    
+
     try {
-      setCategoryGroups(prevGroups => 
-        prevGroups.map(g => 
+      setCategoryGroups(prevGroups =>
+        prevGroups.map(g =>
           g.id === editingGroup.id ? { ...g, name: editGroupName } : g
         )
       );
-      
+
       setShowEditGroupModal(false);
       setEditingGroup(null);
       setEditGroupName('');
-      
+
       try {
         await window.electronAPI.updateCategoryGroup(editingGroup.id, userId, {
           name: editGroupName
@@ -506,7 +1116,7 @@ useEffect(() => {
       } catch (dbError) {
         console.error('Error updating in database:', dbError);
       }
-      
+
     } catch (error) {
       console.error('Error updating category group:', error);
     }
@@ -514,23 +1124,23 @@ useEffect(() => {
 
   const handleDeleteGroup = async (groupId) => {
     if (!confirm('Are you sure you want to delete this group?')) return;
-    
+
     try {
       if (editingGroup && editingGroup.id === groupId) {
         setShowEditGroupModal(false);
         setEditingGroup(null);
         setEditGroupName('');
       }
-      
+
       setCategoryGroups(prevGroups => prevGroups.filter(g => g.id !== groupId));
-      
+
       setBudgetData(prev => ({
         ...prev,
-        categories: prev.categories.map(cat => 
+        categories: prev.categories.map(cat =>
           cat.groupId === groupId ? { ...cat, groupId: null } : cat
         )
       }));
-      
+
       try {
         await window.electronAPI.deleteCategoryGroup(groupId, userId);
       } catch (dbError) {
@@ -549,7 +1159,29 @@ useEffect(() => {
   };
 
   const getCategoriesByGroup = (groupId) => {
-    return budgetData.categories.filter(c => c.groupId === groupId);
+    const filtered = budgetData.categories.filter(c => c.groupId === groupId);
+    return filtered;
+  };
+
+  // ==================== GROUP TOTALS ====================
+  const getGroupTotals = (groupId) => {
+    const groupCategories = getCategoriesByGroup(groupId);
+
+    return {
+      assigned: groupCategories.reduce((sum, cat) => sum + (cat.assigned || 0), 0),
+      activity: groupCategories.reduce((sum, cat) => sum + (cat.activity || 0), 0),
+      available: groupCategories.reduce((sum, cat) => sum + (cat.available || 0), 0),
+      budgeted: groupCategories.reduce((sum, cat) => sum + (cat.assigned || 0), 0),
+      spent: groupCategories.reduce((sum, cat) => sum + Math.abs(cat.activity || 0), 0),
+      underfunded: groupCategories.reduce((sum, cat) => {
+        const targetInfo = calculateTargetProgress(cat);
+        return sum + (targetInfo.needed || 0);
+      }, 0)
+    };
+  };
+
+  const getTargetInfo = (category) => {
+    return calculateTargetProgress(category);
   };
 
   return (
@@ -560,41 +1192,121 @@ useEffect(() => {
         <div style={styles.header}>
           <div style={styles.titleSection}>
             <h1 style={styles.title}>ProspertyMap</h1>
-            <p style={styles.description}>Current month's budget allocation</p>
+            <p style={styles.description}>
+              {selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })} budget allocation
+            </p>
           </div>
-          
-          {/* Unassigned Funds Card */}
+
+          {/* Ready to Assign Card */}
           <div style={styles.unassignedCard}>
             <div style={styles.unassignedIcon}>💰</div>
             <div style={styles.unassignedContent}>
               <div style={styles.unassignedLabel}>Ready to Assign</div>
-              <div style={styles.unassignedValue}>
+              <div style={{
+                ...styles.unassignedValue,
+                color: budgetSummary.unassigned < 0 ? '#F87171' : 'white'
+              }}>
                 {formatCurrency(budgetSummary.unassigned)}
               </div>
               <div style={styles.unassignedSubtext}>
-                Available for {new Date().toLocaleString('default', { month: 'long' })}
+                {budgetSummary.unassigned === 0
+                  ? "Every dollar has a job! 🎯"
+                  : budgetSummary.unassigned < 0
+                    ? `Overspent by ${formatCurrency(Math.abs(budgetSummary.unassigned))}`
+                    : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`
+                }
               </div>
             </div>
           </div>
         </div>
-        
-        {/* Month Selector and Add Group Button */}
+
+        {/* Month Selector, Add Group Button, and Quick Budget Tools */}
         <div style={styles.controlsRow}>
           <div style={styles.monthSelector}>
-            <button style={styles.monthNavButton}>◀</button>
+            <button
+              style={styles.monthNavButton}
+              onClick={() => {
+                const newDate = new Date(selectedMonth);
+                newDate.setMonth(selectedMonth.getMonth() - 1);
+                setSelectedMonth(newDate);
+              }}
+            >
+              ◀
+            </button>
             <span style={styles.currentMonth}>
-              {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}
+              {selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
             </span>
-            <button style={styles.monthNavButton}>▶</button>
+            <button
+              style={styles.monthNavButton}
+              onClick={() => {
+                const newDate = new Date(selectedMonth);
+                newDate.setMonth(selectedMonth.getMonth() + 1);
+                setSelectedMonth(newDate);
+              }}
+            >
+              ▶
+            </button>
           </div>
-          
-          <button 
+
+          <button
             style={styles.addGroupButton}
             onClick={() => setShowAddGroupModal(true)}
           >
             + Add Category Group
           </button>
+
+          {/* Quick Budget Tools */}
+          {budgetSummary.unassigned > 0 && (
+            <div style={styles.quickBudgetTools}>
+              <button
+                onClick={() => handleQuickAssign('underfunded')}
+                style={{
+                  ...styles.quickBudgetButton,
+                  background: '#F59E0B',
+                  color: 'white'
+                }}
+                title="Assign money to underfunded categories"
+              >
+                🎯 Fund Underfunded (${getTotalUnderfunded().toFixed(0)})
+              </button>
+
+              <button
+                onClick={() => handleQuickAssign('last-month')}
+                style={{
+                  ...styles.quickBudgetButton,
+                  background: '#3B82F6',
+                  color: 'white'
+                }}
+              >
+                📅 Last Month's Amount
+              </button>
+
+              <button
+                onClick={() => handleQuickAssign('average')}
+                style={{
+                  ...styles.quickBudgetButton,
+                  background: '#8B5CF6',
+                  color: 'white'
+                }}
+              >
+                📊 Average Spending
+              </button>
+            </div>
+          )}
         </div>
+{/* 
+        <div style={{ marginTop: '10px', padding: '10px', background: '#333' }}>
+          <button
+            onClick={async () => {
+              console.log('🟢 MANUAL TEST: Loading categories...');
+              await loadCategoriesFromDB();
+              console.log('🟢 MANUAL TEST: Complete');
+            }}
+            style={{ background: 'green', color: 'white', padding: '5px 10px' }}
+          >
+            TEST: Load Categories
+          </button>
+        </div> */}
 
         {/* Budget Table */}
         <div style={styles.tableContainer}>
@@ -608,17 +1320,19 @@ useEffect(() => {
                   <th style={styles.tableHeader}>Assigned</th>
                   <th style={styles.tableHeader}>Activity</th>
                   <th style={styles.tableHeader}>Available</th>
+                  <th style={styles.tableHeader}>Progress</th>
+                  <th style={styles.tableHeader}>Goal</th>
                 </tr>
               </thead>
               <tbody>
                 {categoryGroups.map((group) => {
                   const groupCategories = getCategoriesByGroup(group.id);
-                  
+
                   return (
                     <React.Fragment key={group.id}>
                       {/* Category Group Header */}
                       <tr style={styles.categoryGroupRow}>
-                        <td colSpan="4" style={styles.categoryGroupCell}>
+                        <td colSpan="6" style={styles.categoryGroupCell}>
                           <div style={styles.groupHeader}>
                             <span style={styles.categoryGroupName}>
                               {group.name}
@@ -649,34 +1363,286 @@ useEffect(() => {
                           </div>
                         </td>
                       </tr>
-                      
+
                       {/* Categories in this group */}
                       {groupCategories.length > 0 ? (
-                        groupCategories.map((cat) => (
-                          <tr key={cat.id} style={styles.categoryRow}>
-                            <td style={styles.categoryCell}>
-                              <span style={styles.categoryName}>{cat.name}</span>
+                        <>
+                          {groupCategories.map((cat) => {
+                            const targetInfo = getTargetInfo(cat);
+                            const hasTarget = targetInfo.status !== 'no-target';
+                            const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
+                            const isEditing = editingCategory === cat.id;
+
+                            if (isEditing) {
+                              // Render edit mode
+                              return (
+                                <tr key={cat.id} style={{ ...styles.categoryRow, background: '#1a3a5a' }}>
+                                  <td style={styles.categoryCell}>
+                                    <input
+                                      type="text"
+                                      value={editCategoryData.name}
+                                      onChange={(e) => setEditCategoryData({ ...editCategoryData, name: e.target.value })}
+                                      onKeyPress={(e) => {
+                                        if (e.key === 'Enter') {
+                                          handleSaveCategoryEdit(cat.id);
+                                        }
+                                      }}
+                                      style={styles.editInput}
+                                      placeholder="Category name"
+                                      autoFocus
+                                    />
+                                  </td>
+                                  <td style={styles.amountCell}>
+                                    <input
+                                      type="number"
+                                      value={editCategoryData.assigned === 0 ? '' : editCategoryData.assigned}
+                                      onChange={(e) => {
+                                        const value = e.target.value;
+                                        if (value === '') {
+                                          setEditCategoryData({ ...editCategoryData, assigned: 0 });
+                                        } else {
+                                          const numValue = parseFloat(value);
+                                          if (!isNaN(numValue)) {
+                                            setEditCategoryData({ ...editCategoryData, assigned: numValue });
+                                          }
+                                        }
+                                      }}
+                                      onKeyPress={(e) => {
+                                        if (e.key === 'Enter') {
+                                          handleSaveCategoryEdit(cat.id);
+                                        }
+                                      }}
+                                      style={styles.editInput}
+                                      step="0.01"
+                                      min="0"
+                                      placeholder="0.00"
+                                    />
+                                  </td>
+                                  <td style={styles.amountCell}>
+                                    {formatCurrency(cat.activity || 0)}
+                                  </td>
+                                  <td style={styles.amountCell}>
+                                    {formatCurrency(cat.available || 0)}
+                                  </td>
+                                  <td style={styles.progressCell}>
+                                    <select
+                                      value={editCategoryData.target_type}
+                                      onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
+                                      onKeyPress={(e) => {
+                                        if (e.key === 'Enter') {
+                                          handleSaveCategoryEdit(cat.id);
+                                        }
+                                      }}
+                                      style={styles.editSelect}
+                                    >
+                                      <option value="monthly">Monthly</option>
+                                      <option value="balance">Balance</option>
+                                      <option value="by_date">By Date</option>
+                                    </select>
+                                    <input
+                                      type="number"
+                                      value={editCategoryData.target_amount}
+                                      onChange={(e) => setEditCategoryData({ ...editCategoryData, target_amount: parseFloat(e.target.value) || 0 })}
+                                      onKeyPress={(e) => {
+                                        if (e.key === 'Enter') {
+                                          handleSaveCategoryEdit(cat.id);
+                                        }
+                                      }}
+                                      style={{ ...styles.editInput, marginTop: '4px' }}
+                                      placeholder="Target amount"
+                                      step="0.01"
+                                      min="0"
+                                    />
+                                  </td>
+                                  <td style={styles.amountCell}>
+                                    <div style={styles.editActions}>
+                                      <button
+                                        onClick={() => handleSaveCategoryEdit(cat.id)}
+                                        style={styles.saveEditButton}
+                                        title="Save"
+                                      >
+                                        ✅
+                                      </button>
+                                      <button
+                                        onClick={handleCancelEdit}
+                                        style={styles.cancelEditButton}
+                                        title="Cancel"
+                                      >
+                                        ❌
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            // Rest of your view mode code continues here...
+                            // (the original code continues after this point)
+                            // Render view mode
+                            return (
+                              <tr key={cat.id} style={styles.categoryRow}>
+                                <td style={styles.categoryCell}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                    <span style={styles.categoryName}>{cat.name}</span>
+
+                                    {/* Add Edit/Delete buttons */}
+                                    <div style={styles.categoryActions}>
+                                      <button
+                                        onClick={() => handleEditCategory(cat)}
+                                        style={styles.editCategoryButton}
+                                        title="Edit category"
+                                      >
+                                        ✏️
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteCategory(cat.id)}
+                                        style={styles.deleteCategoryButton}
+                                        title="Delete category"
+                                      >
+                                        🗑️
+                                      </button>
+                                    </div>
+
+                                    {/* Goal Link Indicator */}
+                                    {cat.linked_goal && (
+                                      <span
+                                        style={{
+                                          ...styles.goalBadge,
+                                          background: cat.linked_goal.progress >= 100 ? '#10B98120' : '#F59E0B20',
+                                          color: cat.linked_goal.progress >= 100 ? '#10B981' : '#F59E0B'
+                                        }}
+                                        title={`Goal: ${formatCurrency(cat.linked_goal.target_amount)} - ${cat.linked_goal.progress.toFixed(0)}% complete`}
+                                      >
+                                        🎯 Goal
+                                        {cat.linked_goal.target_type === 'monthly' && ' (Monthly)'}
+                                      </span>
+                                    )}
+
+                                    {/* Target Indicator */}
+                                    {hasTarget && (
+                                      <span
+                                        style={{
+                                          ...styles.targetIndicator,
+                                          color: targetInfo.status === 'funded' || targetInfo.status === 'completed'
+                                            ? '#10B981'
+                                            : targetInfo.status === 'partial' || targetInfo.status === 'in-progress'
+                                              ? '#F59E0B'
+                                              : '#9CA3AF'
+                                        }}
+                                        title={
+                                          targetInfo.status === 'funded' ? 'Monthly target fully funded' :
+                                            targetInfo.status === 'completed' ? 'Goal completed!' :
+                                              targetInfo.status === 'partial' ? `$${targetInfo.needed.toFixed(2)} more needed this month` :
+                                                targetInfo.status === 'in-progress' ? `${targetInfo.progress.toFixed(0)}% toward goal` :
+                                                  'Target not started'
+                                        }
+                                      >
+                                        {targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td style={styles.amountCell}>
+                                  {formatCurrency(cat.assigned || 0)}
+                                  {isUnderfunded && (
+                                    <div style={{ fontSize: '11px', color: '#F59E0B', marginTop: '2px' }}>
+                                      Need ${targetInfo.needed.toFixed(0)} more
+                                    </div>
+                                  )}
+                                </td>
+
+                                <td style={{
+                                  ...styles.amountCell,
+                                  color: (cat.activity || 0) < 0 ? '#F87171' : '#4ADE80'
+                                }}>
+                                  {formatCurrency(cat.activity || 0)}
+                                </td>
+
+                                <td style={{
+                                  ...styles.amountCell,
+                                  color: (cat.available || 0) < 0 ? '#F87171' : '#4ADE80'
+                                }}>
+                                  {formatCurrency(cat.available || 0)}
+                                  {cat.target_type === 'balance' && targetInfo.progress > 0 && (
+                                    <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '2px' }}>
+                                      {targetInfo.progress.toFixed(0)}% of goal
+                                    </div>
+                                  )}
+                                </td>
+
+                                <td style={styles.progressCell}>
+                                  <div style={styles.progressBarContainer}>
+                                    <div
+                                      style={{
+                                        ...styles.progressBarFill,
+                                        width: `${cat.progress || 0}%`,
+                                        backgroundColor: cat.progress >= 100 ? '#10B981' : '#3B82F6'
+                                      }}
+                                    />
+                                    <span style={styles.progressText}>
+                                      {cat.progress || 0}%
+                                    </span>
+                                  </div>
+                                </td>
+
+                                {/* Goal Progress Column */}
+                                <td style={styles.amountCell}>
+                                  {cat.linked_goal ? (
+                                    <div>
+                                      <div style={{ fontSize: '13px', fontWeight: 'bold' }}>
+                                        {formatCurrency(cat.linked_goal.current_amount)} / {formatCurrency(cat.linked_goal.target_amount)}
+                                      </div>
+                                      <div style={{
+                                        width: '80px',
+                                        height: '4px',
+                                        background: '#374151',
+                                        borderRadius: '2px',
+                                        marginTop: '4px',
+                                        overflow: 'hidden'
+                                      }}>
+                                        <div style={{
+                                          width: `${Math.min(cat.linked_goal.progress, 100)}%`,
+                                          height: '100%',
+                                          background: cat.linked_goal.progress >= 100 ? '#10B981' : '#3B82F6'
+                                        }} />
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <span style={{ color: '#6B7280', fontSize: '12px' }}>—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                          {/* Group Total Row */}
+                          <tr style={styles.groupTotalRow}>
+                            <td style={styles.groupTotalCell}>
+                              <strong>{group.name} Total</strong>
                             </td>
-                            <td style={styles.amountCell}>
-                              {formatCurrency(cat.assigned || 0)}
+                            <td style={styles.groupTotalAmount}>
+                              <strong>{formatCurrency(getGroupTotals(group.id).assigned)}</strong>
                             </td>
-                            <td style={{
-                              ...styles.amountCell,
-                              color: (cat.activity || 0) < 0 ? '#F87171' : '#4ADE80'
-                            }}>
-                              {formatCurrency(cat.activity || 0)}
+                            <td style={styles.groupTotalAmount}>
+                              <strong style={{ color: getGroupTotals(group.id).activity < 0 ? '#F87171' : '#4ADE80' }}>
+                                {formatCurrency(getGroupTotals(group.id).activity)}
+                              </strong>
                             </td>
-                            <td style={{
-                              ...styles.amountCell,
-                              color: (cat.available || 0) < 0 ? '#F87171' : '#4ADE80'
-                            }}>
-                              {formatCurrency(cat.available || 0)}
+                            <td style={styles.groupTotalAmount}>
+                              <strong style={{ color: getGroupTotals(group.id).available < 0 ? '#F87171' : '#4ADE80' }}>
+                                {formatCurrency(getGroupTotals(group.id).available)}
+                              </strong>
                             </td>
+                            <td style={styles.groupTotalCell}>
+                              <strong>{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</strong>
+                            </td>
+                            <td style={styles.groupTotalCell}>—</td>
                           </tr>
-                        ))
+                        </>
                       ) : (
                         <tr style={styles.emptyGroupRow}>
-                          <td colSpan="4" style={styles.emptyGroupCell}>
+                          <td colSpan="6" style={styles.emptyGroupCell}>
                             No categories in this group
                           </td>
                         </tr>
@@ -697,6 +1663,8 @@ useEffect(() => {
                   <td style={styles.totalAmount}>
                     {formatCurrency(budgetData.categories.reduce((sum, cat) => sum + (cat.available || 0), 0))}
                   </td>
+                  <td style={styles.totalCell}>—</td>
+                  <td style={styles.totalCell}>—</td>
                 </tr>
               </tbody>
             </table>
@@ -704,31 +1672,34 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* Right side - Summary View with Smart Auto-Assign */}
+      {/* Right side - Summary View */}
       <div style={styles.rightColumn}>
-        <SummaryView 
+        <SummaryView
           totalAvailable={budgetSummary.totalAvailable}
           totalActivity={budgetSummary.totalActivity}
           totalAssigned={budgetSummary.totalAssigned}
           unassigned={budgetSummary.unassigned}
           categories={budgetData.categories}
           onAutoAssign={handleAutoAssign}
+          underfundedTotal={getTotalUnderfunded()}
         />
-        
-        <AutoAssignView 
+        <div style={{ color: "#F87171", marginTop: 8 }}>
+          Underfunded: {formatCurrency(getTotalUnderfunded())}
+        </div>
+        <AutoAssignView
           readyToAssign={budgetSummary.unassigned}
+          underfundedTotal={getTotalUnderfunded()}
+          underfundedCategories={calculateUnderfundedCategories()}
         />
-        
-        <FutureMonthsView 
+
+        <FutureMonthsView
           futureAssignments={2340.50}
           nextMonthTarget={5000}
           monthsAhead={1.5}
         />
       </div>
 
-      {/* ================ MODALS ================ */}
-
-      {/* Add Income Modal */}
+      {/* Modals - Keep existing modal JSX */}
       {showAddIncomeModal && (
         <div style={styles.modalOverlay} onClick={() => setShowAddIncomeModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -739,7 +1710,7 @@ useEffect(() => {
                 type="number"
                 style={styles.input}
                 value={incomeData.amount}
-                onChange={(e) => setIncomeData({...incomeData, amount: e.target.value})}
+                onChange={(e) => setIncomeData({ ...incomeData, amount: e.target.value })}
                 placeholder="0.00"
                 step="0.01"
                 min="0"
@@ -752,7 +1723,7 @@ useEffect(() => {
                 type="date"
                 style={styles.input}
                 value={incomeData.date}
-                onChange={(e) => setIncomeData({...incomeData, date: e.target.value})}
+                onChange={(e) => setIncomeData({ ...incomeData, date: e.target.value })}
               />
             </div>
             <div style={styles.formGroup}>
@@ -761,18 +1732,18 @@ useEffect(() => {
                 type="text"
                 style={styles.input}
                 value={incomeData.memo}
-                onChange={(e) => setIncomeData({...incomeData, memo: e.target.value})}
+                onChange={(e) => setIncomeData({ ...incomeData, memo: e.target.value })}
                 placeholder="e.g., Paycheck, Gift, etc."
               />
             </div>
             <div style={styles.modalActions}>
-              <button 
+              <button
                 style={styles.saveButton}
                 onClick={handleAddIncome}
               >
                 Add Income
               </button>
-              <button 
+              <button
                 style={styles.cancelButton}
                 onClick={() => setShowAddIncomeModal(false)}
               >
@@ -783,7 +1754,6 @@ useEffect(() => {
         </div>
       )}
 
-      {/* Record Payment Modal */}
       {showRecordPaymentModal && (
         <div style={styles.modalOverlay} onClick={() => setShowRecordPaymentModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -794,7 +1764,7 @@ useEffect(() => {
                 type="number"
                 style={styles.input}
                 value={paymentData.amount}
-                onChange={(e) => setPaymentData({...paymentData, amount: e.target.value})}
+                onChange={(e) => setPaymentData({ ...paymentData, amount: e.target.value })}
                 placeholder="0.00"
                 step="0.01"
                 min="0"
@@ -806,7 +1776,7 @@ useEffect(() => {
               <select
                 style={styles.select}
                 value={paymentData.categoryId}
-                onChange={(e) => setPaymentData({...paymentData, categoryId: e.target.value})}
+                onChange={(e) => setPaymentData({ ...paymentData, categoryId: e.target.value })}
               >
                 <option value="">Select a category</option>
                 {budgetData.categories.map(cat => (
@@ -822,7 +1792,7 @@ useEffect(() => {
                 type="text"
                 style={styles.input}
                 value={paymentData.payee}
-                onChange={(e) => setPaymentData({...paymentData, payee: e.target.value})}
+                onChange={(e) => setPaymentData({ ...paymentData, payee: e.target.value })}
                 placeholder="Who did you pay?"
               />
             </div>
@@ -832,7 +1802,7 @@ useEffect(() => {
                 type="date"
                 style={styles.input}
                 value={paymentData.date}
-                onChange={(e) => setPaymentData({...paymentData, date: e.target.value})}
+                onChange={(e) => setPaymentData({ ...paymentData, date: e.target.value })}
               />
             </div>
             <div style={styles.formGroup}>
@@ -841,18 +1811,18 @@ useEffect(() => {
                 type="text"
                 style={styles.input}
                 value={paymentData.memo}
-                onChange={(e) => setPaymentData({...paymentData, memo: e.target.value})}
+                onChange={(e) => setPaymentData({ ...paymentData, memo: e.target.value })}
                 placeholder="Additional notes"
               />
             </div>
             <div style={styles.modalActions}>
-              <button 
+              <button
                 style={styles.saveButton}
                 onClick={handleRecordPayment}
               >
                 Record Payment
               </button>
-              <button 
+              <button
                 style={styles.cancelButton}
                 onClick={() => setShowRecordPaymentModal(false)}
               >
@@ -863,7 +1833,138 @@ useEffect(() => {
         </div>
       )}
 
-      {/* Move Money Modal */}
+      {showAddCategoryModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowAddCategoryModal(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Add Category to {selectedGroupForCategory?.name}</h3>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Category Name</label>
+              <input
+                type="text"
+                style={styles.input}
+                value={newCategoryData.name}
+                onChange={(e) => setNewCategoryData({ ...newCategoryData, name: e.target.value })}
+                placeholder="e.g., Rent, Groceries, etc."
+                autoFocus
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Initial Assigned Amount</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={newCategoryData.assigned === 0 ? '' : newCategoryData.assigned}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === '') {
+                    setNewCategoryData({ ...newCategoryData, assigned: 0 });
+                  } else {
+                    const numValue = parseFloat(value);
+                    if (!isNaN(numValue)) {
+                      setNewCategoryData({ ...newCategoryData, assigned: numValue });
+                    }
+                  }
+                }}
+                placeholder="0"
+                min="0"
+                step="1"
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button
+                style={styles.saveButton}
+                onClick={handleCreateCategory}
+              >
+                Create Category
+              </button>
+              <button
+                style={styles.cancelButton}
+                onClick={() => {
+                  setShowAddCategoryModal(false);
+                  setSelectedGroupForCategory(null);
+                  setNewCategoryData({ name: '', assigned: 0, groupId: null });
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEditGroupModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowEditGroupModal(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Edit Category Group</h3>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Group Name</label>
+              <input
+                type="text"
+                style={styles.input}
+                value={editGroupName}
+                onChange={(e) => setEditGroupName(e.target.value)}
+                placeholder="Enter group name"
+                autoFocus
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button
+                style={styles.saveButton}
+                onClick={handleUpdateGroup}
+              >
+                Update Group
+              </button>
+              <button
+                style={styles.cancelButton}
+                onClick={() => {
+                  setShowEditGroupModal(false);
+                  setEditingGroup(null);
+                  setEditGroupName('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddGroupModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowAddGroupModal(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Add Category Group</h3>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Group Name</label>
+              <input
+                type="text"
+                style={styles.input}
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                placeholder="e.g., Fixed Expenses, Savings, etc."
+                autoFocus
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button
+                style={styles.saveButton}
+                onClick={handleCreateGroup}
+              >
+                Create Group
+              </button>
+              <button
+                style={styles.cancelButton}
+                onClick={() => {
+                  setShowAddGroupModal(false);
+                  setNewGroupName('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showMoveMoneyModal && (
         <div style={styles.modalOverlay} onClick={() => setShowMoveMoneyModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -874,7 +1975,7 @@ useEffect(() => {
                 type="number"
                 style={styles.input}
                 value={moveMoneyData.amount}
-                onChange={(e) => setMoveMoneyData({...moveMoneyData, amount: e.target.value})}
+                onChange={(e) => setMoveMoneyData({ ...moveMoneyData, amount: e.target.value })}
                 placeholder="0.00"
                 step="0.01"
                 min="0"
@@ -886,7 +1987,7 @@ useEffect(() => {
               <select
                 style={styles.select}
                 value={moveMoneyData.fromCategoryId}
-                onChange={(e) => setMoveMoneyData({...moveMoneyData, fromCategoryId: e.target.value})}
+                onChange={(e) => setMoveMoneyData({ ...moveMoneyData, fromCategoryId: e.target.value })}
               >
                 <option value="">Select source category</option>
                 {budgetData.categories
@@ -903,7 +2004,7 @@ useEffect(() => {
               <select
                 style={styles.select}
                 value={moveMoneyData.toCategoryId}
-                onChange={(e) => setMoveMoneyData({...moveMoneyData, toCategoryId: e.target.value})}
+                onChange={(e) => setMoveMoneyData({ ...moveMoneyData, toCategoryId: e.target.value })}
               >
                 <option value="">Select destination category</option>
                 {budgetData.categories
@@ -916,13 +2017,13 @@ useEffect(() => {
               </select>
             </div>
             <div style={styles.modalActions}>
-              <button 
+              <button
                 style={styles.saveButton}
                 onClick={handleMoveMoney}
               >
                 Move Money
               </button>
-              <button 
+              <button
                 style={styles.cancelButton}
                 onClick={() => setShowMoveMoneyModal(false)}
               >
@@ -1016,7 +2117,9 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: '2rem'
+    marginBottom: '2rem',
+    gap: '1rem',
+    flexWrap: 'wrap'
   },
   monthSelector: {
     display: 'flex',
@@ -1054,8 +2157,26 @@ const styles = {
       color: 'white'
     }
   },
+  quickBudgetTools: {
+    display: 'flex',
+    gap: '0.5rem',
+    marginLeft: 'auto'
+  },
+  quickBudgetButton: {
+    padding: '0.5rem 1rem',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.85rem',
+    fontWeight: '500',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    ':hover': {
+      transform: 'translateY(-2px)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+    }
+  },
   tableContainer: {
-    background: '#0f2e1c',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     overflow: 'hidden',
     border: '1px solid #374151'
@@ -1065,20 +2186,20 @@ const styles = {
     borderCollapse: 'collapse'
   },
   tableHead: {
-    background: '#0f2e1c'
+    background: '#0F2B7A'
   },
   tableHeader: {
     padding: '1rem',
     textAlign: 'left',
-    color: '#9CA3AF',
+    color: '#FFFFFF',
     fontWeight: '500',
     fontSize: '0.875rem',
     borderBottom: '2px solid #374151'
   },
   categoryGroupRow: {
-    background: '#065f46',
-    borderTop: '1px solid #047857',
-    borderBottom: '1px solid #047857'
+    background: '#0A2472',
+    borderTop: '1px solid #000000',
+    borderBottom: '1px solid #000000'
   },
   categoryGroupCell: {
     padding: '0.75rem 1rem'
@@ -1143,7 +2264,7 @@ const styles = {
     }
   },
   categoryRow: {
-    borderBottom: '1px solid #374151'
+    borderBottom: '1px solid #000000'
   },
   categoryCell: {
     padding: '0.75rem 1rem',
@@ -1157,8 +2278,37 @@ const styles = {
     color: 'white',
     fontWeight: '500'
   },
+  progressCell: {
+    padding: '0.75rem 1rem',
+    minWidth: '100px'
+  },
+  progressBarContainer: {
+    position: 'relative',
+    height: '20px',
+    background: '#374151',
+    borderRadius: '10px',
+    overflow: 'hidden'
+  },
+  progressBarFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    height: '100%',
+    transition: 'width 0.3s ease'
+  },
+  progressText: {
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    fontSize: '0.75rem',
+    fontWeight: '600',
+    color: 'white',
+    zIndex: 1
+  },
   emptyGroupRow: {
-    background: '#0f2e1c'
+    background: '#0F2B7A'
   },
   emptyGroupCell: {
     padding: '1rem',
@@ -1167,8 +2317,8 @@ const styles = {
     fontStyle: 'italic'
   },
   totalRow: {
-    background: '#0f2e1c',
-    borderTop: '2px solid #0f2e1c'
+    background: '#0F2B7A',
+    borderTop: '2px solid #000000'
   },
   totalCell: {
     padding: '1rem',
@@ -1177,7 +2327,7 @@ const styles = {
   },
   totalAmount: {
     padding: '1rem',
-    color: 'white',
+    color: '#FFFFFF',
     fontWeight: '600'
   },
   rightColumn: {
@@ -1205,7 +2355,7 @@ const styles = {
     zIndex: 1000
   },
   modalContent: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '2rem',
     borderRadius: '1rem',
     width: '90%',
@@ -1233,7 +2383,7 @@ const styles = {
   input: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1243,7 +2393,7 @@ const styles = {
   select: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1323,6 +2473,119 @@ const styles = {
     fontSize: '0.8rem',
     color: '#9CA3AF',
     textAlign: 'center'
+  },
+  targetIndicator: {
+    fontSize: '1rem',
+    cursor: 'help',
+    width: '20px',
+    display: 'inline-block'
+  },
+  goalBadge: {
+    fontSize: '0.75rem',
+    padding: '2px 6px',
+    borderRadius: '4px',
+    fontWeight: '500'
+  },
+  groupTotalRow: {
+    background: '#0A2472',
+    borderTop: '2px solid #000000',
+    borderBottom: '2px solid #000000',
+    fontWeight: 'bold'
+  },
+  groupTotalCell: {
+    padding: '0.75rem 1rem',
+    color: 'white',
+    fontSize: '0.9rem'
+  },
+  groupTotalAmount: {
+    padding: '0.75rem 1rem',
+    color: 'white',
+    fontSize: '0.9rem',
+    fontWeight: 'bold'
+  },
+  // New styles for category editing
+  categoryActions: {
+    display: 'flex',
+    gap: '4px',
+    marginLeft: '4px'
+  },
+  editCategoryButton: {
+    background: 'none',
+    border: 'none',
+    color: '#9CA3AF',
+    fontSize: '0.9rem',
+    cursor: 'pointer',
+    padding: '2px 4px',
+    borderRadius: '4px',
+    transition: 'all 0.2s ease',
+    ':hover': {
+      background: 'rgba(255, 255, 255, 0.1)',
+      color: 'white'
+    }
+  },
+  deleteCategoryButton: {
+    background: 'none',
+    border: 'none',
+    color: '#9CA3AF',
+    fontSize: '0.9rem',
+    cursor: 'pointer',
+    padding: '2px 4px',
+    borderRadius: '4px',
+    transition: 'all 0.2s ease',
+    ':hover': {
+      background: 'rgba(239, 68, 68, 0.2)',
+      color: '#EF4444'
+    }
+  },
+  editInput: {
+    width: '100%',
+    padding: '4px 8px',
+    background: '#0047AB',
+    border: '1px solid #3B82F6',
+    borderRadius: '4px',
+    color: 'white',
+    fontSize: '0.9rem'
+  },
+  editSelect: {
+    width: '100%',
+    padding: '4px 8px',
+    background: '#0047AB',
+    border: '1px solid #3B82F6',
+    borderRadius: '4px',
+    color: 'white',
+    fontSize: '0.9rem',
+    marginBottom: '4px'
+  },
+  editActions: {
+    display: 'flex',
+    gap: '8px',
+    justifyContent: 'center'
+  },
+  saveEditButton: {
+    background: 'none',
+    border: 'none',
+    fontSize: '1.2rem',
+    cursor: 'pointer',
+    padding: '4px',
+    borderRadius: '4px',
+    transition: 'all 0.2s ease',
+    ':hover': {
+      background: 'rgba(16, 185, 129, 0.2)',
+      transform: 'scale(1.1)'
+    }
+  },
+  cancelEditButton: {
+    background: 'none',
+    border: 'none',
+    fontSize: '1.2rem',
+    cursor: 'pointer',
+    padding: '4px',
+    borderRadius: '4px',
+    transition: 'all 0.2s ease',
+    ':hover': {
+      background: 'rgba(239, 68, 68, 0.2)',
+      transform: 'scale(1.1)'
+    }
   }
 };
 

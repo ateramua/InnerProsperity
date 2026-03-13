@@ -27,6 +27,12 @@ const AutoAssignView = ({ readyToAssign = 1250.57 }) => {
     setShowPreview(true);
   };
 
+  const handleApply = () => {
+    // This would trigger the actual auto-assign logic
+    console.log(`Applying ${selectedStrategy} strategy`);
+    // You would call a parent callback here
+  };
+
   // Debug: confirm rendering
   console.log('🔥🔥🔥 AutoAssignView is DEFINITELY rendering!');
 
@@ -81,7 +87,12 @@ const AutoAssignView = ({ readyToAssign = 1250.57 }) => {
               <div style={styles.previewContainer}>
                 <div style={styles.previewHeader}>
                   <span style={styles.previewTitle}>Auto-Assign Preview</span>
-                  <button style={styles.applyButton}>Apply</button>
+                  <button 
+                    style={styles.applyButton} 
+                    onClick={handleApply}
+                  >
+                    Apply
+                  </button>
                 </div>
 
                 {/* Quality of Life Header */}

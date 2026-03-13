@@ -1,5 +1,5 @@
 // src/shared/test-budget.js
-import BudgetEngine from './budgetEngine.js';
+import BudgetEngine from './budgetEngine.mjs';
 
 const budgetEngine = new BudgetEngine();
 
