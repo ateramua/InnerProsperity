@@ -464,8 +464,8 @@ const SummaryView = ({
                   key={strategy.id}
                   style={{
                     ...styles.strategyCard,
-                    borderColor: selectedStrategy === strategy.id ? strategy.color : '#374151',
-                    background: selectedStrategy === strategy.id ? `${strategy.color}20` : '#111827'
+                    borderColor: selectedStrategy === strategy.id ? strategy.color : '#0A2472',
+                    background: selectedStrategy === strategy.id ? `${strategy.color}20` : '#0A2472'
                   }}
                   onClick={() => handleStrategySelect(strategy.id)}
                 >
@@ -624,9 +624,9 @@ const styles = {
     alignItems: 'center',
     gap: '1rem',
     padding: '1rem',
-    background: '#000000',
+    background: '#0A2472',
     borderRadius: '0.75rem',
-    border: '1px solid #000000'
+    border: '1px solid #0A2472'
   },
   metricIcon: {
     fontSize: '2rem'
@@ -660,7 +660,7 @@ const styles = {
   },
   progressTitle: {
     fontSize: '0.875rem',
-    color: '#000000'
+    color: '#0A2472'
   },
   progressPercentage: {
     fontSize: '0.875rem',
@@ -669,7 +669,7 @@ const styles = {
   },
   progressBarBackground: {
     height: '8px',
-    background: '#000000',
+    background: '#0A2472',
     borderRadius: '4px',
     overflow: 'hidden'
   },
@@ -686,7 +686,7 @@ const styles = {
   },
   statItem: {
     padding: '0.75rem',
-    background: '#000000',
+    background: '#0A2472',
     borderRadius: '0.5rem',
     textAlign: 'center'
   },
@@ -703,7 +703,7 @@ const styles = {
   },
   autoAssignSection: {
     marginBottom: '1.5rem',
-    background: '#0f2e1c',
+    background: '#0A2472',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
     overflow: 'hidden'
@@ -713,8 +713,8 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '1rem',
-    background: '#0f2e1c',
-    borderBottom: '1px solid #374151',
+    background: '#0A2472',
+    borderBottom: '1px solid #0A2472',
     cursor: 'pointer'
   },
   autoAssignTitle: {
@@ -724,7 +724,7 @@ const styles = {
     margin: 0
   },
   autoAssignToggle: {
-    background: 'none',
+    background: '#0A2472',
     border: 'none',
     color: '#9CA3AF',
     fontSize: '0.9rem',
@@ -883,7 +883,7 @@ const styles = {
     gap: '0.75rem',
     width: '100%',
     padding: '0.75rem',
-    background: '#0f2e1c',
+    background: '#0A2472',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
