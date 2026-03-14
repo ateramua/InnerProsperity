@@ -5,7 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import Sidebar from '../components/Navigation/Sidebar';
+import Sidebar from '../../components/Navigation/Sidebar';
 
 export default function AccountsDashboard() {
     const router = useRouter();

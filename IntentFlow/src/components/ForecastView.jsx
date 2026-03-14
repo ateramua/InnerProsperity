@@ -309,7 +309,7 @@ const styles = {
     gap: '0.5rem',
     marginBottom: '1rem',
     padding: '0.25rem',
-    background: '#1F2937',
+    background: '#0A2472',
     borderRadius: '0.5rem',
     border: '1px solid #374151'
   },
@@ -334,14 +334,14 @@ const styles = {
     gap: '0.5rem',
     marginBottom: '1.5rem',
     padding: '0.25rem',
-    background: '#1F2937',
+    background: '#0A2472',
     borderRadius: '0.5rem',
     border: '1px solid #374151'
   },
   metricButton: {
     flex: 1,
     padding: '0.5rem',
-    background: 'none',
+    background: '#0A2472',
     border: 'none',
     color: '#9CA3AF',
     fontSize: '0.875rem',
@@ -353,7 +353,7 @@ const styles = {
     color: 'white'
   },
   forecastContainer: {
-    background: '#1F2937',
+    background: '#0A2472',
     borderRadius: '0.75rem',
     padding: '1.5rem',
     border: '1px solid #374151',
@@ -364,7 +364,7 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '1rem',
-    background: '#111827',
+    background: '#0A2472',
     borderRadius: '0.5rem',
     marginBottom: '1.5rem'
   },

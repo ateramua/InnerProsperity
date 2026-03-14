@@ -3,23 +3,34 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs');
+// Add this near the top with your other requires
+const { app } = require('electron');
 
-async function runMigrations() {
-    const dbPath = path.join(__dirname, '..', 'data', 'app.db');
-    console.log('🚀 Starting IntentFlow migrations...');
-    console.log('📂 Database path:', dbPath);
+async function runMigrations(existingDb) {
+    let db = existingDb;
+    let shouldCloseDb = false;
+    
+    // If no database provided, create one (for CLI usage)
+    if (!db) {
+        const dbPath = path.join(__dirname, '..', 'data', 'app.db');
+        console.log('🚀 Starting IntentFlow migrations...');
+        console.log('📂 Database path:', dbPath);
 
-    // Ensure the data directory exists
-    const dataDir = path.join(__dirname, '..', 'data');
-    if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-        console.log('📁 Created data directory');
+        // Ensure the data directory exists
+        const dataDir = path.join(__dirname, '..', 'data');
+        if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
+            console.log('📁 Created data directory');
+        }
+
+        db = await open({
+            filename: dbPath,
+            driver: sqlite3.Database
+        });
+        shouldCloseDb = true;
+    } else {
+        console.log('🚀 Running migrations on existing database connection...');
     }
-
-    const db = await open({
-        filename: dbPath,
-        driver: sqlite3.Database
-    });
 
     try {
         // Enable foreign keys
@@ -61,20 +72,17 @@ async function runMigrations() {
             console.log(`📦 Running migration: ${migration}`);
 
             try {
+                const migrationPath = path.join(__dirname, migration);
+                if (!fs.existsSync(migrationPath)) {
+                    throw new Error(`Migration file not found: ${migrationPath}`);
+                }
+
                 if (migration.endsWith('.sql')) {
                     // Run SQL migration
-                    const sqlPath = path.join(__dirname, migration);
-                    if (!fs.existsSync(sqlPath)) {
-                        throw new Error(`Migration file not found: ${sqlPath}`);
-                    }
-                    const sql = fs.readFileSync(sqlPath, 'utf8');
+                    const sql = fs.readFileSync(migrationPath, 'utf8');
                     await db.exec(sql);
                 } else {
                     // Run JS migration
-                    const migrationPath = path.join(__dirname, migration);
-                    if (!fs.existsSync(migrationPath)) {
-                        throw new Error(`Migration file not found: ${migrationPath}`);
-                    }
                     const migrationModule = require(migrationPath);
                     await migrationModule(db);
                 }
@@ -107,9 +115,13 @@ async function runMigrations() {
         console.error('❌ Migration failed:', error);
         throw error;
     } finally {
-        await db.close();
+        if (shouldCloseDb) {
+            await db.close();
+        }
     }
 }
+
+if(require.main === module) {
 
 // Handle reset flag
 if (process.argv.includes('--reset')) {
@@ -178,3 +190,7 @@ if (process.argv.includes('--reset')) {
         .then(() => process.exit(0))
         .catch(() => process.exit(1));
 }
+}
+
+// At the very bottom of the file, add:
+module.exports = { runMigrations };

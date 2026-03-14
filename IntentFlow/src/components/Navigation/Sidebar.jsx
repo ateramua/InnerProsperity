@@ -3,21 +3,17 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../../contexts/AuthContext';
 
+
 const Sidebar = ({ onNavigate, currentView }) => {
     const [expandedSection, setExpandedSection] = useState(null);
     const router = useRouter();
     const { logout } = useAuth();
 
-    // Sample account data
+    // Account data - all arrays start empty (will be populated from database)
     const accounts = {
-        cash: [
-            { id: 'test4', name: 'Checking', type: 'checking', balance: 3450.89 },
-            { id: 'test5', name: 'Savings', type: 'savings', balance: 5200.00 }
-        ],
-        credit: [
-            { id: 'test6', name: 'Credit Card', type: 'credit', balance: -450.32 }
-        ],
-        loans: []
+        cash: [],      // Will be populated from database
+        credit: [],    // Will be populated from database
+        loans: []      // Will be populated from database
     };
 
     const navigationItems = [
@@ -52,7 +48,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
             description: 'All transactions'
         },
         {
-            id: 'forecast',  // ← ADD THIS NEW ITEM
+            id: 'forecast',
             label: 'Forecast',
             icon: '📈',
             description: 'Smart financial predictions'
@@ -65,34 +61,148 @@ const Sidebar = ({ onNavigate, currentView }) => {
             accounts: accounts.cash
         },
         {
+            id: 'cashflow',
+            label: 'Cash Flow',
+            icon: '💰',
+            description: 'Complete cash flow picture'
+        },
+        {
+            id: 'cashflow-forecast',
+            label: 'Cash Flow Forecast',
+            icon: '📈',
+            description: 'Project your future cash position'
+        },
+        {
+    id: 'investments',
+    label: 'Investments',
+    icon: '📈',
+    description: 'Track and manage your investment portfolio'
+},
+        {
             id: 'creditCards',
             label: 'Credit Cards',
             icon: '💳',
             description: 'Credit card accounts',
-            accounts: accounts.credit
+            hasSubItems: true,
+            isExpandable: true,
+            subItems: [
+                {
+                    id: 'credit-dashboard',
+                    label: 'Dashboard',
+                    icon: '📊',
+                    description: 'Overview of all cards',
+                    action: 'dashboard'
+                },
+                {
+                    id: 'credit-planner',
+                    label: 'Planner',
+                    icon: '📈',
+                    description: 'Payment strategies',
+                    action: 'planner'
+                },
+                {
+                    id: 'credit-add',
+                    label: 'Add Credit Card',
+                    icon: '➕',
+                    description: 'Add new credit card',
+                    action: 'add'
+                },
+                { type: 'divider' },
+                // Credit accounts will be populated from database
+                ...(accounts.credit && accounts.credit.length > 0
+                    ? accounts.credit.map(account => ({
+                        id: `account-${account.id}`,
+                        label: account.name,
+                        icon: '💳',
+                        balance: account.balance,
+                        isAccount: true,
+                        accountId: account.id,
+                        type: 'account',
+                        institution: account.institution
+                    }))
+                    : [])
+            ]
         },
         {
             id: 'loans',
             label: 'Loans',
             icon: '🏦',
             description: 'Loan accounts',
-            accounts: accounts.loans
+            hasSubItems: true,
+            isExpandable: true,
+            subItems: [
+                {
+                    id: 'loan-dashboard',
+                    label: 'Dashboard',
+                    icon: '📊',
+                    description: 'Overview of all loans',
+                    action: 'dashboard'
+                },
+                {
+                    id: 'loan-strategist',
+                    label: 'Loan Strategist',
+                    icon: '📈',
+                    description: 'Loan repayment optimization',
+                    action: 'strategist'
+                },
+                {
+                    id: 'loan-add',
+                    label: 'Add Loan',
+                    icon: '➕',
+                    description: 'Add new loan',
+                    action: 'add'
+                },
+                { type: 'divider' },
+                // Loan accounts will be populated from database
+                ...(accounts.loans && accounts.loans.length > 0
+                    ? accounts.loans.map(account => ({
+                        id: `account-${account.id}`,
+                        label: account.name,
+                        icon: '🏦',
+                        balance: account.balance,
+                        isAccount: true,
+                        accountId: account.id,
+                        type: 'account',
+                        lender: account.lender,
+                        interestRate: account.interestRate
+                    }))
+                    : [])
+            ]
         }
     ];
 
-    const handleNavigation = (itemId) => {
+    const handleNavigation = (itemId, itemType = 'view') => {
         if (itemId === 'forecast') {
-            // Direct navigation to forecast page
             router.push('/forecast');
         } else if (onNavigate) {
-            onNavigate(itemId);
+            if (itemType === 'account') {
+                onNavigate(`account-${itemId}`);
+            } else {
+                onNavigate(itemId);
+            }
+        }
+    };
+
+    const handleSubItemClick = (subItem) => {
+        if (subItem.type === 'divider') return;
+
+        console.log('🔍 SubItem clicked:', subItem);
+
+        if (subItem.isAccount) {
+            handleNavigation(subItem.accountId, 'account');
+        } else {
+            handleNavigation(subItem.id, 'view');
+        }
+
+        // Auto-expand the section when a sub-item is clicked
+        const parentSection = subItem.id.includes('credit') ? 'creditCards' : 'loans';
+        if (!expandedSection || expandedSection !== parentSection) {
+            setExpandedSection(parentSection);
         }
     };
 
     const handleAccountClick = (accountId) => {
-        if (onNavigate) {
-            onNavigate(`account-${accountId}`);
-        }
+        handleNavigation(accountId, 'account');
     };
 
     const toggleSection = (sectionId) => {
@@ -106,6 +216,88 @@ const Sidebar = ({ onNavigate, currentView }) => {
         } catch (error) {
             console.error('Logout failed:', error);
         }
+    };
+
+    const formatCurrency = (amount) => {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0
+        }).format(amount);
+    };
+
+    const renderSubItems = (item) => {
+        if (!item.subItems || expandedSection !== item.id) return null;
+
+        const hasAccounts = item.subItems.some(s => s.isAccount);
+
+        return (
+            <div style={styles.subItemsContainer}>
+                {item.subItems.map((subItem, index) => {
+                    if (subItem.type === 'divider') {
+                        return (
+                            <div key={`divider-${index}`} style={styles.divider} />
+                        );
+                    }
+
+                    const isActive = subItem.isAccount
+                        ? currentView === `account-${subItem.accountId}`
+                        : currentView === subItem.id;
+
+                    return (
+                        <div
+                            key={subItem.id}
+                            style={{
+                                ...styles.subItem,
+                                ...(isActive ? styles.activeSubItem : {})
+                            }}
+                            onClick={() => handleSubItemClick(subItem)}
+                        >
+                            <span style={styles.subItemIcon}>{subItem.icon}</span>
+                            <span style={styles.subItemLabel}>{subItem.label}</span>
+                            {subItem.balance !== undefined && (
+                                <span style={{
+                                    ...styles.subItemBalance,
+                                    color: subItem.balance >= 0 ? '#4ADE80' : '#F87171'
+                                }}>
+                                    {formatCurrency(subItem.balance)}
+                                </span>
+                            )}
+                            {subItem.lender && (
+                                <span style={styles.subItemLender} title={subItem.lender}>
+                                    {subItem.lender.length > 3 ? `${subItem.lender.substring(0, 3)}...` : subItem.lender}
+                                </span>
+                            )}
+                            {subItem.institution && (
+                                <span style={styles.subItemLender} title={subItem.institution}>
+                                    {subItem.institution.length > 3 ? `${subItem.institution.substring(0, 3)}...` : subItem.institution}
+                                </span>
+                            )}
+                            {subItem.description && !subItem.isAccount && (
+                                <span style={styles.subItemTooltip} title={subItem.description}>
+                                    ℹ️
+                                </span>
+                            )}
+                        </div>
+                    );
+                })}
+
+                {/* Show empty state for credit cards if no accounts */}
+                {item.id === 'creditCards' && !hasAccounts && (
+                    <div style={styles.emptyState}>
+                        No credit cards yet. Click "Add Credit Card" to get started.
+                    </div>
+                )}
+
+                {/* Show empty state for loans if no accounts */}
+                {item.id === 'loans' && !hasAccounts && (
+                    <div style={styles.emptyState}>
+                        No loans yet. Click "Add Loan" to get started.
+                    </div>
+                )}
+            </div>
+        );
     };
 
     return (
@@ -124,27 +316,34 @@ const Sidebar = ({ onNavigate, currentView }) => {
                         <div
                             style={{
                                 ...styles.navItem,
-                                ...(currentView === item.id ? styles.activeNavItem : {})
+                                ...(currentView === item.id ? styles.activeNavItem : {}),
+                                ...(item.hasSubItems ? styles.navItemWithSubItems : {})
                             }}
                             onClick={() => {
-                                if (item.accounts && item.accounts.length > 0) {
+                                if (item.hasSubItems) {
                                     toggleSection(item.id);
+                                } else if (item.accounts && item.accounts.length > 0) {
+                                    toggleSection(item.id);
+                                } else {
+                                    handleNavigation(item.id);
                                 }
-                                handleNavigation(item.id);
                             }}
                         >
                             <span style={styles.navIcon}>{item.icon}</span>
                             <span style={styles.navLabel}>{item.label}</span>
-                            {item.accounts && item.accounts.length > 0 && (
+                            {(item.hasSubItems || (item.accounts && item.accounts.length > 0)) && (
                                 <span style={styles.navChevron}>
                                     {expandedSection === item.id ? '▼' : '▶'}
                                 </span>
                             )}
                         </div>
 
-                        {/* Account Sub-items */}
-                        {item.accounts && expandedSection === item.id && (
-                            <div style={styles.subItems}>
+                        {/* Render sub-items for credit cards and loans */}
+                        {item.hasSubItems && renderSubItems(item)}
+
+                        {/* Account Sub-items for cash section */}
+                        {item.id === 'cash' && item.accounts && expandedSection === item.id && (
+                            <div style={styles.subItemsContainer}>
                                 {item.accounts.map((accountItem) => (
                                     <div
                                         key={accountItem.id}
@@ -155,8 +354,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
                                     >
                                         <span style={styles.subItemIcon}>
                                             {accountItem.type === 'checking' ? '🏦' :
-                                                accountItem.type === 'savings' ? '💰' :
-                                                    accountItem.type === 'credit' ? '💳' : '📊'}
+                                                accountItem.type === 'savings' ? '💰' : '📊'}
                                         </span>
                                         <span
                                             style={styles.subItemLabel}
@@ -168,12 +366,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
                                             ...styles.subItemBalance,
                                             color: accountItem.balance >= 0 ? '#4ADE80' : '#F87171'
                                         }}>
-                                            {new Intl.NumberFormat('en-US', {
-                                                style: 'currency',
-                                                currency: 'USD',
-                                                minimumFractionDigits: 0,
-                                                maximumFractionDigits: 0
-                                            }).format(accountItem.balance)}
+                                            {formatCurrency(accountItem.balance)}
                                         </span>
                                         <button
                                             onClick={(e) => {
@@ -227,7 +420,8 @@ const styles = {
         borderRight: '1px solid #374151',
         position: 'fixed',
         left: 0,
-        top: 0
+        top: 0,
+        overflowY: 'auto'
     },
     header: {
         padding: '24px 20px',
@@ -259,6 +453,12 @@ const styles = {
             background: '#374151'
         }
     },
+    navItemWithSubItems: {
+        borderBottom: '1px solid transparent',
+        ':hover': {
+            borderBottomColor: '#374151'
+        }
+    },
     activeNavItem: {
         background: '#3B82F6',
         ':hover': {
@@ -281,22 +481,23 @@ const styles = {
         color: '#9CA3AF',
         marginLeft: '8px'
     },
-    subItems: {
-        background: '#111827',
+    subItemsContainer: {
+        background: '#0A2472', // Darker blue for sub-items
         padding: '4px 0'
     },
     subItem: {
         display: 'flex',
         alignItems: 'center',
-        padding: '10px 20px 10px 56px',
+        padding: '10px 20px 10px 52px',
         cursor: 'pointer',
         transition: 'background 0.2s',
+        position: 'relative',
         ':hover': {
-            background: '#374151'
+            background: '#1E3A8A'
         }
     },
     activeSubItem: {
-        background: '#2D3748',
+        background: '#1E3A8A',
         borderLeft: '3px solid #3B82F6'
     },
     subItemIcon: {
@@ -315,6 +516,20 @@ const styles = {
         fontWeight: '500',
         marginRight: '8px'
     },
+    subItemLender: {
+        fontSize: '0.7rem',
+        color: '#9CA3AF',
+        marginRight: '4px',
+        background: '#1F2937',
+        padding: '2px 4px',
+        borderRadius: '4px'
+    },
+    subItemTooltip: {
+        fontSize: '0.8rem',
+        color: '#9CA3AF',
+        cursor: 'help',
+        marginLeft: '4px'
+    },
     editButton: {
         background: 'none',
         border: 'none',
@@ -323,12 +538,19 @@ const styles = {
         opacity: 0.6,
         transition: 'opacity 0.2s',
         padding: '4px',
+        color: '#9CA3AF',
         ':hover': {
-            opacity: 1
+            opacity: 1,
+            color: 'white'
         }
     },
+    divider: {
+        height: '1px',
+        background: '#374151',
+        margin: '8px 20px 8px 52px'
+    },
     emptyState: {
-        padding: '10px 20px 10px 56px',
+        padding: '10px 20px 10px 52px',
         color: '#6B7280',
         fontSize: '0.85rem',
         fontStyle: 'italic'
@@ -352,8 +574,7 @@ const styles = {
         marginRight: '12px',
         width: '24px',
         textAlign: 'center'
-    },
-
+    }
 };
 
 export default Sidebar;

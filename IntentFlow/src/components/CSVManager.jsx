@@ -26,7 +26,7 @@ export default function CSVManager({ categories, accounts, onImport, onExport })
       sample: 'Date,Description,Original Description,Amount,Transaction Type,Category,Account Name\n01/15/2024,Whole Foods,Whole Foods,-45.67,debit,Groceries,Chase Checking',
       description: 'Mint.com export format'
     },
-     {
+    soulfunds: {
       name: 'SoulFunds',
       sample: 'Date,Payee,Category,Memo,Outflow,Inflow\n01/15/2024,Whole Foods,Groceries,,45.67,\n01/16/2024,Paycheck,Ready to Assign,,,2000.00',
       description: 'SoulFunds export format'
@@ -168,7 +168,7 @@ export default function CSVManager({ categories, accounts, onImport, onExport })
       onExport().forEach(t => {
         csvContent += `${t.date},${t.payee},${t.amount},${t.memo || ''}\n`;
       });
-    } else if (type === 'SoulFunds') {
+    } else if (type === 'soulfunds') {
       csvContent = 'Date,Payee,Category,Memo,Outflow,Inflow\n';
       onExport().forEach(t => {
         if (t.amount < 0) {
@@ -242,7 +242,7 @@ export default function CSVManager({ categories, accounts, onImport, onExport })
           >
             <option value="">📤 Export as...</option>
             <option value="bank">Bank Format</option>
-            <option value="SoulFunds">SoulFunds Format</option>
+            <option value="soulfunds">SoulFunds Format</option>
           </select>
         </div>
       </div>
@@ -360,7 +360,7 @@ export default function CSVManager({ categories, accounts, onImport, onExport })
               >
                 <option value="bank">Bank Export</option>
                 <option value="mint">Mint.com</option>
-                <option value="SoulFunds">SoulFunds</option>
+                <option value="soulfunds">SoulFunds</option>
               </select>
             </div>
 

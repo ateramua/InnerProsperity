@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import CreditCardManager from '../components/CreditCardManager';
+import CreditCardManager from '../views/CreditCardManager';
 import AccountEditor from '../components/AccountEditor';
 
 export default function CreditCardsPage() {

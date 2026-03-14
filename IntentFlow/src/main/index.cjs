@@ -30,21 +30,43 @@ let db;
 let nativeServer = null;
 let ipcHandlersRegistered = false; // Flag to prevent duplicate registration
 
+// ==================== DATABASE PATH HELPER ====================
+function getDatabasePath() {
+    // In production, use the userData directory
+    if (app.isPackaged) {
+        const userDataPath = app.getPath('userData');
+        const dbDir = path.join(userDataPath, 'database');
+        
+        // Ensure directory exists
+        if (!fs.existsSync(dbDir)) {
+            fs.mkdirSync(dbDir, { recursive: true });
+            console.log('📁 Created database directory at:', dbDir);
+        }
+        
+        return path.join(dbDir, 'app.db');
+    } else {
+        // In development, use the local db/data directory
+        return path.join(__dirname, '../db/data/app.db');
+    }
+}
+
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
     console.log('📦 Initializing database...');
 
     const sqlite3 = require('sqlite3');
     const { open } = require('sqlite');
-    const dbPath = path.join(__dirname, '../db/data/app.db');
-
+    
+    const dbPath = getDatabasePath();
     console.log('📂 Database path:', dbPath);
 
-    // Check if database file exists
-    const fs = require('fs');
-    if (!fs.existsSync(dbPath)) {
-        console.error('❌ Database file does not exist at:', dbPath);
-        throw new Error(`Database file not found at ${dbPath}. Please run migrations first.`);
+    // Check if database file exists (only in development)
+    if (!app.isPackaged) {
+        const fs = require('fs');
+        if (!fs.existsSync(dbPath)) {
+            console.error('❌ Database file does not exist at:', dbPath);
+            throw new Error(`Database file not found at ${dbPath}. Please run migrations first.`);
+        }
     }
 
     // Actually open the database connection
@@ -58,6 +80,25 @@ async function initDatabase() {
 
     console.log('✅ Database initialized successfully');
     console.log('✅ Available methods:', Object.keys(database));
+
+    // Check if we need to run migrations (for production new installs)
+    if (app.isPackaged) {
+        const migrationsTable = await database.get(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'"
+        );
+        
+        if (!migrationsTable) {
+            console.log('🔄 New database detected, running migrations...');
+            try {
+                const { runMigrations } = require('../db/migrations/index.cjs');
+                await runMigrations(database);
+                console.log('✅ Migrations completed successfully');
+            } catch (migrationError) {
+                console.error('❌ Migrations failed:', migrationError);
+                throw migrationError;
+            }
+        }
+    }
 
     return database;
 }
@@ -148,18 +189,13 @@ async function getDatabase() {
     console.log('🔍 getDatabase called, current db state:', db ? 'exists' : 'null');
     if (!db) {
         console.log('📦 Creating new database connection...');
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-        const dbPath = path.join(__dirname, '../db/data/app.db');
+        
+        const dbPath = getDatabasePath(); // Use the same helper function
         console.log('📂 Database path:', dbPath);
 
         try {
-            // Make sure the database file exists
-            const fs = require('fs');
-            if (!fs.existsSync(dbPath)) {
-                console.error('❌ Database file does not exist at:', dbPath);
-                throw new Error(`Database file not found at ${dbPath}`);
-            }
+            const sqlite3 = require('sqlite3');
+            const { open } = require('sqlite');
 
             db = await open({
                 filename: dbPath,
@@ -170,18 +206,10 @@ async function getDatabase() {
             await db.exec('PRAGMA foreign_keys = ON');
 
             console.log('✅ Database connection established');
-            console.log('✅ Available methods:', Object.keys(db));
-
-            // Test the connection
-            const test = await db.get('SELECT 1 as test');
-            console.log('✅ Test query result:', test);
-
         } catch (error) {
             console.error('❌ Failed to create database connection:', error);
             throw error;
         }
-    } else {
-        console.log('✅ Using existing database connection');
     }
     return db;
 }
