@@ -1,168 +1,98 @@
-import { useAuth } from '../contexts/AuthContext';
+// src/pages/index.js
+import { useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { Preferences } from '@capacitor/preferences';
 
-import Sidebar from '../components/Navigation/Sidebar';
-import ViewContainers from '../views/ViewContainer';
-import UpdateIndicator from '../components/UpdateIndicator';
-
-import PropertyMapView from '../views/PropertyMapView';
-import ReflectsView from '../views/ReflectsView';
-
-import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
-
-export default function HomePage() {
-  const { isAuthenticated, loading } = useAuth();
+export default function Home() {
   const router = useRouter();
-
-  const [currentView, setCurrentView] = useState('propertyMap');
-  const [accounts, setAccounts] = useState([]);
-
-  const { lastUpdate, refresh } = useRealtimeUpdates(
-    [
-      'transaction:added',
-      'transaction:updated',
-      'transaction:deleted',
-      'budget:assigned',
-      'budget:moved',
-      'prosperity:updated'
-    ],
-    (eventType) => {
-      switch (eventType) {
-        case 'transaction:added':
-        case 'transaction:updated':
-        case 'transaction:deleted':
-          loadAccounts();
-          break;
-
-        case 'budget:assigned':
-        case 'budget:moved':
-          if (currentView === 'propertyMap') {
-            window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-          }
-          break;
-
-        default:
-          break;
-      }
-    }
-  );
+  const { user, isLoading } = useAuth();
 
   useEffect(() => {
-    if (isAuthenticated) {
-      loadAccounts();
-    }
-  }, [isAuthenticated]);
-
-  const loadAccounts = async () => {
-    try {
-      const userResult = await window.electronAPI.getCurrentUser();
-
-      if (userResult?.success && userResult?.data) {
-        const userId = userResult.data.id;
-
-        const result = await window.electronAPI.getAccountsSummary(userId);
-
-        if (result.success) {
-          setAccounts(result.data || []);
+    const checkAuthAndOnboarding = async () => {
+      if (!isLoading) {
+        // Check if user is authenticated
+        if (user) {
+          // Check if onboarding completed using Capacitor Preferences
+          try {
+            const { value } = await Preferences.get({ key: 'onboardingCompleted' });
+            if (value === 'true') {
+              router.replace('/mobile-home');
+            } else {
+              router.replace('/mobile-onboarding');
+            }
+          } catch (error) {
+            console.error('Error checking onboarding status:', error);
+            // If error, default to onboarding to be safe
+            router.replace('/mobile-onboarding');
+          }
+        } else {
+          router.replace('/mobile-login');
         }
       }
-    } catch (error) {
-      console.error('Failed to load accounts:', error);
-    }
-  };
+    };
 
-  useEffect(() => {
-    if (!loading && !isAuthenticated) {
-      router.replace('/login');
-    }
-  }, [loading, isAuthenticated, router]);
+    checkAuthAndOnboarding();
+  }, [user, isLoading, router]);
 
-  const handleNavigation = (viewId) => {
-    setCurrentView(viewId);
-  };
-
-  if (loading) {
-    return (
-      <div style={styles.loadingContainer}>
-        <div style={styles.loadingSpinner}></div>
-        <p style={{ marginTop: 12 }}>Loading your workspace...</p>
-      </div>
-    );
-  }
-
+  // Loading splash screen while checking auth
   return (
-    <div style={styles.container}>
-      <Sidebar
-        onNavigate={handleNavigation}
-        currentView={currentView}
-      />
-
-      <main style={styles.main}>
-        <div style={styles.mainGlass}>
-          <ViewContainers
-            currentView={currentView}
-            accounts={accounts}
-          />
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #0047AB, #0A2472)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: 'white',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ 
+          fontSize: '80px', 
+          marginBottom: '20px',
+          animation: 'float 3s ease-in-out infinite'
+        }}>
+          💰
         </div>
-      </main>
+        <div style={{ 
+          fontSize: '32px', 
+          fontWeight: 'bold',
+          marginBottom: '10px',
+          background: 'linear-gradient(135deg, #FFFFFF, #E0E7FF)',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent'
+        }}>
+          IntentFlow
+        </div>
+        <div style={{ 
+          fontSize: '16px', 
+          color: 'rgba(255,255,255,0.7)',
+          marginBottom: '30px'
+        }}>
+          Take control of your finances
+        </div>
+        <div style={{
+          width: '48px',
+          height: '48px',
+          border: '4px solid rgba(255,255,255,0.1)',
+          borderTopColor: '#3B82F6',
+          borderRadius: '50%',
+          animation: 'spin 1s linear infinite',
+          margin: '20px auto 0'
+        }} />
+      </div>
 
-      <UpdateIndicator
-        lastUpdate={lastUpdate}
-        onRefresh={refresh}
-      />
+      {/* Add keyframe animations */}
+      <style jsx>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes float {
+          0% { transform: translateY(0px); }
+          50% { transform: translateY(-10px); }
+          100% { transform: translateY(0px); }
+        }
+      `}</style>
     </div>
   );
 }
-
-const styles = {
-
-  container: {
-    display: 'flex',
-    minHeight: '100vh',
-    background:
-      'linear-gradient(135deg, #0047AB 0%, #0047AB 40%, ##0f2e1c 100%)',
-    fontFamily: 'Inter, system-ui, sans-serif'
-  },
-
-  main: {
-    flex: 1,
-    marginLeft: '280px',
-    padding: '2rem',
-    minHeight: '100vh',
-    color: 'white'
-  },
-
-  mainGlass: {
-    backdropFilter: 'blur(16px)',
-    background: '#0047AB',
-    borderRadius: '18px',
-    padding: '2rem',
-    border: '1px solid rgba(255,255,255,0.08)',
-    boxShadow:
-      '0 10px 40px rgba(0,0,0,0.4), 0 0 40px rgba(99,102,241,0.15)',
-    minHeight: '85vh'
-  },
-
-  loadingContainer: {
-    minHeight: '100vh',
-    background:
-      'linear-gradient(135deg, #0047AB, #0047AB, #0047AB)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: 'white'
-  },
-
-  loadingSpinner: {
-    width: '56px',
-    height: '56px',
-    border: '5px solid rgba(255,255,255,0.15)',
-    borderTopColor: '#6366F1',
-    borderRadius: '50%',
-    animation: 'spin 0.9s linear infinite',
-    boxShadow: '0 0 20px rgba(99,102,241,0.6)'
-  }
-
-};

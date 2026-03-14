@@ -24,13 +24,13 @@ export default function BudgetVsActualPage() {
       }
 
       // Load transactions (last 12 months)
-      const transactionsResult = await window.electronAPI.getTransactions({ days: 365 });
+const transactionsResult = await DatabaseProxy.getTransactions(user?.id);
       if (transactionsResult.success) {
         setTransactions(transactionsResult.data);
       }
 
       // Load category groups
-      const groupsResult = await window.electronAPI.getCategoryGroups(1);
+     const groupsResult = await DatabaseProxy.getCategoryGroups(user?.id);
       if (groupsResult.success) {
         const groupsMap = {};
         groupsResult.data.forEach(group => {

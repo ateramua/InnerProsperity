@@ -1,0 +1,24 @@
+{
+  "appId": "com.yourcompany.intentflow",
+  "appName": "IntentFlow",
+  "webDir": "out",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "ionic"
+  },
+  "ios": {
+    "contentInset": "always",
+    "scrollEnabled": true
+  },
+  "plugins": {
+    "CapacitorSQLite": {
+      "iosDatabaseLocation": "Library/CapacitorDatabase",
+      "iosIsEncryption": false,
+      "androidIsEncryption": false
+    },
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#0047AB"
+    }
+  }
+}

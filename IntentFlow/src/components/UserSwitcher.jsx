@@ -37,8 +37,13 @@ export default function UserSwitcher({ onUserChange }) {
 
   const handleLogin = async () => {
     try {
+      console.log('🔥 DEBUG - Login function called');
+      console.log('🔥 DEBUG - Login args:', { username, password });
+      console.log('🔥 DEBUG - DatabaseProxy type:', typeof DatabaseProxy);
+      console.log('🔥 DEBUG - loginUser exists:', typeof DatabaseProxy?.loginUser);
       setError('');
       const result = await window.electronAPI.loginUser({ username, password });
+      console.log('🔥 DEBUG - Login result:', result);
       if (result.success) {
         setCurrentUser(result.data);
         setShowLogin(false);
@@ -48,6 +53,7 @@ export default function UserSwitcher({ onUserChange }) {
         await loadUsers();
       } else {
         setError(result.error || 'Login failed');
+        console.error('🔥 DEBUG - Login error:', err);
       }
     } catch (error) {
       setError(error.message);

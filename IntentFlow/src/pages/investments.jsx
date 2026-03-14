@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import InvestmentPortfolio from '../components/InvestmentPortfolio';
+import dynamic from 'next/dynamic';  // ← THIS IS MISSING!
 
 export default function InvestmentsPage() {
   const router = useRouter();
@@ -68,6 +69,8 @@ export default function InvestmentsPage() {
       setLoading(false);
     }
   };
+  const StrategicInvestmentPortfolio = dynamic(() => import('../views/StrategicInvestmentPortfolio'), { ssr: false });
+
 
   if (loading) {
     return (

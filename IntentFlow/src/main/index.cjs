@@ -36,13 +36,13 @@ function getDatabasePath() {
     if (app.isPackaged) {
         const userDataPath = app.getPath('userData');
         const dbDir = path.join(userDataPath, 'database');
-        
+
         // Ensure directory exists
         if (!fs.existsSync(dbDir)) {
             fs.mkdirSync(dbDir, { recursive: true });
             console.log('📁 Created database directory at:', dbDir);
         }
-        
+
         return path.join(dbDir, 'app.db');
     } else {
         // In development, use the local db/data directory
@@ -56,7 +56,7 @@ async function initDatabase() {
 
     const sqlite3 = require('sqlite3');
     const { open } = require('sqlite');
-    
+
     const dbPath = getDatabasePath();
     console.log('📂 Database path:', dbPath);
 
@@ -86,7 +86,7 @@ async function initDatabase() {
         const migrationsTable = await database.get(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'"
         );
-        
+
         if (!migrationsTable) {
             console.log('🔄 New database detected, running migrations...');
             try {
@@ -189,7 +189,7 @@ async function getDatabase() {
     console.log('🔍 getDatabase called, current db state:', db ? 'exists' : 'null');
     if (!db) {
         console.log('📦 Creating new database connection...');
-        
+
         const dbPath = getDatabasePath(); // Use the same helper function
         console.log('📂 Database path:', dbPath);
 
@@ -1380,5 +1380,26 @@ app.on('before-quit', () => {
     } else if (db && db.$pool) {
         // For sqlite3 database connections
         db.close();
+    }
+});
+
+app.on('before-quit', () => {
+    if (nativeServer) nativeServer.close();
+
+    // FIX: Check if db exists and has close method
+    if (db && typeof db.close === 'function') {
+        db.close();
+    } else if (db && db.$pool) {
+        // For sqlite3 database connections
+        db.close();
+    }
+
+    // 👇 ADD THIS - Clear session on quit
+    try {
+        // Clear the stored session so user has to login again
+        userService.logout();
+        console.log('🔒 Session cleared on app quit');
+    } catch (error) {
+        console.error('❌ Error clearing session:', error);
     }
 });

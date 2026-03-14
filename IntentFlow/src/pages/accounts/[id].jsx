@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import TransactionManager from '../../components/TransactionManager';
+import databaseProxy from '../../services/databaseProxy.mjs';
 
 
 const AccountDetailPage = () => {

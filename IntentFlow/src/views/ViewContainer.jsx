@@ -26,6 +26,9 @@ import AddLoanForm from './AddLoanForm';
 import CashFlowView from './CashFlowView';
 import CashFlowForecast from './CashFlowForecast';
 
+import MobileCreditCards from '../pages/mobile-credit-cards';
+
+
 // Add this import with your other imports
 import StrategicInvestmentPortfolio from './StrategicInvestmentPortfolio'; // or InvestmentPortfolio if you kept the original name
 
@@ -553,14 +556,16 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
             loans={loans}
           />
         );
-        case 'investments':
-  return (
-    <StrategicInvestmentPortfolio
-      investments={[]} // Pass your investments data here
-      accounts={accounts}
-      transactions={transactions}
-    />
-  );
+      case 'mobile-credit-cards':
+        return <MobileCreditCards />;
+      case 'investments':
+        return (
+          <StrategicInvestmentPortfolio
+            investments={[]} // Pass your investments data here
+            accounts={accounts}
+            transactions={transactions}
+          />
+        );
 
       default:
         return (

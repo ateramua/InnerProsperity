@@ -61,6 +61,12 @@ const Sidebar = ({ onNavigate, currentView }) => {
             accounts: accounts.cash
         },
         {
+            id: 'mobile-credit-cards',
+            label: 'Credit Cards',
+            icon: '💳',
+            description: 'Manage credit cards'
+        },
+        {
             id: 'cashflow',
             label: 'Cash Flow',
             icon: '💰',
@@ -73,11 +79,11 @@ const Sidebar = ({ onNavigate, currentView }) => {
             description: 'Project your future cash position'
         },
         {
-    id: 'investments',
-    label: 'Investments',
-    icon: '📈',
-    description: 'Track and manage your investment portfolio'
-},
+            id: 'investments',
+            label: 'Investments',
+            icon: '📈',
+            description: 'Track and manage your investment portfolio'
+        },
         {
             id: 'creditCards',
             label: 'Credit Cards',
