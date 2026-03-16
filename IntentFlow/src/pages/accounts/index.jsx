@@ -8,7 +8,13 @@ import { useRouter } from 'next/router';
 import Sidebar from '../../components/Navigation/Sidebar';
 
 export default function AccountsDashboard() {
+    console.log('🔵 [AccountsDashboard] Component rendering');
+    console.log('🔵 [AccountsDashboard] Current time:', new Date().toISOString());
+    
     const router = useRouter();
+    console.log('🔵 [AccountsDashboard] Router path:', router.pathname);
+    console.log('🔵 [AccountsDashboard] Router query:', router.query);
+    
     const [accounts, setAccounts] = useState([]);
     const [currentView, setCurrentView] = useState('accounts');
     const [totals, setTotals] = useState({
@@ -28,46 +34,87 @@ export default function AccountsDashboard() {
         institution: ''
     });
 
+    console.log('🔵 [AccountsDashboard] Initial state - isLoading:', isLoading);
+    console.log('🔵 [AccountsDashboard] Initial accounts length:', accounts.length);
+
     const handleNavigation = (viewId) => {
+        console.log('🔵 [handleNavigation] Called with viewId:', viewId);
         setCurrentView(viewId);
         if (viewId.startsWith('account-')) {
+            console.log('🔵 [handleNavigation] Navigating to account:', viewId.replace('account-', ''));
             router.push(`/accounts/${viewId.replace('account-', '')}`);
         }
     };
 
     useEffect(() => {
+        console.log('🔵 [useEffect] Component mounted, calling loadAccounts()');
         loadAccounts();
+        
+        // Cleanup function
+        return () => {
+            console.log('🔵 [useEffect] Component unmounting');
+        };
     }, []);
 
     const loadAccounts = async () => {
+        console.log('🔵 [loadAccounts] Function started');
+        console.log('🔵 [loadAccounts] Setting isLoading to true');
         setIsLoading(true);
+        
         try {
+            console.log('🔵 [loadAccounts] Checking if window.electronAPI exists:', !!window.electronAPI);
+            
+            if (!window.electronAPI) {
+                console.error('🔴 [loadAccounts] CRITICAL: window.electronAPI is undefined!');
+                console.log('🔵 [loadAccounts] Available window properties:', Object.keys(window));
+                setIsLoading(false);
+                return;
+            }
+
             // First get the current user to see what ID they have
+            console.log('🔵 [loadAccounts] Calling window.electronAPI.getCurrentUser()');
             const userResult = await window.electronAPI.getCurrentUser();
-            console.log('👤 Current user result:', userResult);
+            console.log('👤 [loadAccounts] Current user result:', JSON.stringify(userResult, null, 2));
 
             if (userResult?.success && userResult?.data) {
                 const userId = userResult.data.id;
-                console.log('👤 Loading accounts for user ID:', userId);
+                console.log('👤 [loadAccounts] User ID retrieved:', userId);
+                console.log('👤 [loadAccounts] User details:', userResult.data);
 
+                console.log('🔵 [loadAccounts] Calling window.electronAPI.getAccountsSummary with userId:', userId);
                 const result = await window.electronAPI.getAccountsSummary(userId);
-                console.log('📊 Accounts data received:', result);
+                console.log('📊 [loadAccounts] Accounts data received:', JSON.stringify(result, null, 2));
 
                 if (result.success) {
                     const accountsData = result.data || [];
+                    console.log('📊 [loadAccounts] Accounts data length:', accountsData.length);
+                    console.log('📊 [loadAccounts] First account sample:', accountsData[0]);
+                    
                     setAccounts(accountsData);
+                    console.log('🔵 [loadAccounts] setAccounts called with', accountsData.length, 'accounts');
 
                     // Calculate totals from the accounts data
+                    console.log('🔵 [loadAccounts] Calculating account totals...');
+                    
                     const budgetAccounts = accountsData.filter(a => a.account_type_category === 'budget' && a.type !== 'credit');
                     const creditAccounts = accountsData.filter(a => a.type === 'credit');
                     const trackingAccounts = accountsData.filter(a => a.account_type_category === 'tracking');
+                    
+                    console.log('🔵 [loadAccounts] Budget accounts count:', budgetAccounts.length);
+                    console.log('🔵 [loadAccounts] Credit accounts count:', creditAccounts.length);
+                    console.log('🔵 [loadAccounts] Tracking accounts count:', trackingAccounts.length);
 
                     const budgetTotal = budgetAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
                     const creditTotal = creditAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
                     const trackingTotal = trackingAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
                     const overallTotal = budgetTotal + trackingTotal;
+                    
+                    console.log('🔵 [loadAccounts] Budget total:', budgetTotal);
+                    console.log('🔵 [loadAccounts] Credit total:', creditTotal);
+                    console.log('🔵 [loadAccounts] Tracking total:', trackingTotal);
+                    console.log('🔵 [loadAccounts] Overall total:', overallTotal);
 
-                    setTotals({
+                    const newTotals = {
                         budget: {
                             total: budgetTotal,
                             count: budgetAccounts.length,
@@ -88,23 +135,33 @@ export default function AccountsDashboard() {
                             count: accountsData.length,
                             formatted: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(overallTotal)
                         }
-                    });
+                    };
+                    
+                    console.log('🔵 [loadAccounts] Setting totals:', newTotals);
+                    setTotals(newTotals);
+                } else {
+                    console.error('🔴 [loadAccounts] getAccountsSummary failed:', result.error);
+                    console.log('🔵 [loadAccounts] Full error response:', result);
                 }
             } else {
-                console.error('❌ No authenticated user found');
+                console.error('🔴 [loadAccounts] No authenticated user found');
+                console.log('🔵 [loadAccounts] userResult:', userResult);
             }
         } catch (error) {
-            console.error('Failed to load accounts:', error);
+            console.error('🔴 [loadAccounts] Exception caught:', error);
+            console.error('🔴 [loadAccounts] Error stack:', error.stack);
         } finally {
+            console.log('🔵 [loadAccounts] Setting isLoading to false');
             setIsLoading(false);
         }
     };
 
     const handleCreateAccount = async () => {
+        console.log('🔵 [handleCreateAccount] Called');
         try {
             // First get the current user to get their ID
             const userResult = await window.electronAPI.getCurrentUser();
-            console.log('👤 Current user for account creation:', userResult);
+            console.log('👤 [handleCreateAccount] Current user result:', userResult);
 
             if (!userResult?.success || !userResult?.data) {
                 console.error('❌ No authenticated user found');
@@ -113,7 +170,7 @@ export default function AccountsDashboard() {
             }
 
             const userId = userResult.data.id;
-            console.log('👤 Creating account for user ID:', userId);
+            console.log('👤 [handleCreateAccount] Creating account for user ID:', userId);
 
             // Prepare account data with userId
             const accountData = {
@@ -121,11 +178,12 @@ export default function AccountsDashboard() {
                 userId: userId  // Add the userId here
             };
 
-            console.log('📝 Creating account with data:', accountData);
+            console.log('📝 [handleCreateAccount] Creating account with data:', accountData);
             const result = await window.electronAPI.createAccount(accountData);
-            console.log('📝 Create account result:', result);
+            console.log('📝 [handleCreateAccount] Create account result:', result);
 
             if (result.success) {
+                console.log('✅ [handleCreateAccount] Account created successfully');
                 setShowNewAccountModal(false);
                 loadAccounts(); // Refresh the account list
                 // Reset form
@@ -175,7 +233,12 @@ export default function AccountsDashboard() {
         }).format(amount);
     };
 
+    console.log('🔵 [AccountsDashboard] Rendering with isLoading =', isLoading);
+    console.log('🔵 [AccountsDashboard] Current accounts count:', accounts.length);
+    console.log('🔵 [AccountsDashboard] Current totals:', totals);
+
     if (isLoading) {
+        console.log('🔵 [AccountsDashboard] Rendering loading state');
         return (
             <div style={{
                 minHeight: '100vh',
@@ -201,6 +264,9 @@ export default function AccountsDashboard() {
         );
     }
 
+    console.log('🔵 [AccountsDashboard] Rendering main content');
+    console.log('🔵 [AccountsDashboard] Accounts to display:', accounts.length);
+
     return (
         <div style={styles.container}>
             <Sidebar onNavigate={handleNavigation} currentView={currentView} />
@@ -209,7 +275,10 @@ export default function AccountsDashboard() {
                 <div style={styles.header}>
                     <h1 style={styles.headerTitle}>Accounts</h1>
                     <button
-                        onClick={() => setShowNewAccountModal(true)}
+                        onClick={() => {
+                            console.log('🔵 [New Account button] Clicked');
+                            setShowNewAccountModal(true);
+                        }}
                         style={styles.newAccountButton}
                     >
                         <span>+</span> New Account
@@ -254,35 +323,38 @@ export default function AccountsDashboard() {
                     <div style={styles.section}>
                         <h2 style={styles.sectionTitle}>BUDGET ACCOUNTS</h2>
                         <div style={styles.accountList}>
-                            {accounts.filter(a => a.account_type_category === 'budget').map(account => (
-                                <Link href={`/accounts/${account.id}`} key={account.id} style={{ textDecoration: 'none' }}>
-                                    <div style={styles.accountRow}>
-                                        <div style={styles.accountInfo}>
-                                            <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
-                                            <div>
-                                                <div style={styles.accountName}>{account.name}</div>
-                                                <div style={styles.accountMeta}>
-                                                    {account.institution || account.type.charAt(0).toUpperCase() + account.type.slice(1)}
-                                                    {account.type === 'credit' && account.credit_limit && ` • Limit: ${formatCurrency(account.credit_limit)}`}
+                            {accounts.filter(a => a.account_type_category === 'budget').map(account => {
+                                console.log('🔵 [Rendering] Budget account:', account.id, account.name);
+                                return (
+                                    <Link href={`/accounts/${account.id}`} key={account.id} style={{ textDecoration: 'none' }}>
+                                        <div style={styles.accountRow}>
+                                            <div style={styles.accountInfo}>
+                                                <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
+                                                <div>
+                                                    <div style={styles.accountName}>{account.name}</div>
+                                                    <div style={styles.accountMeta}>
+                                                        {account.institution || account.type.charAt(0).toUpperCase() + account.type.slice(1)}
+                                                        {account.type === 'credit' && account.credit_limit && ` • Limit: ${formatCurrency(account.credit_limit)}`}
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                        <div style={styles.accountBalance}>
-                                            <div style={{
-                                                ...styles.balanceAmount,
-                                                color: getBalanceColor(account.balance, account.type)
-                                            }}>
-                                                {formatCurrency(account.balance)}
-                                            </div>
-                                            {account.working_balance !== account.balance && (
-                                                <div style={styles.workingBalance}>
-                                                    Working: {formatCurrency(account.working_balance)}
+                                            <div style={styles.accountBalance}>
+                                                <div style={{
+                                                    ...styles.balanceAmount,
+                                                    color: getBalanceColor(account.balance, account.type)
+                                                }}>
+                                                    {formatCurrency(account.balance)}
                                                 </div>
-                                            )}
+                                                {account.working_balance !== account.balance && (
+                                                    <div style={styles.workingBalance}>
+                                                        Working: {formatCurrency(account.working_balance)}
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
-                                </Link>
-                            ))}
+                                    </Link>
+                                );
+                            })}
                             {accounts.filter(a => a.account_type_category === 'budget').length === 0 && (
                                 <div style={styles.emptyState}>
                                     No budget accounts yet. Click "New Account" to add one.
@@ -295,27 +367,30 @@ export default function AccountsDashboard() {
                     <div style={styles.section}>
                         <h2 style={styles.sectionTitle}>TRACKING ACCOUNTS</h2>
                         <div style={styles.accountList}>
-                            {accounts.filter(a => a.account_type_category === 'tracking').map(account => (
-                                <Link href={`/accounts/${account.id}`} key={account.id} style={{ textDecoration: 'none' }}>
-                                    <div style={styles.accountRow}>
-                                        <div style={styles.accountInfo}>
-                                            <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
-                                            <div>
-                                                <div style={styles.accountName}>{account.name}</div>
-                                                <div style={styles.accountMeta}>
-                                                    {account.institution || account.type.charAt(0).toUpperCase() + account.type.slice(1)}
+                            {accounts.filter(a => a.account_type_category === 'tracking').map(account => {
+                                console.log('🔵 [Rendering] Tracking account:', account.id, account.name);
+                                return (
+                                    <Link href={`/accounts/${account.id}`} key={account.id} style={{ textDecoration: 'none' }}>
+                                        <div style={styles.accountRow}>
+                                            <div style={styles.accountInfo}>
+                                                <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
+                                                <div>
+                                                    <div style={styles.accountName}>{account.name}</div>
+                                                    <div style={styles.accountMeta}>
+                                                        {account.institution || account.type.charAt(0).toUpperCase() + account.type.slice(1)}
+                                                    </div>
                                                 </div>
                                             </div>
+                                            <div style={{
+                                                ...styles.balanceAmount,
+                                                color: getBalanceColor(account.balance, account.type)
+                                            }}>
+                                                {formatCurrency(account.balance)}
+                                            </div>
                                         </div>
-                                        <div style={{
-                                            ...styles.balanceAmount,
-                                            color: getBalanceColor(account.balance, account.type)
-                                        }}>
-                                            {formatCurrency(account.balance)}
-                                        </div>
-                                    </div>
-                                </Link>
-                            ))}
+                                    </Link>
+                                );
+                            })}
                             {accounts.filter(a => a.account_type_category === 'tracking').length === 0 && (
                                 <div style={styles.emptyState}>
                                     No tracking accounts yet. Add investments, mortgages, or loans.

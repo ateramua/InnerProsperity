@@ -137,6 +137,8 @@ app.whenReady().then(async () => {
 // ==================== WINDOW CREATION ====================
 async function createWindow() {
     const preloadPath = path.join(__dirname, '../preload/preload.cjs');
+    console.log('🔍 Preload path:', preloadPath);
+    console.log('🔍 Preload exists:', fs.existsSync(preloadPath));
 
     mainWindow = new BrowserWindow({
         width: 1300,
@@ -147,6 +149,8 @@ async function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             preload: preloadPath,
+            // 🚀 ADD THIS FOR DEBUGGING
+            devTools: true,
         },
         titleBarStyle: 'default',
         backgroundColor: '#0f2e1c',
@@ -154,6 +158,48 @@ async function createWindow() {
         icon: process.platform === 'darwin'
             ? path.join(__dirname, '../../assets/icon.icns')
             : path.join(__dirname, '../../assets/icon.png'),
+    });
+
+    // 🚀 ADD THIS - Log all webContents events
+    mainWindow.webContents.on('did-start-loading', () => {
+        console.log('🔵 WebContents: did-start-loading');
+    });
+
+    mainWindow.webContents.on('did-stop-loading', () => {
+        console.log('🔵 WebContents: did-stop-loading');
+    });
+
+    mainWindow.webContents.on('did-finish-load', () => {
+        console.log('🔵 WebContents: did-finish-load');
+        // 🚀 Check what was loaded
+        mainWindow.webContents.executeJavaScript(`
+            console.log('🔵 Window location:', window.location.href);
+            console.log('🔵 Document title:', document.title);
+            console.log('🔵 Body content length:', document.body?.innerHTML?.length || 0);
+            console.log('🔵 Is React mounted?', !!document.getElementById('__next'));
+        `).catch(err => console.error('Failed to execute JS:', err));
+    });
+
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+        console.error('🔴 WebContents: did-fail-load', { errorCode, errorDescription });
+    });
+
+    mainWindow.webContents.on('crashed', () => {
+        console.error('🔴 WebContents: crashed');
+    });
+
+    mainWindow.webContents.on('unresponsive', () => {
+        console.error('🔴 WebContents: unresponsive');
+    });
+
+    mainWindow.webContents.on('responsive', () => {
+        console.log('🔵 WebContents: responsive');
+    });
+
+    // 🚀 ADD THIS - Catch console messages from renderer
+    mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+        const levels = ['debug', 'info', 'warning', 'error'];
+        console.log(`🔵 [Renderer ${levels[level] || 'log'}]: ${message} (${sourceId}:${line})`);
     });
 
     const isDev = !app.isPackaged;
@@ -164,8 +210,34 @@ async function createWindow() {
         mainWindow.webContents.openDevTools();
     } else {
         const indexPath = path.join(__dirname, '../../out/index.html');
+        console.log('🔍 Index path:', indexPath);
+        console.log('🔍 Index exists:', fs.existsSync(indexPath));
+        
+        // 🚀 Check what files are actually in the out directory
+        try {
+            const outDir = path.join(__dirname, '../../out');
+            console.log('🔍 Out directory contents:', fs.readdirSync(outDir).slice(0, 10));
+            
+            const nextDir = path.join(outDir, '_next');
+            if (fs.existsSync(nextDir)) {
+                console.log('🔍 _next directory exists');
+                console.log('🔍 _next contents:', fs.readdirSync(nextDir).slice(0, 10));
+            } else {
+                console.error('🔴 _next directory MISSING!');
+            }
+        } catch (e) {
+            console.error('🔴 Error reading out directory:', e);
+        }
+
         if (fs.existsSync(indexPath)) {
-            await mainWindow.loadFile(indexPath).catch(console.error);
+            // 🚀 Read the index.html to verify it has content
+            const indexContent = fs.readFileSync(indexPath, 'utf8');
+            console.log('🔍 index.html length:', indexContent.length);
+            console.log('🔍 index.html first 200 chars:', indexContent.substring(0, 200));
+            
+            await mainWindow.loadFile(indexPath).catch(err => {
+                console.error('🔴 Failed to load index.html:', err);
+            });
         } else {
             dialog.showErrorBox('Build Files Missing', 'Application files not found. Please reinstall.');
             app.quit();
@@ -173,9 +245,14 @@ async function createWindow() {
     }
 
     mainWindow.once('ready-to-show', () => {
+        console.log('🔵 Main window ready-to-show');
         setTimeout(() => {
             if (splashWindow) closeSplashWindow();
             mainWindow.show();
+            console.log('🔵 Main window shown');
+            
+            // 🚀 Force DevTools open for debugging
+            mainWindow.webContents.openDevTools();
         }, 500);
     });
 

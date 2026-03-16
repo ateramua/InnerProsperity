@@ -17,17 +17,38 @@ const Sidebar = ({ onNavigate, currentView }) => {
     };
 
     const navigationItems = [
+        // In your navigation items array, add/check this:
+          {
+            id: 'propertyMap',
+            label: 'PropertyMap',
+            icon: '📊',
+            description: 'Budget table'
+        },
+        {
+            id: 'accounts',
+            label: 'Accounts',
+            icon: '🏦',
+            description: 'Manage checking & savings',
+            onClick: () => {
+                router.push('/?view=accounts'); // Or use your view system
+                if (onNavigate) onNavigate('accounts');
+            }
+        },
+        {
+            id: 'allAccounts',
+            label: 'All Accounts',
+            icon: '📋',
+            description: 'View all accounts',
+            onClick: () => {
+                router.push('/?view=allAccounts');
+                if (onNavigate) onNavigate('allAccounts');
+            }
+        },
         {
             id: 'moneyMap',
             label: 'Money Map',
             icon: '🗺️',
             description: 'Unified financial view'
-        },
-        {
-            id: 'propertyMap',
-            label: 'PropertyMap',
-            icon: '📊',
-            description: 'Budget table'
         },
         {
             id: 'prosperityOptimizer',
@@ -54,13 +75,6 @@ const Sidebar = ({ onNavigate, currentView }) => {
             description: 'Smart financial predictions'
         },
         {
-            id: 'cash',
-            label: 'Cash',
-            icon: '💰',
-            description: 'Checking & Savings',
-            accounts: accounts.cash
-        },
-        {
             id: 'cashflow',
             label: 'Cash Flow',
             icon: '💰',
@@ -73,11 +87,11 @@ const Sidebar = ({ onNavigate, currentView }) => {
             description: 'Project your future cash position'
         },
         {
-    id: 'investments',
-    label: 'Investments',
-    icon: '📈',
-    description: 'Track and manage your investment portfolio'
-},
+            id: 'investments',
+            label: 'Investments',
+            icon: '📈',
+            description: 'Track and manage your investment portfolio'
+        },
         {
             id: 'creditCards',
             label: 'Credit Cards',
