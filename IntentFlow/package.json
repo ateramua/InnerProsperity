@@ -14,6 +14,11 @@
     "./src/pages/**/*.css"
   ],
   "scripts": {
+    "migrate": "node src/db/migrations/run.cjs",
+    "migrate:check": "sqlite3 ~/Library/Application\\ Support/intentflow/database/app.db \"PRAGMA table_info(categories);\"",
+    "dist": "npm run clean && npm run build && npm run verify-build && electron-builder",
+    "verify-build": "echo '✅ Verifying build output:' && ls -la out/ && echo 'out folder exists with files'",
+    "postbuild": "echo '✅ Build complete, out folder contains:' && ls -la out/",
     "next-dev": "next dev",
     "next-build": "next build",
     "build": "next build",
@@ -21,10 +26,9 @@
     "dev": "concurrently \"npm run next-dev\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
     "electron": "electron .",
     "electron-dev": "cross-env NODE_ENV=development electron .",
-    "dist": "npm run clean && npm run build && electron-builder",
-    "dist:mac": "npm run clean && npm run build && electron-builder --mac",
-    "dist:win": "npm run clean && npm run build && electron-builder --win",
-    "dist:linux": "npm run clean && npm run build && electron-builder --linux",
+    "dist:mac": "npm run clean && npm run build && npm run verify-build && electron-builder --mac",
+    "dist:win": "npm run clean && npm run build && npm run verify-build && electron-builder --win",
+    "dist:linux": "npm run clean && npm run build && npm run verify-build && electron-builder --linux",
     "clean": "rimraf .next out release dist"
   },
   "keywords": [
@@ -47,87 +51,10 @@
     "files": [
       "src/**/*",
       "out/**/*",
-      "package.json",
-      "next.config.js",
-      "jsconfig.json",
-      "public/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "src/db",
-        "to": "src/db",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "assets",
-        "to": "assets",
-        "filter": [
-          "**/*"
-        ]
-      }
+      "package.json"
     ],
     "mac": {
-      "category": "public.app-category.finance",
-      "icon": "assets/icon.icns",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
-      "darkModeSupport": true
-    },
-    "win": {
-      "icon": "assets/icon.ico",
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "linux": {
-      "icon": "assets/icon.png",
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "category": "Finance",
-      "maintainer": "your.email@example.com",
-      "synopsis": "Zero-based budgeting desktop application"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Money Manager",
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "license": "LICENSE.txt"
-    },
-    "dmg": {
-      "title": "Money Manager Installer",
-      "icon": "assets/icon.icns",
-      "iconSize": 128,
-      "contents": [
-        {
-          "x": 130,
-          "y": 220
-        },
-        {
-          "x": 410,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ],
-      "window": {
-        "width": 540,
-        "height": 380
-      }
+      "target": "dmg"
     }
   },
   "dependencies": {

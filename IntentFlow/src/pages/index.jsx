@@ -11,6 +11,14 @@ import ReflectsView from '../views/ReflectsView';
 
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 
+import '../views/CashAccountsView';
+import '../views/AllAccountsView';
+
+import '../views/force-imports';
+
+
+// ADD THIS
+
 export default function HomePage() {
   const { isAuthenticated, loading } = useAuth();
   const router = useRouter();
@@ -48,29 +56,9 @@ export default function HomePage() {
     }
   );
 
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadAccounts();
-    }
-  }, [isAuthenticated]);
 
-  const loadAccounts = async () => {
-    try {
-      const userResult = await window.electronAPI.getCurrentUser();
 
-      if (userResult?.success && userResult?.data) {
-        const userId = userResult.data.id;
 
-        const result = await window.electronAPI.getAccountsSummary(userId);
-
-        if (result.success) {
-          setAccounts(result.data || []);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load accounts:', error);
-    }
-  };
 
   useEffect(() => {
     if (!loading && !isAuthenticated) {
@@ -99,6 +87,7 @@ export default function HomePage() {
       />
 
       <main style={styles.main}>
+        
         <div style={styles.mainGlass}>
           <ViewContainers
             currentView={currentView}
@@ -112,6 +101,7 @@ export default function HomePage() {
         onRefresh={refresh}
       />
     </div>
+    
   );
 }
 

@@ -1,38 +1,28 @@
-// src/views/ViewContainer.jsx
 import React, { useState, useEffect } from 'react';
-
-// Import all view components
+import CashAccountsView from './CashAccountsView';
+import AllAccountsView from './AllAccountsView';
 import PropertyMapView from './PropertyMapView';
 import ReflectsView from './ReflectsView';
-import AllAccountsView from './AllAccountsView';
 import CashView from './CashView';
 import CreditCardsView from './CreditCardsView';
 import LoansView from './LoansView';
 import AccountDetailView from './AccountDetailView';
-import ForecastPage from '../pages/forecast';
 import MoneyMapView from './MoneyMapView';
 import ProsperityOptimizerView from './ProsperityOptimizerView';
-
-// Import credit card components
+import CashFlowView from './CashFlowView';
+import CashFlowForecast from './CashFlowForecast';
+import StrategicInvestmentPortfolio from './StrategicInvestmentPortfolio';
 import CreditCardManager from './CreditCardManager';
 import CreditCardPlanner from './CreditCardPlanner';
 import AddCreditCardForm from './AddCreditCardForm';
-
-// Import loan components (we'll create these next)
 import LoanManager from './LoanManager';
 import DebtStrategist from './DebtStrategist';
 import AddLoanForm from './AddLoanForm';
-
-import CashFlowView from './CashFlowView';
-import CashFlowForecast from './CashFlowForecast';
-// Add this import
-import CashAccountsView from './CashAccountsView';
-
-// Add this import with your other imports
-import StrategicInvestmentPortfolio from './StrategicInvestmentPortfolio'; // or InvestmentPortfolio if you kept the original name
+import ForecastPage from '../pages/forecast';
 
 const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavigate }) => {
   console.log('🔍 ViewContainer rendering with currentView:', currentView);
+  console.log('🔵 ViewContainer received accounts:', accounts);
 
   // State for credit cards data
   const [creditCards, setCreditCards] = useState([]);
@@ -46,7 +36,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   const loadCreditCards = async () => {
     setIsLoadingCards(true);
     try {
-      // Try to get from database first
       if (window.electronAPI?.getCreditCards) {
         const cards = await window.electronAPI.getCreditCards();
         setCreditCards(cards);
@@ -106,7 +95,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   const loadLoans = async () => {
     setIsLoadingLoans(true);
     try {
-      // Try to get from database first
       if (window.electronAPI?.getLoans) {
         const loansData = await window.electronAPI.getLoans();
         setLoans(loansData);
@@ -189,31 +177,25 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   const handleMakePayment = async (paymentData) => {
     console.log('Processing payment:', paymentData);
     try {
-      // This would call your payment processing API
       if (window.electronAPI?.processPayment) {
         const result = await window.electronAPI.processPayment(paymentData);
         if (result.success) {
-          // Refresh credit cards data
           await loadCreditCards();
           alert('Payment processed successfully!');
           return result;
         }
       } else {
-        // Mock successful payment
         alert(`✅ Payment of $${paymentData.amount} scheduled for ${paymentData.date}`);
-
-        // Update mock data (in real app, this would come from DB)
         setCreditCards(prev => prev.map(card => {
           if (card.id === paymentData.cardId) {
             return {
               ...card,
-              balance: card.balance + paymentData.amount, // Adding because balance is negative
+              balance: card.balance + paymentData.amount,
               lastStatementBalance: Math.max(0, card.lastStatementBalance - paymentData.amount)
             };
           }
           return card;
         }));
-
         return { success: true };
       }
     } catch (error) {
@@ -226,7 +208,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Handle loan payment
   const handleLoanPayment = async (loanId) => {
     console.log('Processing loan payment for:', loanId);
-    // This would open a payment modal or navigate
     alert(`Payment for loan ${loanId} - This would open a payment modal`);
   };
 
@@ -240,7 +221,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   const handleAddLoan = async (loanData) => {
     console.log('Adding new loan:', loanData);
     try {
-      // Mock adding loan
       const newLoan = {
         id: `loan-${Date.now()}`,
         ...loanData,
@@ -249,8 +229,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       };
       setLoans(prev => [...prev, newLoan]);
       alert('✅ Loan added successfully!');
-
-      // Navigate to the new loan's account view
       if (onNavigate) {
         onNavigate(`account-${newLoan.id}`);
       }
@@ -265,8 +243,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Handle editing a credit card
   const handleEditCard = (card) => {
     console.log('Editing card:', card);
-    // Navigate to card edit form or open modal
-    // For now, just log and maybe open a modal
     alert(`Edit card: ${card.name} - This would open an edit form`);
   };
 
@@ -279,14 +255,12 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         if (result.success) {
           await loadCreditCards();
           alert('Credit card added successfully!');
-          // Navigate to the new card's account view
           if (onNavigate) {
             onNavigate(`account-${result.data.id}`);
           }
           return result;
         }
       } else {
-        // Mock adding card
         const newCard = {
           id: `card-${Date.now()}`,
           name: cardData.name,
@@ -302,8 +276,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         };
         setCreditCards(prev => [...prev, newCard]);
         alert('✅ Credit card added successfully!');
-
-        // Navigate to the new card's account view
         if (onNavigate) {
           onNavigate(`account-${newCard.id}`);
         }
@@ -340,10 +312,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Handle payment planned from planner
   const handlePaymentPlanned = (plan) => {
     console.log('Payment planned:', plan);
-    // Show payment modal or navigate to payment
     alert(`Payment planned for $${plan.recommendedPayment?.toFixed(2) || plan.amount?.toFixed(2)}`);
-
-    // Option 1: Navigate to account to execute payment
     if (plan.cardId && onNavigate) {
       onNavigate(`account-${plan.cardId}`);
     }
@@ -352,13 +321,9 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Handle move money request from planner
   const handleMoveMoney = (cardId, amount) => {
     console.log('Move money request:', { cardId, amount });
-    // This would trigger the move money modal in PropertyMapView
-    // You could use an event bus or context to communicate
     window.dispatchEvent(new CustomEvent('open-move-money', {
       detail: { toCategory: 'credit-card-payment', amount, cardId }
     }));
-
-    // Navigate to property map to show the move money modal
     if (onNavigate) {
       onNavigate('propertyMap');
     }
@@ -456,9 +421,13 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
 
       // Handle regular views
       case 'accounts':
+        console.log('🔵 Rendering CashAccountsView with accounts:', accounts);
         return <CashAccountsView accounts={accounts} />;
+
       case 'allAccounts':
+        console.log('🔵 Rendering AllAccountsView with accounts:', accounts);
         return <AllAccountsView accounts={accounts} />;
+
       case 'propertyMap':
         return <PropertyMapView />;
 
@@ -471,14 +440,10 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       case 'reflects':
         return <ReflectsView />;
 
-      case 'allAccounts':
-        return <AllAccountsView accounts={accounts} />;
-
       case 'forecast':
         return <ForecastPage />;
 
       case 'creditCards':
-        // Legacy support - redirect to dashboard
         if (onNavigate) {
           setTimeout(() => onNavigate('credit-dashboard'), 0);
         }
@@ -487,6 +452,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
             <p>Redirecting to Credit Card Dashboard...</p>
           </div>
         );
+
       case 'loan-dashboard':
         if (isLoadingLoans) {
           return (
@@ -528,7 +494,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
           />
         );
 
-
       case 'loan-add':
         return (
           <AddLoanForm
@@ -536,6 +501,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
             onCancel={() => onNavigate('loan-dashboard')}
           />
         );
+
       case 'cashflow':
         return (
           <CashFlowView
@@ -546,6 +512,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
             loans={loans}
           />
         );
+
       case 'cashflow-forecast':
         return (
           <CashFlowForecast
@@ -556,10 +523,11 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
             loans={loans}
           />
         );
+
       case 'investments':
         return (
           <StrategicInvestmentPortfolio
-            investments={[]} // Pass your investments data here
+            investments={[]}
             accounts={accounts}
             transactions={transactions}
           />
@@ -632,10 +600,5 @@ const styles = {
     marginBottom: '1rem'
   }
 };
-
-// Add keyframes for spinner animation (this would need to be in a global CSS file)
-// @keyframes spin {
-//   to { transform: rotate(360deg); }
-// }
 
 export default ViewContainer;

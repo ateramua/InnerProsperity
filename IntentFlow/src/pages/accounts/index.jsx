@@ -5,16 +5,17 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import Sidebar from '../../components/Navigation/Sidebar';
+import Sidebar from '../../components/Navigation/Sidebar';  // ADD THIS - it was missing!
+import { accountUtils } from '../../utils/accountUtils';
 
 export default function AccountsDashboard() {
     console.log('🔵 [AccountsDashboard] Component rendering');
     console.log('🔵 [AccountsDashboard] Current time:', new Date().toISOString());
-    
+
     const router = useRouter();
     console.log('🔵 [AccountsDashboard] Router path:', router.pathname);
     console.log('🔵 [AccountsDashboard] Router query:', router.query);
-    
+
     const [accounts, setAccounts] = useState([]);
     const [currentView, setCurrentView] = useState('accounts');
     const [totals, setTotals] = useState({
@@ -23,6 +24,7 @@ export default function AccountsDashboard() {
         credit: { total: 0, count: 0, formatted: '$0.00' },
         overall: { total: 0, count: 0, formatted: '$0.00' }
     });
+    const [lastUpdate, setLastUpdate] = useState(new Date());
     const [isLoading, setIsLoading] = useState(true);
     const [showNewAccountModal, setShowNewAccountModal] = useState(false);
     const [newAccountData, setNewAccountData] = useState({
@@ -49,111 +51,62 @@ export default function AccountsDashboard() {
     useEffect(() => {
         console.log('🔵 [useEffect] Component mounted, calling loadAccounts()');
         loadAccounts();
-        
+
         // Cleanup function
         return () => {
             console.log('🔵 [useEffect] Component unmounting');
         };
     }, []);
 
+    // SINGLE loadAccounts function - using accountUtils (clean version)
     const loadAccounts = async () => {
-        console.log('🔵 [loadAccounts] Function started');
-        console.log('🔵 [loadAccounts] Setting isLoading to true');
+        console.log('📊 Loading all accounts for dashboard...');
         setIsLoading(true);
-        
-        try {
-            console.log('🔵 [loadAccounts] Checking if window.electronAPI exists:', !!window.electronAPI);
-            
-            if (!window.electronAPI) {
-                console.error('🔴 [loadAccounts] CRITICAL: window.electronAPI is undefined!');
-                console.log('🔵 [loadAccounts] Available window properties:', Object.keys(window));
-                setIsLoading(false);
-                return;
-            }
 
-            // First get the current user to see what ID they have
-            console.log('🔵 [loadAccounts] Calling window.electronAPI.getCurrentUser()');
-            const userResult = await window.electronAPI.getCurrentUser();
-            console.log('👤 [loadAccounts] Current user result:', JSON.stringify(userResult, null, 2));
+        const result = await accountUtils.loadAccounts();
+        console.log('📊 Load accounts result:', result);
 
-            if (userResult?.success && userResult?.data) {
-                const userId = userResult.data.id;
-                console.log('👤 [loadAccounts] User ID retrieved:', userId);
-                console.log('👤 [loadAccounts] User details:', userResult.data);
+        if (result.success) {
+            setAccounts(result.data);
+            setLastUpdate(new Date());
 
-                console.log('🔵 [loadAccounts] Calling window.electronAPI.getAccountsSummary with userId:', userId);
-                const result = await window.electronAPI.getAccountsSummary(userId);
-                console.log('📊 [loadAccounts] Accounts data received:', JSON.stringify(result, null, 2));
+            // Calculate totals
+            const budgetAccounts = result.data.filter(a => a.account_type_category === 'budget' && a.type !== 'credit');
+            const creditAccounts = result.data.filter(a => a.type === 'credit');
+            const trackingAccounts = result.data.filter(a => a.account_type_category === 'tracking');
 
-                if (result.success) {
-                    const accountsData = result.data || [];
-                    console.log('📊 [loadAccounts] Accounts data length:', accountsData.length);
-                    console.log('📊 [loadAccounts] First account sample:', accountsData[0]);
-                    
-                    setAccounts(accountsData);
-                    console.log('🔵 [loadAccounts] setAccounts called with', accountsData.length, 'accounts');
+            const budgetTotal = budgetAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+            const creditTotal = creditAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+            const trackingTotal = trackingAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+            const overallTotal = budgetTotal + trackingTotal;
 
-                    // Calculate totals from the accounts data
-                    console.log('🔵 [loadAccounts] Calculating account totals...');
-                    
-                    const budgetAccounts = accountsData.filter(a => a.account_type_category === 'budget' && a.type !== 'credit');
-                    const creditAccounts = accountsData.filter(a => a.type === 'credit');
-                    const trackingAccounts = accountsData.filter(a => a.account_type_category === 'tracking');
-                    
-                    console.log('🔵 [loadAccounts] Budget accounts count:', budgetAccounts.length);
-                    console.log('🔵 [loadAccounts] Credit accounts count:', creditAccounts.length);
-                    console.log('🔵 [loadAccounts] Tracking accounts count:', trackingAccounts.length);
-
-                    const budgetTotal = budgetAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
-                    const creditTotal = creditAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
-                    const trackingTotal = trackingAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
-                    const overallTotal = budgetTotal + trackingTotal;
-                    
-                    console.log('🔵 [loadAccounts] Budget total:', budgetTotal);
-                    console.log('🔵 [loadAccounts] Credit total:', creditTotal);
-                    console.log('🔵 [loadAccounts] Tracking total:', trackingTotal);
-                    console.log('🔵 [loadAccounts] Overall total:', overallTotal);
-
-                    const newTotals = {
-                        budget: {
-                            total: budgetTotal,
-                            count: budgetAccounts.length,
-                            formatted: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(budgetTotal)
-                        },
-                        credit: {
-                            total: creditTotal,
-                            count: creditAccounts.length,
-                            formatted: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(creditTotal)
-                        },
-                        tracking: {
-                            total: trackingTotal,
-                            count: trackingAccounts.length,
-                            formatted: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(trackingTotal)
-                        },
-                        overall: {
-                            total: overallTotal,
-                            count: accountsData.length,
-                            formatted: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(overallTotal)
-                        }
-                    };
-                    
-                    console.log('🔵 [loadAccounts] Setting totals:', newTotals);
-                    setTotals(newTotals);
-                } else {
-                    console.error('🔴 [loadAccounts] getAccountsSummary failed:', result.error);
-                    console.log('🔵 [loadAccounts] Full error response:', result);
+            setTotals({
+                budget: {
+                    total: budgetTotal,
+                    count: budgetAccounts.length,
+                    formatted: accountUtils.formatCurrency(budgetTotal)
+                },
+                credit: {
+                    total: creditTotal,
+                    count: creditAccounts.length,
+                    formatted: accountUtils.formatCurrency(creditTotal)
+                },
+                tracking: {
+                    total: trackingTotal,
+                    count: trackingAccounts.length,
+                    formatted: accountUtils.formatCurrency(trackingTotal)
+                },
+                overall: {
+                    total: overallTotal,
+                    count: result.data.length,
+                    formatted: accountUtils.formatCurrency(overallTotal)
                 }
-            } else {
-                console.error('🔴 [loadAccounts] No authenticated user found');
-                console.log('🔵 [loadAccounts] userResult:', userResult);
-            }
-        } catch (error) {
-            console.error('🔴 [loadAccounts] Exception caught:', error);
-            console.error('🔴 [loadAccounts] Error stack:', error.stack);
-        } finally {
-            console.log('🔵 [loadAccounts] Setting isLoading to false');
-            setIsLoading(false);
+            });
+        } else {
+            console.error('Failed to load accounts:', result.error);
         }
+
+        setIsLoading(false);
     };
 
     const handleCreateAccount = async () => {
@@ -175,7 +128,7 @@ export default function AccountsDashboard() {
             // Prepare account data with userId
             const accountData = {
                 ...newAccountData,
-                userId: userId  // Add the userId here
+                userId: userId
             };
 
             console.log('📝 [handleCreateAccount] Creating account with data:', accountData);
@@ -225,7 +178,7 @@ export default function AccountsDashboard() {
         }
         return balance >= 0 ? '#4ADE80' : '#F87171';
     };
-    
+
     const formatCurrency = (amount) => {
         return new Intl.NumberFormat('en-US', {
             style: 'currency',

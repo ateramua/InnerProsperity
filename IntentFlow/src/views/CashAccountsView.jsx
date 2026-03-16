@@ -5,6 +5,8 @@ import { useRouter } from 'next/router';
 const CashAccountsView = ({ accounts: propAccounts }) => {
   const router = useRouter();
   const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [showNewAccountModal, setShowNewAccountModal] = useState(false);
   const [newAccountData, setNewAccountData] = useState({
     name: '',
@@ -15,18 +17,89 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     institution: ''
   });
 
+  // Add style for spinner animation using useEffect
   useEffect(() => {
-    if (propAccounts) {
-      // Filter to only checking and savings accounts
-      const cashAccounts = propAccounts.filter(a => 
-        a.type === 'checking' || a.type === 'savings'
-      );
-      setAccounts(cashAccounts);
+    // Create style element only on client side
+    if (typeof document !== 'undefined') {
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      `;
+      document.head.appendChild(style);
+      
+      // Cleanup
+      return () => {
+        document.head.removeChild(style);
+      };
     }
+  }, []);
+
+  useEffect(() => {
+    loadAccounts();
   }, [propAccounts]);
 
-  const handleAccountClick = (accountId) => {
-    router.push(`/accounts/${accountId}`);
+  const loadAccounts = async () => {
+    console.log('💰 CashAccountsView - Loading accounts...');
+    setLoading(true);
+    
+    try {
+      if (propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
+        console.log('💰 Using propAccounts:', propAccounts.length);
+        const cashAccounts = propAccounts.filter(a => 
+          a.type === 'checking' || a.type === 'savings'
+        );
+        setAccounts(cashAccounts);
+        setLoading(false);
+        return;
+      }
+
+      console.log('💰 No propAccounts, fetching directly...');
+      
+      if (!window.electronAPI) {
+        console.error('❌ electronAPI not available');
+        setError('Application API not available');
+        setLoading(false);
+        return;
+      }
+
+      const userResult = await window.electronAPI.getCurrentUser();
+      console.log('💰 User result:', userResult);
+
+      if (!userResult?.success || !userResult?.data) {
+        console.error('❌ No user logged in');
+        setError('Please log in to view accounts');
+        setLoading(false);
+        return;
+      }
+
+      const userId = userResult.data.id;
+      console.log('💰 User ID:', userId);
+
+      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+      console.log('💰 Accounts result:', accountsResult);
+
+      if (accountsResult?.success) {
+        const allAccounts = accountsResult.data || [];
+        console.log('💰 All accounts count:', allAccounts.length);
+        
+        const cashAccounts = allAccounts.filter(a => 
+          a.type === 'checking' || a.type === 'savings'
+        );
+        console.log('💰 Cash accounts count:', cashAccounts.length);
+        
+        setAccounts(cashAccounts);
+      } else {
+        console.error('❌ Failed to load accounts:', accountsResult?.error);
+        setError(accountsResult?.error || 'Failed to load accounts');
+      }
+    } catch (error) {
+      console.error('❌ Error loading accounts:', error);
+      setError(error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCreateAccount = async () => {
@@ -41,15 +114,14 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       const accountData = {
         ...newAccountData,
         userId: userId,
-        type: newAccountData.type, // Will be either 'checking' or 'savings'
+        type: newAccountData.type,
         account_type_category: 'budget'
       };
 
       const result = await window.electronAPI.createAccount(accountData);
       if (result.success) {
         setShowNewAccountModal(false);
-        // Refresh accounts via parent
-        window.location.reload(); // Temporary - better to have refresh prop
+        await loadAccounts();
         setNewAccountData({
           name: '',
           type: 'checking',
@@ -58,28 +130,57 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           currency: 'USD',
           institution: ''
         });
+        alert('✅ Account created successfully!');
       } else {
         alert(`Failed to create account: ${result.error}`);
       }
     } catch (error) {
       console.error('Error creating account:', error);
+      alert(`Error: ${error.message}`);
     }
+  };
+
+  const handleAccountClick = (accountId) => {
+    router.push(`/accounts/${accountId}`);
   };
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD'
-    }).format(amount);
+    }).format(amount || 0);
   };
 
   const getAccountIcon = (type) => {
     return type === 'checking' ? '🏦' : '💰';
   };
 
+  if (loading) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.loadingState}>
+          <div style={styles.loadingSpinner}></div>
+          <p>Loading accounts...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.errorState}>
+          <p>❌ {error}</p>
+          <button onClick={loadAccounts} style={styles.retryButton}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.container}>
-      {/* Header with Add Button */}
       <div style={styles.header}>
         <div>
           <h1 style={styles.title}>Accounts</h1>
@@ -93,9 +194,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         </button>
       </div>
 
-      {/* Accounts List */}
       <div style={styles.accountsContainer}>
-        {/* Checking Accounts Section */}
         <div style={styles.section}>
           <h2 style={styles.sectionTitle}>CHECKING ACCOUNTS</h2>
           <div style={styles.accountList}>
@@ -129,7 +228,6 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           </div>
         </div>
 
-        {/* Savings Accounts Section */}
         <div style={styles.section}>
           <h2 style={styles.sectionTitle}>SAVINGS ACCOUNTS</h2>
           <div style={styles.accountList}>
@@ -164,7 +262,6 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         </div>
       </div>
 
-      {/* New Account Modal */}
       {showNewAccountModal && (
         <div style={styles.modalOverlay}>
           <div style={styles.modalContent}>
@@ -323,6 +420,41 @@ const styles = {
     padding: '2rem',
     textAlign: 'center',
     color: '#6B7280'
+  },
+  loadingState: {
+    padding: '3rem',
+    textAlign: 'center',
+    color: '#9CA3AF',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '1rem'
+  },
+  loadingSpinner: {
+    width: '40px',
+    height: '40px',
+    border: '4px solid #3B82F6',
+    borderTopColor: 'transparent',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+    marginBottom: '1rem'
+  },
+  errorState: {
+    padding: '3rem',
+    textAlign: 'center',
+    color: '#F87171',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '1rem'
+  },
+  retryButton: {
+    padding: '0.5rem 1rem',
+    background: '#3B82F6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    cursor: 'pointer'
   },
   modalOverlay: {
     position: 'fixed',

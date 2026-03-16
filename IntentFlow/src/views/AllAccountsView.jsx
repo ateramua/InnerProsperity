@@ -12,12 +12,12 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
   });
 
   const handleAccountClick = (account) => {
-    // Navigate to add transaction page for this account
-    router.push(`/accounts/${account.id}/add-transaction`);
+    console.log('🔵 Clicked account:', account.id, account.name);
+    router.push(`/accounts/${account.id}`);
   };
 
   const handleEditClick = (e, account) => {
-    e.stopPropagation(); // Prevent triggering the row click
+    e.stopPropagation();
     setEditingAccount(account.id);
     setEditForm({
       name: account.name,
@@ -78,10 +78,19 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
     }).format(amount);
   };
 
+  const getAccountTypeColor = (type) => {
+    switch(type) {
+      case 'credit': return '#7C3AED';
+      case 'checking': return '#3B82F6';
+      case 'savings': return '#10B981';
+      default: return '#6B7280';
+    }
+  };
+
   return (
     <div style={styles.container}>
       <h1 style={styles.title}>All Accounts</h1>
-      <p style={styles.description}>Click any account to add a transaction • Hover for edit/delete options</p>
+      <p style={styles.description}>Click any account to view transactions • Hover for edit/delete options</p>
       
       {!accounts || accounts.length === 0 ? (
         <div style={styles.placeholder}>
@@ -123,9 +132,7 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
                       <td style={styles.tableCell}>
                         <span style={{
                           ...styles.accountType,
-                          backgroundColor: account.type === 'credit' ? '#7C3AED' : 
-                                         account.type === 'checking' ? '#3B82F6' :
-                                         account.type === 'savings' ? '#10B981' : '#6B7280'
+                          backgroundColor: getAccountTypeColor(account.type)
                         }}>
                           {account.type}
                         </span>
@@ -178,9 +185,7 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
                       <td style={styles.tableCell}>
                         <span style={{
                           ...styles.accountType,
-                          backgroundColor: account.type === 'credit' ? '#7C3AED' : 
-                                         account.type === 'checking' ? '#3B82F6' :
-                                         account.type === 'savings' ? '#10B981' : '#6B7280'
+                          backgroundColor: getAccountTypeColor(account.type)
                         }}>
                           {account.type}
                         </span>
@@ -356,19 +361,5 @@ const styles = {
     cursor: 'pointer'
   }
 };
-
-// Add global styles for hover effects
-if (typeof document !== 'undefined') {
-  const style = document.createElement('style');
-  style.innerHTML = `
-    .account-row:hover {
-      background: #374151 !important;
-    }
-    .account-row:hover .action-buttons {
-      opacity: 1;
-    }
-  `;
-  document.head.appendChild(style);
-}
 
 export default AllAccountsView;

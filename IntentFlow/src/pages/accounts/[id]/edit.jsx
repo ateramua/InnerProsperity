@@ -22,6 +22,24 @@ export default function EditAccountPage() {
         minimum_payment: ''
     });
 
+    // Add style for spinner animation
+    useEffect(() => {
+        // Only run on client side
+        if (typeof document !== 'undefined') {
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+            
+            return () => {
+                document.head.removeChild(style);
+            };
+        }
+    }, []);
+
     useEffect(() => {
         if (id) {
             loadAccount();

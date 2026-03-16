@@ -1,35 +1,24 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Your existing config
+  output: 'export',
   images: {
     unoptimized: true,
   },
   trailingSlash: true,
   reactStrictMode: true,
-  
-  // ✅ CRITICAL FIX FOR ELECTRON
-  output: 'export',
-  assetPrefix: './',  // This makes paths relative
-  basePath: '',
-  
-  // Disable SWC minification to preserve class names
   swcMinify: false,
-  
-  // Preserve component names and styles
-  compiler: {
-    styledComponents: {
-      displayName: true,
-      fileName: true,
-      pure: true,
-    },
-  },
-  
-  // Generate source maps for debugging
+  assetPrefix: './',
   productionBrowserSourceMaps: true,
-  
-  // Webpack configuration for production
+  compiler: {
+    removeConsole: false,
+    styledComponents: true,
+  },
+  // Remove exportPathMap - it's causing the build errors
   webpack: (config, { isServer, dev }) => {
-    // Handle .mjs files
+    if (!dev && !isServer) {
+      config.optimization.splitChunks = false;
+      config.optimization.runtimeChunk = false;
+    }
     config.module.rules.push({
       test: /\.m?js$/,
       type: "javascript/auto",
@@ -37,12 +26,6 @@ const nextConfig = {
         fullySpecified: false,
       },
     });
-
-    // CRITICAL: Ensure paths are correct for Electron
-    if (!dev) {
-      config.output.publicPath = './_next/';  // Force correct public path
-    }
-
     return config;
   },
 };

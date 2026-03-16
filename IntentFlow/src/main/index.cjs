@@ -3,14 +3,17 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const path = require('path');
 const fs = require('fs');
 const os = require('os'); // Added for network status
+
+// ==================== CONSTANTS ====================
+const PRELOAD_PATH = path.join(__dirname, '../preload/preload.cjs');
+const isDev = process.env.NODE_ENV === 'development' && !app.isPackaged;
+
+// ==================== SERVICES ====================
 const CategoryGroupService = require('../services/categories/categoryGroupService.cjs');
-// Add this with other requires at the top
 const ForecastService = require('../services/forecast/forecastService.cjs');
 const MoneyMap = require('../services/forecast/moneyMap.cjs');
 const ProsperityOptimizer = require('../services/prosperity/prosperityOptimizer.cjs');
-// Add with other requires at the top
 const ValidationService = require('../services/forecast/validationService.cjs');
-
 const updateService = require('../services/realtime/updateService.cjs');
 
 // Windows
@@ -19,11 +22,10 @@ const { createSplashWindow, closeSplashWindow } = require('./splash.cjs');
 // Services
 const accountService = require('../services/accounts/accountService.cjs');
 const userService = require('../services/userService.cjs');
-// const groupService = require('../services/groupService.cjs');
-// const categoryService = require('../services/categoryService.cjs');
 const settingsService = require('../services/settingsService.cjs');
 const TransactionService = require('../services/transactions/transactionService.cjs');
 
+// ==================== GLOBAL VARIABLES ====================
 let mainWindow;
 let splashWindow;
 let db;
@@ -32,75 +34,114 @@ let ipcHandlersRegistered = false; // Flag to prevent duplicate registration
 
 // ==================== DATABASE PATH HELPER ====================
 function getDatabasePath() {
-    // In production, use the userData directory
-    if (app.isPackaged) {
-        const userDataPath = app.getPath('userData');
-        const dbDir = path.join(userDataPath, 'database');
-        
+    // Use the database that has all your tables
+    const projectRoot = path.resolve(__dirname, '../..');
+    const dbPath = path.join(projectRoot, 'src/db/data/app.db');
+
+    console.log('📂 Database path:', dbPath);
+    console.log('📂 Database exists:', fs.existsSync(dbPath));
+
+    return dbPath;
+}
+
+// ==================== DATABASE HELPER ====================
+async function getDatabase() {
+    console.log('🔍 getDatabase called, current db state:', db ? 'exists' : 'null');
+
+    // If we already have a connection, return it
+    if (db) {
+        try {
+            // Test the connection with a simple query
+            await db.get('SELECT 1');
+            return db;
+        } catch (e) {
+            console.log('⚠️ Database connection stale, reconnecting...');
+            db = null;
+        }
+    }
+
+    console.log('📦 Creating new database connection...');
+
+    const dbPath = getDatabasePath();
+    console.log('📂 Database path:', dbPath);
+
+    try {
+        const sqlite3 = require('sqlite3');
+        const { open } = require('sqlite');
+
         // Ensure directory exists
+        const dbDir = path.dirname(dbPath);
         if (!fs.existsSync(dbDir)) {
             fs.mkdirSync(dbDir, { recursive: true });
             console.log('📁 Created database directory at:', dbDir);
         }
-        
-        return path.join(dbDir, 'app.db');
-    } else {
-        // In development, use the local db/data directory
-        return path.join(__dirname, '../db/data/app.db');
+
+        db = await open({
+            filename: dbPath,
+            driver: sqlite3.Database
+        });
+
+        // Enable foreign keys
+        await db.exec('PRAGMA foreign_keys = ON');
+
+        // Test the connection
+        await db.get('SELECT 1');
+
+        console.log('✅ Database connection established');
+
+        // Check if we need to run migrations (for production new installs)
+        if (app.isPackaged) {
+            const migrationsTable = await db.get(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'"
+            );
+
+            if (!migrationsTable) {
+                console.log('🔄 New database detected, running migrations...');
+                try {
+                    const { runMigrations } = require('../db/migrations/index.cjs');
+                    await runMigrations(db);
+                    console.log('✅ Migrations completed successfully');
+                } catch (migrationError) {
+                    console.error('❌ Migrations failed:', migrationError);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('❌ Failed to create database connection:', error);
+        throw error;
     }
+
+    return db;
 }
 
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
     console.log('📦 Initializing database...');
-
-    const sqlite3 = require('sqlite3');
-    const { open } = require('sqlite');
-    
     const dbPath = getDatabasePath();
-    console.log('📂 Database path:', dbPath);
+    const dbDir = path.dirname(dbPath);
+
+    // Ensure the directory exists
+    if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+        console.log('📂 Created database directory:', dbDir);
+    }
 
     // Check if database file exists (only in development)
     if (!app.isPackaged) {
-        const fs = require('fs');
         if (!fs.existsSync(dbPath)) {
-            console.error('❌ Database file does not exist at:', dbPath);
-            throw new Error(`Database file not found at ${dbPath}. Please run migrations first.`);
+            console.log('📁 Creating development database...');
         }
     }
 
-    // Actually open the database connection
-    const database = await open({
-        filename: dbPath,
-        driver: sqlite3.Database
-    });
-
-    // Enable foreign keys
-    await database.exec('PRAGMA foreign_keys = ON');
-
-    console.log('✅ Database initialized successfully');
-    console.log('✅ Available methods:', Object.keys(database));
-
-    // Check if we need to run migrations (for production new installs)
-    if (app.isPackaged) {
-        const migrationsTable = await database.get(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'"
-        );
-        
-        if (!migrationsTable) {
-            console.log('🔄 New database detected, running migrations...');
-            try {
-                const { runMigrations } = require('../db/migrations/index.cjs');
-                await runMigrations(database);
-                console.log('✅ Migrations completed successfully');
-            } catch (migrationError) {
-                console.error('❌ Migrations failed:', migrationError);
-                throw migrationError;
-            }
-        }
+    try {
+        // Actually open the database connection
+        const database = await getDatabase();
+        console.log('✅ Database initialized successfully');
+        return database;
+    } catch (error) {
+        console.error('❌ Failed to initialize database:', error);
+        throw error;
     }
-
-    return database;
 }
 
 // ==================== APP INITIALIZATION ====================
@@ -108,7 +149,10 @@ app.whenReady().then(async () => {
     console.log('🚀 Starting Money Manager...');
     console.log('🔍 app.isPackaged:', app.isPackaged);
     console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
+    console.log('🔍 isDev:', isDev);
     console.log('🔍 Current directory:', __dirname);
+    console.log('🔍 Preload path:', PRELOAD_PATH);
+    console.log('🔍 Preload exists:', fs.existsSync(PRELOAD_PATH));
 
     // Create and show splash screen
     splashWindow = createSplashWindow();
@@ -135,160 +179,160 @@ app.whenReady().then(async () => {
 });
 
 // ==================== WINDOW CREATION ====================
-async function createWindow() {
-    const preloadPath = path.join(__dirname, '../preload/preload.cjs');
-    console.log('🔍 Preload path:', preloadPath);
-    console.log('🔍 Preload exists:', fs.existsSync(preloadPath));
+function createWindow() {
+    console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
+    console.log('🔍 isDev:', isDev);
 
-    mainWindow = new BrowserWindow({
-        width: 1300,
-        height: 900,
-        minWidth: 1000,
-        minHeight: 700,
-        webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true,
-            preload: preloadPath,
-            // 🚀 ADD THIS FOR DEBUGGING
-            devTools: true,
-        },
-        titleBarStyle: 'default',
-        backgroundColor: '#0f2e1c',
+    const win = new BrowserWindow({
+        width: 1200,
+        height: 800,
         show: false,
-        icon: process.platform === 'darwin'
-            ? path.join(__dirname, '../../assets/icon.icns')
-            : path.join(__dirname, '../../assets/icon.png'),
+        webPreferences: {
+            preload: PRELOAD_PATH,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+            webSecurity: !isDev,
+            allowRunningInsecureContent: isDev
+        },
+        icon: path.join(__dirname, '../renderer/public/favicon.ico'),
+        backgroundColor: '#111827'
     });
 
-    // 🚀 ADD THIS - Log all webContents events
-    mainWindow.webContents.on('did-start-loading', () => {
-        console.log('🔵 WebContents: did-start-loading');
-    });
+    mainWindow = win;
 
-    mainWindow.webContents.on('did-stop-loading', () => {
-        console.log('🔵 WebContents: did-stop-loading');
-    });
-
-    mainWindow.webContents.on('did-finish-load', () => {
-        console.log('🔵 WebContents: did-finish-load');
-        // 🚀 Check what was loaded
-        mainWindow.webContents.executeJavaScript(`
-            console.log('🔵 Window location:', window.location.href);
-            console.log('🔵 Document title:', document.title);
-            console.log('🔵 Body content length:', document.body?.innerHTML?.length || 0);
-            console.log('🔵 Is React mounted?', !!document.getElementById('__next'));
-        `).catch(err => console.error('Failed to execute JS:', err));
-    });
-
-    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-        console.error('🔴 WebContents: did-fail-load', { errorCode, errorDescription });
-    });
-
-    mainWindow.webContents.on('crashed', () => {
-        console.error('🔴 WebContents: crashed');
-    });
-
-    mainWindow.webContents.on('unresponsive', () => {
-        console.error('🔴 WebContents: unresponsive');
-    });
-
-    mainWindow.webContents.on('responsive', () => {
-        console.log('🔵 WebContents: responsive');
-    });
-
-    // 🚀 ADD THIS - Catch console messages from renderer
-    mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
-        const levels = ['debug', 'info', 'warning', 'error'];
-        console.log(`🔵 [Renderer ${levels[level] || 'log'}]: ${message} (${sourceId}:${line})`);
-    });
-
-    const isDev = !app.isPackaged;
-
+    // Load the app
     if (isDev) {
-        console.log('🔧 Running in development mode');
-        await mainWindow.loadURL('http://localhost:3000');
-        mainWindow.webContents.openDevTools();
+        console.log('🔍 Loading dev URL: http://localhost:3000');
+        win.loadURL('http://localhost:3000');
+        win.webContents.openDevTools();
     } else {
         const indexPath = path.join(__dirname, '../../out/index.html');
-        console.log('🔍 Index path:', indexPath);
-        console.log('🔍 Index exists:', fs.existsSync(indexPath));
-        
-        // 🚀 Check what files are actually in the out directory
-        try {
-            const outDir = path.join(__dirname, '../../out');
-            console.log('🔍 Out directory contents:', fs.readdirSync(outDir).slice(0, 10));
-            
-            const nextDir = path.join(outDir, '_next');
-            if (fs.existsSync(nextDir)) {
-                console.log('🔍 _next directory exists');
-                console.log('🔍 _next contents:', fs.readdirSync(nextDir).slice(0, 10));
-            } else {
-                console.error('🔴 _next directory MISSING!');
-            }
-        } catch (e) {
-            console.error('🔴 Error reading out directory:', e);
+        console.log('📄 Loading production file:', indexPath);
+
+        // Check if file exists
+        if (!fs.existsSync(indexPath)) {
+            console.error('❌ Production file not found at:', indexPath);
+            console.log('📂 Directory contents:', fs.readdirSync(path.dirname(indexPath)));
         }
 
-        if (fs.existsSync(indexPath)) {
-            // 🚀 Read the index.html to verify it has content
-            const indexContent = fs.readFileSync(indexPath, 'utf8');
-            console.log('🔍 index.html length:', indexContent.length);
-            console.log('🔍 index.html first 200 chars:', indexContent.substring(0, 200));
-            
-            await mainWindow.loadFile(indexPath).catch(err => {
-                console.error('🔴 Failed to load index.html:', err);
-            });
-        } else {
-            dialog.showErrorBox('Build Files Missing', 'Application files not found. Please reinstall.');
-            app.quit();
-        }
+        win.loadFile(indexPath).catch(err => {
+            console.error('❌ Failed to load index.html:', err);
+        });
     }
 
-    mainWindow.once('ready-to-show', () => {
-        console.log('🔵 Main window ready-to-show');
-        setTimeout(() => {
-            if (splashWindow) closeSplashWindow();
-            mainWindow.show();
-            console.log('🔵 Main window shown');
-            
-            // 🚀 Force DevTools open for debugging
-            mainWindow.webContents.openDevTools();
-        }, 500);
+    // Handle navigation for static exports
+    win.webContents.on('will-navigate', (event, url) => {
+        console.log('🔀 Navigation attempt to:', url);
+
+        // For static exports, we need to handle client-side routing
+        if (!isDev && url.startsWith('file://')) {
+            event.preventDefault();
+
+            // Convert the URL to a file path
+            const parsedUrl = new URL(url);
+            let filePath = parsedUrl.pathname;
+
+            // Remove leading slash
+            if (filePath.startsWith('/')) {
+                filePath = filePath.substring(1);
+            }
+
+            // If it's a dynamic route, try to load the appropriate HTML file
+            if (filePath.startsWith('accounts/')) {
+                const accountId = filePath.replace('accounts/', '').replace('/', '');
+                const accountPagePath = path.join(__dirname, '../../out/accounts/[id].html');
+
+                if (fs.existsSync(accountPagePath)) {
+                    console.log('📄 Loading account page:', accountPagePath);
+                    win.loadFile(accountPagePath).catch(err => {
+                        console.error('❌ Failed to load account page:', err);
+                        // Fallback to index
+                        win.loadFile(path.join(__dirname, '../../out/index.html'));
+                    });
+                } else {
+                    console.log('📄 Account page not found, loading index');
+                    win.loadFile(path.join(__dirname, '../../out/index.html'));
+                }
+            } else {
+                // For other routes, try to load the corresponding HTML file
+                const routePath = path.join(__dirname, '../../out', filePath, 'index.html');
+                if (fs.existsSync(routePath)) {
+                    win.loadFile(routePath);
+                } else {
+                    win.loadFile(path.join(__dirname, '../../out/index.html'));
+                }
+            }
+        }
     });
 
-    createMenu();
+    // Handle internal navigation
+    win.webContents.on('did-finish-load', () => {
+        console.log('✅ Page loaded successfully');
 
-    return mainWindow;
-}
-
-// ==================== DATABASE HELPER ====================
-async function getDatabase() {
-    console.log('🔍 getDatabase called, current db state:', db ? 'exists' : 'null');
-    if (!db) {
-        console.log('📦 Creating new database connection...');
-        
-        const dbPath = getDatabasePath(); // Use the same helper function
-        console.log('📂 Database path:', dbPath);
-
-        try {
-            const sqlite3 = require('sqlite3');
-            const { open } = require('sqlite');
-
-            db = await open({
-                filename: dbPath,
-                driver: sqlite3.Database
-            });
-
-            // Enable foreign keys
-            await db.exec('PRAGMA foreign_keys = ON');
-
-            console.log('✅ Database connection established');
-        } catch (error) {
-            console.error('❌ Failed to create database connection:', error);
-            throw error;
+        // Close splash screen if it exists
+        if (splashWindow) {
+            closeSplashWindow(splashWindow);
+            splashWindow = null;
         }
-    }
-    return db;
+
+        // Inject client-side routing handler for static exports
+        if (!isDev) {
+            win.webContents.executeJavaScript(`
+                // Override pushState to handle navigation
+                const originalPushState = history.pushState;
+                history.pushState = function() {
+                    console.log('🔀 Navigation detected:', arguments);
+                    originalPushState.apply(this, arguments);
+                    
+                    // Notify main process of navigation
+                    if (window.electronAPI) {
+                        window.electronAPI.send('navigation-changed', window.location.pathname);
+                    }
+                };
+                
+                // Handle link clicks
+                document.addEventListener('click', (e) => {
+                    const link = e.target.closest('a');
+                    if (link && link.href && link.href.startsWith(window.location.origin)) {
+                        e.preventDefault();
+                        const path = link.href.replace(window.location.origin, '');
+                        
+                        // For account links, load the appropriate file
+                        if (path.startsWith('/accounts/')) {
+                            window.electronAPI.send('navigate-to', path);
+                        } else {
+                            window.location.href = link.href;
+                        }
+                    }
+                });
+                
+                console.log('✅ Client-side routing handler installed');
+            `).catch(err => console.error('Failed to inject routing handler:', err));
+        }
+    });
+
+    // Listen for navigation events from renderer
+    ipcMain.handle('navigate-to', async (event, path) => {
+        console.log('🔀 Navigating to:', path);
+
+        if (path.startsWith('/accounts/')) {
+            const accountPagePath = path.join(__dirname, '../../out/accounts/[id].html');
+
+            if (fs.existsSync(accountPagePath)) {
+                win.loadFile(accountPagePath);
+            } else {
+                win.loadFile(path.join(__dirname, '../../out/index.html'));
+            }
+        }
+    });
+
+    win.once('ready-to-show', () => {
+        win.show();
+        console.log('🔵 Main window ready-to-show');
+    });
+
+    return win;
 }
 
 // ==================== IPC HANDLERS ====================
@@ -430,6 +474,20 @@ function setupIpcHandlers() {
         return { success: true };
     });
 
+    // Add this debug handler
+    ipcMain.handle('debug-db-path', () => {
+        return {
+            success: true,
+            data: {
+                isPackaged: app.isPackaged,
+                dbPath: getDatabasePath(),
+                userData: app.getPath('userData'),
+                cwd: process.cwd(),
+                __dirname: __dirname
+            }
+        };
+    });
+
     ipcMain.handle('get-current-user', () => {
         const user = userService.getCurrentUser();
         return { success: true, data: user };
@@ -447,13 +505,6 @@ function setupIpcHandlers() {
     // ==================== CATEGORY UPDATE HANDLER ====================
     ipcMain.handle('updateCategory', async (event, categoryId, updates) => {
         console.log('📝 Updating category:', categoryId, updates);
-        console.log('📝 MAIN PROCESS: updateCategory called');
-        console.log('📝 MAIN PROCESS - categoryId:', categoryId);
-        console.log('📝 MAIN PROCESS - updates:', updates);
-        console.log('📝 MAIN PROCESS - updates type:', typeof updates);
-        console.log('📝 MAIN PROCESS - updates keys:', Object.keys(updates || {}));
-        console.log('📝 MAIN PROCESS - updates.assigned:', updates?.assigned);
-        console.log('📝 MAIN PROCESS - updates.assigned type:', typeof updates?.assigned);
         try {
             const db = await getDatabase();
 
@@ -492,6 +543,7 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+
     ipcMain.handle('update-category', async (event, categoryId, updates) => {
         console.log('📝 Updating category (update-category):', categoryId, updates);
         try {
@@ -745,16 +797,31 @@ function setupIpcHandlers() {
     });
 
     // ==================== CATEGORY GROUP HANDLERS ====================
+    // Inside your categoryGroups:getAll handler, add a retry mechanism
     ipcMain.handle('categoryGroups:getAll', async (event, userId) => {
         console.log('📞 IPC: categoryGroups:getAll called');
-        try {
-            const service = new CategoryGroupService();
-            const result = await service.getCategoryGroups(userId);
-            return { success: true, data: result };
-        } catch (error) {
-            console.error('❌ Error in categoryGroups:getAll:', error);
-            return { success: false, error: error.message };
+
+        // Add retry logic
+        let retries = 3;
+        let lastError;
+
+        while (retries > 0) {
+            try {
+                const db = await getDatabase();
+                const service = new CategoryGroupService();
+                const result = await service.getCategoryGroups(userId);
+                return { success: true, data: result };
+            } catch (error) {
+                lastError = error;
+                console.log(`⚠️ Database access failed, retries left: ${retries - 1}`);
+                retries--;
+                // Wait 500ms before retrying
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
         }
+
+        console.error('❌ Error in categoryGroups:getAll after retries:', lastError);
+        return { success: false, error: lastError.message, data: [] };
     });
 
     ipcMain.handle('categoryGroups:getWithCategories', async (event, userId) => {
@@ -765,7 +832,7 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in categoryGroups:getWithCategories:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -814,7 +881,7 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:getAll:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -886,7 +953,7 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:getSummary:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -933,7 +1000,7 @@ function setupIpcHandlers() {
             // Get current user
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
-                return { success: false, error: 'No user logged in' };
+                return { success: false, error: 'No user logged in', data: [] };
             }
 
             const service = new TransactionService();
@@ -941,7 +1008,7 @@ function setupIpcHandlers() {
             return { success: true, data: transactions };
         } catch (error) {
             console.error('❌ Error in getTransactions:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -1037,7 +1104,7 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
-                return { success: false, error: 'No user logged in' };
+                return { success: false, error: 'No user logged in', data: [] };
             }
 
             const service = new TransactionService();
@@ -1045,7 +1112,7 @@ function setupIpcHandlers() {
             return { success: true, data: transactions };
         } catch (error) {
             console.error('❌ Error in getAccountTransactions:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -1058,7 +1125,7 @@ function setupIpcHandlers() {
             }
 
             const service = new TransactionService();
-            const result = await service.updateTransaction(id, currentUser.id, { is_cleared: clearedStatus });
+            const result = await service.updateTransaction(id, currentUser.id, { is_cleared: clearedStatus ? 1 : 0 });
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in toggleTransactionCleared:', error);
@@ -1157,7 +1224,7 @@ function setupIpcHandlers() {
             const accounts = await accountService.getAccounts();
             return { success: true, data: accounts };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -1205,7 +1272,7 @@ function setupIpcHandlers() {
             const transactions = await accountService.getAccountTransactions(accountId, limit);
             return { success: true, data: transactions };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -1213,7 +1280,7 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
-                return { success: false, error: 'No user logged in' };
+                return { success: false, error: 'No user logged in', data: null };
             }
 
             const result = await accountService.getAccountsWithSummary(currentUser.id);
@@ -1259,7 +1326,7 @@ function setupIpcHandlers() {
             const groups = []; // Placeholder until groupService is available
             return { success: true, data: groups };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
@@ -1320,7 +1387,7 @@ function setupIpcHandlers() {
             const groups = await settingsService.getGroupsWithCategories(budgetId);
             return { success: true, data: groups };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, data: [] };
         }
     });
 
