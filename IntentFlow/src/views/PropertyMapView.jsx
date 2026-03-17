@@ -1049,6 +1049,10 @@ const PropertyMapView = () => {
 
 
   // ==================== LOAD CATEGORY GROUPS ====================
+  // ==================== LOAD CATEGORY GROUPS ====================
+  // ==================== LOAD CATEGORY GROUPS ====================
+  // ==================== LOAD CATEGORY GROUPS ====================
+  // ==================== LOAD CATEGORY GROUPS ====================
   const loadCategoryGroups = async () => {
     try {
       setLoading(true);
@@ -1058,12 +1062,97 @@ const PropertyMapView = () => {
       console.log('📋 Category groups result:', JSON.stringify(result, null, 2));
 
       if (result.success && result.data && result.data.length > 0) {
-        // ✅ Use existing groups from database
-        console.log('✅ Loaded EXISTING groups from DB:', result.data.length);
-        console.log('📋 Group IDs:', result.data.map(g => g.id));
-        setCategoryGroups(result.data);
+        // ===== PART 1: DELETE ALL EXISTING DUPLICATES =====
+        const groupNames = {};
+        const groupsToDelete = [];
+        const uniqueGroups = [];
+
+        // First pass: organize groups by name (case insensitive)
+        result.data.forEach(group => {
+          const name = group.name.toUpperCase().trim();
+          if (!groupNames[name]) {
+            groupNames[name] = [];
+          }
+          groupNames[name].push(group);
+        });
+
+        // Second pass: keep ONE group per name, delete the rest
+        Object.keys(groupNames).forEach(name => {
+          const groups = groupNames[name];
+
+          if (groups.length > 1) {
+            console.log(`🧹 Found ${groups.length} duplicate groups for "${name}"`);
+
+            // Sort by creation date if available, or just keep the first one
+            const sortedGroups = groups.sort((a, b) => {
+              // If you have created_at field, use it
+              if (a.created_at && b.created_at) {
+                return new Date(a.created_at) - new Date(b.created_at);
+              }
+              return 0;
+            });
+
+            // Keep the first/oldest one
+            const [keep, ...toDelete] = sortedGroups;
+            uniqueGroups.push(keep);
+
+            console.log(`✅ Keeping one "${name}" group:`, keep.id);
+
+            // Mark rest for deletion
+            toDelete.forEach(group => {
+              groupsToDelete.push({
+                group: group,
+                keepId: keep.id,
+                name: name
+              });
+            });
+          } else {
+            // No duplicates, just keep the single group
+            uniqueGroups.push(groups[0]);
+          }
+        });
+
+        // Delete all duplicate groups
+        if (groupsToDelete.length > 0) {
+          console.log('🗑️ Deleting', groupsToDelete.length, 'duplicate groups...');
+
+          for (const item of groupsToDelete) {
+            try {
+              // Update any categories that reference this group to point to the kept group
+              if (window.electronAPI.updateCategoriesForGroup) {
+                await window.electronAPI.updateCategoriesForGroup(item.group.id, { group_id: item.keepId });
+                console.log(`🔄 Moved categories from ${item.group.id} to ${item.keepId}`);
+              }
+
+              // Delete the duplicate group
+              await window.electronAPI.deleteCategoryGroup(item.group.id, userId);
+              console.log(`✅ Deleted duplicate ${item.name} group: ${item.group.id}`);
+            } catch (e) {
+              console.log(`⚠️ Could not delete duplicate ${item.name} group:`, item.group.id, e);
+            }
+          }
+
+          // Fetch fresh data after cleanup
+          const freshResult = await window.electronAPI.getCategoryGroups(userId);
+          if (freshResult.success && freshResult.data) {
+            console.log('✅ Loaded groups after duplicate cleanup:', freshResult.data.length);
+            setCategoryGroups(freshResult.data);
+          } else {
+            setCategoryGroups(uniqueGroups);
+          }
+        } else {
+          // No duplicates found
+          console.log('✅ Loaded EXISTING groups from DB (no duplicates):', result.data.length);
+          setCategoryGroups(result.data);
+        }
+
+        // ===== PART 2: PREVENT FUTURE DUPLICATES =====
+        // Store unique group names in localStorage for quick reference
+        const uniqueGroupNames = uniqueGroups.map(g => g.name.toUpperCase().trim());
+        localStorage.setItem('uniqueGroupNames', JSON.stringify(uniqueGroupNames));
+
       } else {
-        console.log('⚠️ No groups found in DB - this should not happen since we have groups!');
+        console.log('⚠️ No groups found in DB - creating defaults...');
         // Only create defaults if absolutely no groups exist
         console.log('Creating default groups as fallback...');
 
@@ -1092,6 +1181,9 @@ const PropertyMapView = () => {
 
         if (createdGroups.length > 0) {
           setCategoryGroups(createdGroups);
+          // Store unique names
+          const uniqueGroupNames = createdGroups.map(g => g.name.toUpperCase().trim());
+          localStorage.setItem('uniqueGroupNames', JSON.stringify(uniqueGroupNames));
         } else {
           setCategoryGroups([]);
         }
@@ -1104,6 +1196,103 @@ const PropertyMapView = () => {
     }
   };
 
+  // ===== PART 3: MODIFY THE CREATE GROUP FUNCTION TO PREVENT DUPLICATES =====
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return;
+
+    try {
+      setLoading(true);
+
+      // Check for duplicates BEFORE creating
+      const uniqueGroupNames = JSON.parse(localStorage.getItem('uniqueGroupNames') || '[]');
+      const newGroupNameUpper = newGroupName.toUpperCase().trim();
+
+      if (uniqueGroupNames.includes(newGroupNameUpper)) {
+        alert(`❌ A group named "${newGroupName}" already exists! Please use a different name.`);
+        setLoading(false);
+        return;
+      }
+
+      console.log('📝 Creating group in database:', { userId, name: newGroupName });
+      const result = await window.electronAPI.createCategoryGroup(
+        userId,
+        newGroupName,
+        categoryGroups.length
+      );
+
+      console.log('📝 Database result:', result);
+
+      if (result.success && result.data) {
+        // ✅ Add the group with its REAL database UUID
+        setCategoryGroups(prev => [...prev, result.data]);
+
+        // Update the unique names list
+        const updatedUniqueNames = [...uniqueGroupNames, newGroupNameUpper];
+        localStorage.setItem('uniqueGroupNames', JSON.stringify(updatedUniqueNames));
+
+        setShowAddGroupModal(false);
+        setNewGroupName('');
+        alert('✅ Group created successfully!');
+      } else {
+        alert('❌ Failed to create group: ' + (result.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error creating category group:', error);
+      alert('Error creating group: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ===== PART 4: MODIFY EDIT GROUP FUNCTION TO PREVENT DUPLICATES =====
+  const handleUpdateGroup = async () => {
+    if (!editGroupName.trim() || !editingGroup) return;
+
+    try {
+      // Check for duplicates (excluding the current group)
+      const uniqueGroupNames = JSON.parse(localStorage.getItem('uniqueGroupNames') || '[]');
+      const newNameUpper = editGroupName.toUpperCase().trim();
+      const oldNameUpper = editingGroup.name.toUpperCase().trim();
+
+      // If name is changing and new name already exists
+      if (newNameUpper !== oldNameUpper && uniqueGroupNames.includes(newNameUpper)) {
+        alert(`❌ A group named "${editGroupName}" already exists! Please use a different name.`);
+        return;
+      }
+
+      // Update in state
+      setCategoryGroups(prevGroups =>
+        prevGroups.map(g =>
+          g.id === editingGroup.id ? { ...g, name: editGroupName } : g
+        )
+      );
+
+      setShowEditGroupModal(false);
+      setEditingGroup(null);
+      setEditGroupName('');
+
+      // Update in database
+      try {
+        await window.electronAPI.updateCategoryGroup(editingGroup.id, userId, {
+          name: editGroupName
+        });
+
+        // Update localStorage unique names
+        if (newNameUpper !== oldNameUpper) {
+          const updatedUniqueNames = uniqueGroupNames
+            .filter(name => name !== oldNameUpper)
+            .concat(newNameUpper);
+          localStorage.setItem('uniqueGroupNames', JSON.stringify(updatedUniqueNames));
+        }
+
+      } catch (dbError) {
+        console.error('Error updating in database:', dbError);
+      }
+
+    } catch (error) {
+      console.error('Error updating category group:', error);
+    }
+  };
   // Keep this for backward compatibility but mark as deprecated
   const loadCategories = async () => {
     console.warn('⚠️ Deprecated: use loadCategoriesFromDB instead');
@@ -1118,38 +1307,6 @@ const PropertyMapView = () => {
       }
     } catch (error) {
       console.error('Error loading categories:', error);
-    }
-  };
-  const handleCreateGroup = async () => {
-    if (!newGroupName.trim()) return;
-
-    try {
-      setLoading(true);
-
-      // ✅ Save to database FIRST - let the backend create the real UUID
-      console.log('📝 Creating group in database:', { userId, name: newGroupName });
-      const result = await window.electronAPI.createCategoryGroup(
-        userId,
-        newGroupName,
-        categoryGroups.length
-      );
-
-      console.log('📝 Database result:', result);
-
-      if (result.success && result.data) {
-        // ✅ Add the group with its REAL database UUID
-        setCategoryGroups(prev => [...prev, result.data]);
-        setShowAddGroupModal(false);
-        setNewGroupName('');
-        alert('✅ Group created successfully!');
-      } else {
-        alert('❌ Failed to create group: ' + (result.error || 'Unknown error'));
-      }
-    } catch (error) {
-      console.error('Error creating category group:', error);
-      alert('Error creating group: ' + error.message);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -1169,81 +1326,55 @@ const PropertyMapView = () => {
     setShowEditGroupModal(true);
   };
 
-  const handleUpdateGroup = async () => {
-    if (!editGroupName.trim() || !editingGroup) return;
+
+  const handleDeleteGroup = async (groupId) => {
+    if (!confirm('Are you sure you want to delete this group? Any categories in this group will become ungrouped.')) {
+      return;
+    }
 
     try {
-      setCategoryGroups(prevGroups =>
-        prevGroups.map(g =>
-          g.id === editingGroup.id ? { ...g, name: editGroupName } : g
-        )
-      );
+      setLoading(true);
+      console.log('🗑️ Attempting to delete group:', groupId);
 
-      setShowEditGroupModal(false);
-      setEditingGroup(null);
-      setEditGroupName('');
+      // First, try to delete from database
+      const result = await window.electronAPI.deleteCategoryGroup(groupId, userId);
+      console.log('📝 Database result:', result);
 
-      try {
-        await window.electronAPI.updateCategoryGroup(editingGroup.id, userId, {
-          name: editGroupName
-        });
-      } catch (dbError) {
-        console.error('Error updating in database:', dbError);
+      if (result && result.success) {
+        // Only update UI if database deletion succeeded
+        console.log('✅ Database deletion successful, updating UI...');
+
+        // Close edit modal if open
+        if (editingGroup && editingGroup.id === groupId) {
+          setShowEditGroupModal(false);
+          setEditingGroup(null);
+          setEditGroupName('');
+        }
+
+        // Remove group from state
+        setCategoryGroups(prevGroups => prevGroups.filter(g => g.id !== groupId));
+
+        // Update categories that were in this group
+        setBudgetData(prev => ({
+          ...prev,
+          categories: prev.categories.map(cat =>
+            cat.groupId === groupId ? { ...cat, groupId: null } : cat
+          )
+        }));
+
+        alert('✅ Group deleted successfully');
+      } else {
+        // Database deletion failed
+        console.error('❌ Database deletion failed:', result?.error);
+        alert('❌ Failed to delete group: ' + (result?.error || 'Unknown error'));
       }
-
     } catch (error) {
-      console.error('Error updating category group:', error);
+      console.error('❌ Error deleting category group:', error);
+      alert('❌ Error deleting group: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
-
-const handleDeleteGroup = async (groupId) => {
-    if (!confirm('Are you sure you want to delete this group? Any categories in this group will become ungrouped.')) {
-        return;
-    }
-
-    try {
-        setLoading(true);
-        console.log('🗑️ Attempting to delete group:', groupId);
-        
-        // First, try to delete from database
-        const result = await window.electronAPI.deleteCategoryGroup(groupId, userId);
-        console.log('📝 Database result:', result);
-        
-        if (result && result.success) {
-            // Only update UI if database deletion succeeded
-            console.log('✅ Database deletion successful, updating UI...');
-            
-            // Close edit modal if open
-            if (editingGroup && editingGroup.id === groupId) {
-                setShowEditGroupModal(false);
-                setEditingGroup(null);
-                setEditGroupName('');
-            }
-            
-            // Remove group from state
-            setCategoryGroups(prevGroups => prevGroups.filter(g => g.id !== groupId));
-            
-            // Update categories that were in this group
-            setBudgetData(prev => ({
-                ...prev,
-                categories: prev.categories.map(cat =>
-                    cat.groupId === groupId ? { ...cat, groupId: null } : cat
-                )
-            }));
-            
-            alert('✅ Group deleted successfully');
-        } else {
-            // Database deletion failed
-            console.error('❌ Database deletion failed:', result?.error);
-            alert('❌ Failed to delete group: ' + (result?.error || 'Unknown error'));
-        }
-    } catch (error) {
-        console.error('❌ Error deleting category group:', error);
-        alert('❌ Error deleting group: ' + error.message);
-    } finally {
-        setLoading(false);
-    }
-};
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
