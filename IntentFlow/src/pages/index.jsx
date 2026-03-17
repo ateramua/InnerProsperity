@@ -1,3 +1,4 @@
+// src/pages/index.jsx
 import { useAuth } from '../contexts/AuthContext';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
@@ -16,15 +17,13 @@ import '../views/AllAccountsView';
 
 import '../views/force-imports';
 
-
-// ADD THIS
-
 export default function HomePage() {
   const { isAuthenticated, loading } = useAuth();
   const router = useRouter();
 
   const [currentView, setCurrentView] = useState('propertyMap');
   const [accounts, setAccounts] = useState([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
 
   const { lastUpdate, refresh } = useRealtimeUpdates(
     [
@@ -56,9 +55,33 @@ export default function HomePage() {
     }
   );
 
+  // Function to load accounts
+  const loadAccounts = async () => {
+    if (!window.electronAPI) return;
+    
+    setLoadingAccounts(true);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+        if (accountsResult?.success) {
+          setAccounts(accountsResult.data || []);
+          console.log('💰 HomePage loaded accounts:', accountsResult.data.length);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading accounts:', error);
+    } finally {
+      setLoadingAccounts(false);
+    }
+  };
 
-
-
+  // Load accounts on mount
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadAccounts();
+    }
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (!loading && !isAuthenticated) {
@@ -70,7 +93,7 @@ export default function HomePage() {
     setCurrentView(viewId);
   };
 
-  if (loading) {
+  if (loading || loadingAccounts) {
     return (
       <div style={styles.loadingContainer}>
         <div style={styles.loadingSpinner}></div>
@@ -92,6 +115,9 @@ export default function HomePage() {
           <ViewContainers
             currentView={currentView}
             accounts={accounts}
+            budgetData={{}}
+            transactions={[]}
+            onNavigate={handleNavigation}
           />
         </div>
       </main>
@@ -106,12 +132,10 @@ export default function HomePage() {
 }
 
 const styles = {
-
   container: {
     display: 'flex',
     minHeight: '100vh',
-    background:
-      'linear-gradient(135deg, #0047AB 0%, #0047AB 40%, ##0f2e1c 100%)',
+    background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 40%, #0f2e1c 100%)',
     fontFamily: 'Inter, system-ui, sans-serif'
   },
 
@@ -129,15 +153,13 @@ const styles = {
     borderRadius: '18px',
     padding: '2rem',
     border: '1px solid rgba(255,255,255,0.08)',
-    boxShadow:
-      '0 10px 40px rgba(0,0,0,0.4), 0 0 40px rgba(99,102,241,0.15)',
+    boxShadow: '0 10px 40px rgba(0,0,0,0.4), 0 0 40px rgba(99,102,241,0.15)',
     minHeight: '85vh'
   },
 
   loadingContainer: {
     minHeight: '100vh',
-    background:
-      'linear-gradient(135deg, #0047AB, #0047AB, #0047AB)',
+    background: 'linear-gradient(135deg, #0047AB, #0047AB, #0047AB)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -154,5 +176,4 @@ const styles = {
     animation: 'spin 0.9s linear infinite',
     boxShadow: '0 0 20px rgba(99,102,241,0.6)'
   }
-
 };

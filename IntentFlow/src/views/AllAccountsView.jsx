@@ -77,6 +77,10 @@ const AllAccountsView = ({ accounts: propAccounts, onAccountUpdate, onAccountDel
 
   const handleAccountClick = (account) => {
     console.log('🔵 Clicked account:', account.id, account.name);
+    console.log('🔵 Clicked account - full object:', account);
+    console.log('🔵 Account ID:', account.id);
+    console.log('🔵 Account name:', account.name);
+    console.log('🔵 Navigation to:', `/accounts/${account.id}`);
     router.push(`/accounts/${account.id}`);
   };
 

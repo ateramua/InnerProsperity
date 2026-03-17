@@ -22,6 +22,17 @@ try {
       console.log('📞 Preload: getCurrentUser called');
       return ipcRenderer.invoke('get-current-user');
     },
+    
+    // ==================== IPC SEND METHOD (for navigation) ====================
+    send: (channel, data) => {
+      console.log(`📞 Preload: send called on channel: ${channel}`, data);
+      // Whitelist channels for security
+      const validChannels = ['navigation-changed', 'navigate-to'];
+      if (validChannels.includes(channel)) {
+        ipcRenderer.send(channel, data);
+      }
+    },
+
     // ==================== REAL-TIME UPDATE METHODS ====================
     subscribeToEvent: (eventType, callback) => {
       console.log(`📞 Preload: subscribeToEvent called for ${eventType}`);
@@ -40,12 +51,11 @@ try {
       console.log(`📞 Preload: publishEvent called for ${eventType}`);
       return ipcRenderer.invoke('publish-event', eventType, data);
     },
+    
     listUsers: () => {
       console.log('📞 Preload: listUsers called');
       return ipcRenderer.invoke('list-users');
     },
-    // Check if these are already in your preload script
-    // If not, add them:
 
     getTransactions: () => {
       console.log('📞 Preload: getTransactions called');
@@ -88,7 +98,6 @@ try {
       console.log('📞 Preload: deleteAccount called');
       return ipcRenderer.invoke('accounts:delete', id, userId);
     },
-    // Add these with your other transaction methods
 
     updateTransaction: (id, updates) => {
       console.log('📞 Preload: updateTransaction called', id, updates);
@@ -158,7 +167,6 @@ try {
       return ipcRenderer.invoke('createCategory', categoryData);
     },
     
-    // 🔥 NEW: Update category (for assigned amounts, targets, etc.)
     updateCategory: (categoryId, updates) => {
       console.log('📞 Preload: updateCategory called', { categoryId, updates });
       return ipcRenderer.invoke('updateCategory', categoryId, updates);
@@ -189,20 +197,6 @@ try {
     getRecommendations: (userId) => {
       console.log('📞 Preload: getRecommendations called');
       return ipcRenderer.invoke('forecast:recommendations', userId);
-    },
-    
-    // ==================== FORECAST METHODS (Legacy) ====================
-    getWeeklyForecast: (userId, weeks) => {
-      console.log('📞 Preload: getWeeklyForecast called');
-      return ipcRenderer.invoke('getWeeklyForecast', userId, weeks);
-    },
-    getYearlyForecast: (userId, years) => {
-      console.log('📞 Preload: getYearlyForecast called');
-      return ipcRenderer.invoke('getYearlyForecast', userId, years);
-    },
-    getRecommendations: (userId) => {
-      console.log('📞 Preload: getRecommendations called');
-      return ipcRenderer.invoke('getRecommendations', userId);
     },
     
     // ==================== MONEY MAP METHODS ====================
@@ -242,27 +236,6 @@ try {
       console.log('📞 Renderer calling deleteGroup');
       return ipcRenderer.invoke('delete-group', groupId);
     },
-    createCategory: (categoryData) => {
-      console.log('📞 Renderer calling createCategory');
-      return ipcRenderer.invoke('create-category', categoryData);
-    },
-    deleteCategory: (categoryId) => {
-      console.log('📞 Renderer calling deleteCategory');
-      return ipcRenderer.invoke('delete-category', categoryId);
-    },
-
-    // ==================== SoulFunds ACCOUNTS & TRANSACTIONS ====================
-    getAccounts: () => ipcRenderer.invoke('getAccounts'),
-    // Note: 'createAccount' is already defined above in Account Service Methods
-    getTransactions: (accountId, filters) => ipcRenderer.invoke('getTransactions', accountId, filters),
-    createTransaction: (data) => ipcRenderer.invoke('createTransaction', data),
-    updateTransaction: (id, updates) => ipcRenderer.invoke('updateTransaction', id, updates),
-    deleteTransaction: (id) => ipcRenderer.invoke('deleteTransaction', id),
-    getCategories: () => ipcRenderer.invoke('getCategories'),
-    reconcileAccount: (accountId, statementBalance, transactionsToClear) => {
-      console.log('📞 Preload: reconcileAccount called', { accountId, statementBalance, transactionsToClear });
-      return ipcRenderer.invoke('reconcileAccount', accountId, statementBalance, transactionsToClear);
-    },
 
     // ==================== NETWORK STATUS ====================
     getNetworkStatus: () => {
@@ -270,12 +243,10 @@ try {
       return ipcRenderer.invoke('get-network-status');
     },
 
-    // Optional: Add listener for network changes
     onNetworkChange: (callback) => {
       console.log('📞 Preload: onNetworkChange listener registered');
       const listener = (_, status) => callback(status);
       ipcRenderer.on('network-changed', listener);
-      // Return a cleanup function
       return () => {
         ipcRenderer.removeListener('network-changed', listener);
       };
@@ -285,6 +256,14 @@ try {
     ping: () => {
       console.log('📞 Preload: ping called');
       return ipcRenderer.invoke('ping');
+    },
+    
+    // ==================== SOULFUNDS METHODS ====================
+    getTransactions: (accountId, filters) => ipcRenderer.invoke('getTransactions', accountId, filters),
+    createTransaction: (data) => ipcRenderer.invoke('createTransaction', data),
+    reconcileAccount: (accountId, statementBalance, transactionsToClear) => {
+      console.log('📞 Preload: reconcileAccount called', { accountId, statementBalance, transactionsToClear });
+      return ipcRenderer.invoke('reconcileAccount', accountId, statementBalance, transactionsToClear);
     },
   });
 

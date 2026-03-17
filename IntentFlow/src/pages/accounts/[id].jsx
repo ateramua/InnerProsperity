@@ -7,6 +7,15 @@ import TransactionManager from '../../components/TransactionManager';
 const AccountDetailPage = () => {
     const router = useRouter();
     const { id } = router.query;
+
+    // Add state for ID to handle static export
+    const [effectiveId, setEffectiveId] = useState(null);
+
+    console.log('🔵 AccountDetailPage mounted');
+    console.log('🔵 Router query:', router.query);
+    console.log('🔵 ID from query:', id);
+
+    // State declarations
     const [account, setAccount] = useState(null);
     const [transactions, setTransactions] = useState([]);
     const [categories, setCategories] = useState([]);
@@ -23,42 +32,110 @@ const AccountDetailPage = () => {
         cleared: false
     });
 
+    // For static exports, extract ID from URL if not in query
     useEffect(() => {
+        let extractedId = id;
+
         if (id) {
-            loadAccountData();
+            setEffectiveId(id);
+            extractedId = id;
+        } else if (typeof window !== 'undefined') {
+            // Try to extract from URL path
+            const pathParts = window.location.pathname.split('/');
+            const lastPart = pathParts[pathParts.length - 1].replace('.html', '');
+            console.log('🔵 Extracted from URL:', lastPart);
+            if (lastPart && lastPart !== '[id]' && lastPart !== 'accounts') {
+                setEffectiveId(lastPart);
+                extractedId = lastPart;
+            }
+        }
+
+        // Load account data if we have an ID
+        if (extractedId) {
+             loadAccountData(extractedId);
         }
     }, [id]);
 
-    const loadAccountData = async () => {
+    const loadAccountData = async (accountId) => {
+        // Use the passed accountId parameter, not the component's id
+        const targetId = accountId || id;
+        console.log('🔵 Loading account data for ID:', targetId);
+        console.log('🔵 ID type:', typeof targetId);
+        console.log('🔵 ID value:', targetId);
+        
         setLoading(true);
         try {
-            // Get account details
-            const accountResult = await window.electronAPI.getAccountById(id, 2);
-            if (accountResult.success) {
+            // Get account details - try with user ID 2 first
+            console.log('🔵 Attempt 1: Calling getAccountById with:', targetId, 2);
+            let accountResult = await window.electronAPI.getAccountById(targetId, 2);
+            console.log('🔵 Attempt 1 result:', accountResult);
+
+            // If not found with user ID 2, try without user ID
+            if (!accountResult?.success || !accountResult?.data) {
+                console.log('🔵 Attempt 2: Trying getAccountById without user ID');
+                accountResult = await window.electronAPI.getAccountById(targetId);
+                console.log('🔵 Attempt 2 result:', accountResult);
+            }
+
+            // If still not found, try getAccounts and filter
+            if (!accountResult?.success || !accountResult?.data) {
+                console.log('🔵 Attempt 3: Trying getAccounts and filtering');
+                const accountsResult = await window.electronAPI.getAccounts();
+                console.log('🔵 All accounts:', accountsResult);
+
+                if (accountsResult?.success && Array.isArray(accountsResult.data)) {
+                    console.log('🔵 Looking for account with ID:', targetId);
+                    console.log('🔵 Available account IDs:', accountsResult.data.map(a => a.id));
+
+                    const foundAccount = accountsResult.data.find(a => a.id === targetId);
+                    console.log('🔵 Found account by ID:', foundAccount);
+
+                    if (foundAccount) {
+                        accountResult = { success: true, data: foundAccount };
+                        console.log('🔵 Attempt 3 successful!');
+                    } else {
+                        console.log('🔵 No account found with ID:', targetId);
+                    }
+                }
+            }
+
+            // Set account if found
+            if (accountResult?.success && accountResult?.data) {
+                console.log('✅ Account found and set:', accountResult.data);
                 setAccount(accountResult.data);
+            } else {
+                console.log('❌ Account not found after all attempts');
             }
 
             // Get transactions for this account
-            const transactionsResult = await window.electronAPI.getAccountTransactions(id);
-            if (transactionsResult.success) {
-                setTransactions(transactionsResult.data);
+            console.log('🔵 Getting transactions for account:', targetId);
+            const transactionsResult = await window.electronAPI.getAccountTransactions(targetId);
+            console.log('🔵 Transactions result:', transactionsResult);
+            if (transactionsResult?.success) {
+                setTransactions(transactionsResult.data || []);
             }
 
             // Get categories
+            console.log('🔵 Getting categories for user 1');
             const categoriesResult = await window.electronAPI.getCategories(1);
-            if (categoriesResult.success) {
-                setCategories(categoriesResult.data);
+            console.log('🔵 Categories result:', categoriesResult);
+            if (categoriesResult?.success) {
+                setCategories(categoriesResult.data || []);
             }
 
             // Get all accounts for transfer options
+            console.log('🔵 Getting all accounts');
             const accountsResult = await window.electronAPI.getAccounts();
-            if (accountsResult.success) {
-                setAccounts(accountsResult.data);
+            console.log('🔵 All accounts result:', accountsResult);
+            if (accountsResult?.success) {
+                setAccounts(accountsResult.data || []);
             }
         } catch (error) {
-            console.error('Error loading account data:', error);
+            console.error('❌ Error loading account data:', error);
+            console.error('❌ Error stack:', error.stack);
         } finally {
             setLoading(false);
+            console.log('🔵 loadAccountData completed');
         }
     };
 
@@ -89,8 +166,8 @@ const AccountDetailPage = () => {
             }
 
             // Calculate amount based on type (inflow/outflow)
-            const amount = transactionForm.type === 'outflow' 
-                ? -Math.abs(amountValue) 
+            const amount = transactionForm.type === 'outflow'
+                ? -Math.abs(amountValue)
                 : Math.abs(amountValue);
 
             const transactionData = {
@@ -105,12 +182,12 @@ const AccountDetailPage = () => {
             };
 
             console.log('📝 Adding transaction:', transactionData);
-            
+
             const result = await window.electronAPI.addTransaction(transactionData);
             if (result.success) {
                 setShowAddModal(false);
                 resetForm();
-                await loadAccountData(); // Refresh data
+                await loadAccountData(account.id); // Pass the account ID
                 alert('✅ Transaction added successfully');
             } else {
                 alert('❌ Error adding transaction: ' + result.error);
@@ -125,7 +202,7 @@ const AccountDetailPage = () => {
         try {
             const result = await window.electronAPI.updateTransaction(transactionId, updates);
             if (result.success) {
-                await loadAccountData();
+                await loadAccountData(account.id);
                 return { success: true };
             }
             return { success: false, error: result.error };
@@ -139,7 +216,7 @@ const AccountDetailPage = () => {
         try {
             const result = await window.electronAPI.deleteTransaction(transactionId);
             if (result.success) {
-                await loadAccountData();
+                await loadAccountData(account.id);
                 return { success: true };
             }
             return { success: false, error: result.error };
@@ -153,7 +230,7 @@ const AccountDetailPage = () => {
         try {
             const result = await window.electronAPI.toggleTransactionCleared(transactionId, clearedStatus);
             if (result.success) {
-                await loadAccountData();
+                await loadAccountData(account.id);
                 return { success: true };
             }
             return { success: false, error: result.error };
@@ -164,7 +241,7 @@ const AccountDetailPage = () => {
     };
 
     const handleReconcile = () => {
-        router.push(`/accounts/${id}/reconcile`);
+        router.push(`/accounts/${account?.id}/reconcile`);
     };
 
     const handleBackToLanding = () => {
@@ -241,7 +318,7 @@ const AccountDetailPage = () => {
             {/* Add Transaction Button */}
             <div style={styles.transactionsHeader}>
                 <h2 style={styles.transactionsTitle}>Transactions</h2>
-                <button 
+                <button
                     onClick={() => setShowAddModal(true)}
                     style={styles.addTransactionButton}
                 >
@@ -254,13 +331,13 @@ const AccountDetailPage = () => {
                 <div style={styles.modalOverlay}>
                     <div style={styles.modalContent}>
                         <h2 style={styles.modalTitle}>Add Transaction</h2>
-                        
+
                         <div style={styles.formGroup}>
                             <label style={styles.label}>Date</label>
                             <input
                                 type="date"
                                 value={transactionForm.date}
-                                onChange={(e) => setTransactionForm({...transactionForm, date: e.target.value})}
+                                onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })}
                                 style={styles.input}
                             />
                         </div>
@@ -270,7 +347,7 @@ const AccountDetailPage = () => {
                             <input
                                 type="text"
                                 value={transactionForm.payee}
-                                onChange={(e) => setTransactionForm({...transactionForm, payee: e.target.value})}
+                                onChange={(e) => setTransactionForm({ ...transactionForm, payee: e.target.value })}
                                 style={styles.input}
                                 placeholder="e.g., Grocery Store"
                             />
@@ -281,7 +358,7 @@ const AccountDetailPage = () => {
                             <input
                                 type="number"
                                 value={transactionForm.amount}
-                                onChange={(e) => setTransactionForm({...transactionForm, amount: e.target.value})}
+                                onChange={(e) => setTransactionForm({ ...transactionForm, amount: e.target.value })}
                                 style={styles.input}
                                 placeholder="0.00"
                                 step="0.01"
@@ -292,7 +369,7 @@ const AccountDetailPage = () => {
                             <label style={styles.label}>Type</label>
                             <select
                                 value={transactionForm.type}
-                                onChange={(e) => setTransactionForm({...transactionForm, type: e.target.value})}
+                                onChange={(e) => setTransactionForm({ ...transactionForm, type: e.target.value })}
                                 style={styles.select}
                             >
                                 <option value="outflow">Outflow (Money Out)</option>
@@ -304,7 +381,7 @@ const AccountDetailPage = () => {
                             <label style={styles.label}>Category</label>
                             <select
                                 value={transactionForm.categoryId}
-                                onChange={(e) => setTransactionForm({...transactionForm, categoryId: e.target.value})}
+                                onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
                                 style={styles.select}
                             >
                                 <option value="">Select Category</option>
@@ -321,7 +398,7 @@ const AccountDetailPage = () => {
                             <input
                                 type="text"
                                 value={transactionForm.memo}
-                                onChange={(e) => setTransactionForm({...transactionForm, memo: e.target.value})}
+                                onChange={(e) => setTransactionForm({ ...transactionForm, memo: e.target.value })}
                                 style={styles.input}
                                 placeholder="Additional notes"
                             />
@@ -332,7 +409,7 @@ const AccountDetailPage = () => {
                                 <input
                                     type="checkbox"
                                     checked={transactionForm.cleared}
-                                    onChange={(e) => setTransactionForm({...transactionForm, cleared: e.target.checked})}
+                                    onChange={(e) => setTransactionForm({ ...transactionForm, cleared: e.target.checked })}
                                 />
                                 <span style={{ marginLeft: '0.5rem' }}>Cleared</span>
                             </label>
@@ -359,7 +436,7 @@ const AccountDetailPage = () => {
                 onUpdateTransaction={handleUpdateTransaction}
                 onDeleteTransaction={handleDeleteTransaction}
                 onToggleCleared={handleToggleCleared}
-                accountId={id}
+                accountId={account?.id}
             />
         </div>
     );

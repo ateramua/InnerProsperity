@@ -453,7 +453,7 @@ const PropertyMapView = () => {
   };
 
   // ==================== RECORD PAYMENT FUNCTIONALITY ====================
-  const handleRecordPayment = () => {
+  const handleRecordPayment = async () => {
     const amount = parseFloat(paymentData.amount);
     if (isNaN(amount) || amount <= 0) {
       alert('Please enter a valid amount');
@@ -475,41 +475,81 @@ const PropertyMapView = () => {
       }
     }
 
-    // Update the category activity and available
-    setBudgetData(prev => ({
-      ...prev,
-      categories: prev.categories.map(cat =>
-        cat.id === paymentData.categoryId
-          ? {
-            ...cat,
-            activity: (cat.activity || 0) - amount,
-            available: (cat.available || 0) - amount
-          }
-          : cat
-      )
-    }));
+    try {
+      // Get current user
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to record payments');
+        return;
+      }
 
-    // Also reduce total cash in accounts (money left the account)
-    setTotalCashInAccounts(prev => prev - amount);
+      // Get default account (first checking/savings account)
+      const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+      const defaultAccount = accountsResult?.data?.find(a => a.type === 'checking' || a.type === 'savings');
 
-    console.log('Payment recorded:', {
-      amount,
-      category: selectedCategory.name,
-      payee: paymentData.payee,
-      date: paymentData.date,
-      memo: paymentData.memo
-    });
+      if (!defaultAccount) {
+        alert('No account found to record payment from');
+        return;
+      }
 
-    setPaymentData({
-      amount: '',
-      categoryId: '',
-      payee: '',
-      date: new Date().toISOString().split('T')[0],
-      memo: ''
-    });
-    setShowRecordPaymentModal(false);
+      // Create actual transaction in database
+      const transactionData = {
+        accountId: defaultAccount.id,
+        date: paymentData.date,
+        payee: paymentData.payee || 'Payment',
+        description: paymentData.payee || 'Payment',
+        amount: -amount, // Negative for outflow
+        categoryId: paymentData.categoryId,
+        memo: paymentData.memo,
+        cleared: 1
+      };
 
-    alert(`✅ Payment of $${amount.toFixed(2)} recorded to ${selectedCategory.name}`);
+      console.log('📝 Creating payment transaction:', transactionData);
+      const result = await window.electronAPI.addTransaction(transactionData);
+
+      if (result.success) {
+        // Update the category activity and available in UI
+        setBudgetData(prev => ({
+          ...prev,
+          categories: prev.categories.map(cat =>
+            cat.id === paymentData.categoryId
+              ? {
+                ...cat,
+                activity: (cat.activity || 0) - amount,
+                available: (cat.available || 0) - amount
+              }
+              : cat
+          )
+        }));
+
+        // Also reduce total cash in accounts (money left the account)
+        setTotalCashInAccounts(prev => prev - amount);
+
+        console.log('Payment recorded:', {
+          amount,
+          category: selectedCategory.name,
+          payee: paymentData.payee,
+          date: paymentData.date,
+          memo: paymentData.memo
+        });
+
+        setPaymentData({
+          amount: '',
+          categoryId: '',
+          payee: '',
+          date: new Date().toISOString().split('T')[0],
+          memo: ''
+        });
+        setShowRecordPaymentModal(false);
+
+        alert(`✅ Payment of $${amount.toFixed(2)} recorded to ${selectedCategory.name}`);
+      } else {
+        alert('❌ Error recording payment: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Error recording payment:', error);
+      alert('❌ Error recording payment: ' + error.message);
+    }
   };
 
   // ==================== MOVE MONEY FUNCTIONALITY ====================
@@ -774,28 +814,56 @@ const PropertyMapView = () => {
     try {
       setLoading(true);
 
+      // IMPORTANT: Make sure we're using the REAL group ID, not a temp ID
+      let groupId = newCategoryData.groupId;
+
+      // Check if this is a temporary ID (starts with 'temp-')
+      if (groupId && groupId.startsWith('temp-')) {
+        console.log('⚠️ Attempting to use temporary group ID:', groupId);
+
+        // Try to find the real group in categoryGroups state
+        const realGroup = categoryGroups.find(g => g.id === groupId);
+
+        if (realGroup) {
+          // If we found it in state but it's still temp, wait for real ID
+          console.log('⏳ Group still has temp ID, waiting for real ID...');
+          alert('Please wait for the group to be fully created before adding categories.');
+          setLoading(false);
+          return;
+        } else {
+          // Group doesn't exist, set to null
+          console.log('❌ Group not found, setting to null');
+          groupId = null;
+        }
+      }
+
+      console.log('📤 Creating category with data:', {
+        name: newCategoryData.name,
+        assigned: newCategoryData.assigned,
+        group_id: groupId,
+        user_id: userId
+      });
+
       const categoryData = {
         name: newCategoryData.name,
         assigned: newCategoryData.assigned,
-        group_id: newCategoryData.groupId,
+        group_id: groupId,
         user_id: userId,
         target_amount: newCategoryData.assigned,
         target_type: 'monthly',
         target_date: null
       };
 
-      // Save to database
       const result = await window.electronAPI.createCategory(categoryData);
 
       if (result.success) {
-        // Add the new category to local state with the real ID from database
         const newCategory = {
-          id: result.data.id, // Use the real ID from database
+          id: result.data.id,
           name: categoryData.name,
           assigned: categoryData.assigned,
           activity: 0,
           available: categoryData.assigned,
-          groupId: categoryData.group_id,
+          groupId: groupId,
           user_id: userId,
           priority: 2,
           target_amount: categoryData.assigned,
@@ -811,10 +879,8 @@ const PropertyMapView = () => {
           categories: [...prev.categories, newCategory]
         }));
 
-        // Also update the categories state if you use it separately
         setCategories(prev => [...prev, newCategory]);
 
-        // Close modal and reset form
         setShowAddCategoryModal(false);
         setNewCategoryData({ name: '', assigned: 0, groupId: null });
         setSelectedGroupForCategory(null);
@@ -830,7 +896,6 @@ const PropertyMapView = () => {
       setLoading(false);
     }
   };
-
   // Default groups
   const defaultGroups = [
     { id: 'fixed', name: 'Fixed Expenses' },
@@ -840,8 +905,6 @@ const PropertyMapView = () => {
   ];
 
   // Replace your initialization useEffect with this:
-  // Replace your initialization useEffect (around line 700-730) with this:
-
   useEffect(() => {
     const initializeData = async () => {
       console.log('🚀 INITIALIZE DATA STARTED for userId:', userId);
@@ -866,8 +929,23 @@ const PropertyMapView = () => {
         console.log('📋 Loading categories from DB for userId:', userId);
         await loadCategoriesFromDB();
 
-        // Set initial cash balance
-        setTotalCashInAccounts(5400);
+        // Calculate cash from real accounts instead of hardcoding
+        try {
+          const userResult = await window.electronAPI.getCurrentUser();
+          if (userResult?.success && userResult?.data) {
+            const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+            if (accountsResult?.success) {
+              const totalCash = accountsResult.data
+                .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+                .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+              setTotalCashInAccounts(totalCash);
+              console.log('💰 Total cash from accounts:', totalCash);
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching account balances:', error);
+          setTotalCashInAccounts(5400); // fallback
+        }
 
         setInitialLoadComplete(true);
         console.log('✅ initializeData completed for userId:', userId);
@@ -880,8 +958,7 @@ const PropertyMapView = () => {
 
     initializeData();
   }, [userId]); // This runs when userId changes (after login)
-  // ==================== LOAD CATEGORIES FROM DATABASE ====================
-  // ==================== LOAD CATEGORIES FROM DATABASE ====================
+
   // ==================== LOAD CATEGORIES FROM DATABASE ====================
   const loadCategoriesFromDB = async (retryCount = 0) => {
     console.log('📥 ===== loadCategoriesFromDB CALLED ===== (attempt:', retryCount + 1, ')');
@@ -945,6 +1022,10 @@ const PropertyMapView = () => {
             ...prev,
             categories: dbCategories
           }));
+          console.log('✅ State updated with DB categories:', dbCategories.length);
+          console.log('🔍 First category after state update:', dbCategories[0]);
+          console.log('🔍 All category IDs:', dbCategories.map(c => c.id));
+          console.log('🔍 All group IDs:', dbCategories.map(c => c.groupId));
           setCategories(dbCategories);
 
           console.log('✅ State updated with DB categories:', dbCategories.length);
@@ -968,24 +1049,24 @@ const PropertyMapView = () => {
 
 
   // ==================== LOAD CATEGORY GROUPS ====================
-  // Replace your loadCategoryGroups function with this:
   const loadCategoryGroups = async () => {
     try {
       setLoading(true);
       console.log('📋 Loading category groups for userId:', userId);
 
       const result = await window.electronAPI.getCategoryGroups(userId);
-      console.log('📋 Category groups result:', result);
+      console.log('📋 Category groups result:', JSON.stringify(result, null, 2));
 
       if (result.success && result.data && result.data.length > 0) {
-        // Use groups from database
+        // ✅ Use existing groups from database
+        console.log('✅ Loaded EXISTING groups from DB:', result.data.length);
+        console.log('📋 Group IDs:', result.data.map(g => g.id));
         setCategoryGroups(result.data);
-        console.log('✅ Loaded groups from DB:', result.data);
       } else {
-        // Only create default groups if absolutely no groups exist
-        console.log('⚠️ No groups found in DB, creating defaults...');
+        console.log('⚠️ No groups found in DB - this should not happen since we have groups!');
+        // Only create defaults if absolutely no groups exist
+        console.log('Creating default groups as fallback...');
 
-        // Create default groups in database
         const defaultGroups = [
           { name: 'Fixed Expenses', order: 0 },
           { name: 'Variable Expenses', order: 1 },
@@ -1012,7 +1093,6 @@ const PropertyMapView = () => {
         if (createdGroups.length > 0) {
           setCategoryGroups(createdGroups);
         } else {
-          // Fallback to empty array if creation failed
           setCategoryGroups([]);
         }
       }
@@ -1040,42 +1120,36 @@ const PropertyMapView = () => {
       console.error('Error loading categories:', error);
     }
   };
-
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return;
 
     try {
-      const tempId = `temp-${Date.now()}`;
-      const newGroup = {
-        id: tempId,
-        name: newGroupName,
-        user_id: userId
-      };
+      setLoading(true);
 
-      setCategoryGroups(prevGroups => [...prevGroups, newGroup]);
-      setShowAddGroupModal(false);
-      setNewGroupName('');
+      // ✅ Save to database FIRST - let the backend create the real UUID
+      console.log('📝 Creating group in database:', { userId, name: newGroupName });
+      const result = await window.electronAPI.createCategoryGroup(
+        userId,
+        newGroupName,
+        categoryGroups.length
+      );
 
-      try {
-        const result = await window.electronAPI.createCategoryGroup(
-          userId,
-          newGroupName,
-          categoryGroups.length
-        );
+      console.log('📝 Database result:', result);
 
-        if (result.success && result.data) {
-          setCategoryGroups(prevGroups =>
-            prevGroups.map(g =>
-              g.id === tempId ? result.data : g
-            )
-          );
-        }
-      } catch (dbError) {
-        console.error('Error saving to database:', dbError);
+      if (result.success && result.data) {
+        // ✅ Add the group with its REAL database UUID
+        setCategoryGroups(prev => [...prev, result.data]);
+        setShowAddGroupModal(false);
+        setNewGroupName('');
+        alert('✅ Group created successfully!');
+      } else {
+        alert('❌ Failed to create group: ' + (result.error || 'Unknown error'));
       }
-
     } catch (error) {
       console.error('Error creating category group:', error);
+      alert('Error creating group: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1122,34 +1196,54 @@ const PropertyMapView = () => {
     }
   };
 
-  const handleDeleteGroup = async (groupId) => {
-    if (!confirm('Are you sure you want to delete this group?')) return;
+const handleDeleteGroup = async (groupId) => {
+    if (!confirm('Are you sure you want to delete this group? Any categories in this group will become ungrouped.')) {
+        return;
+    }
 
     try {
-      if (editingGroup && editingGroup.id === groupId) {
-        setShowEditGroupModal(false);
-        setEditingGroup(null);
-        setEditGroupName('');
-      }
-
-      setCategoryGroups(prevGroups => prevGroups.filter(g => g.id !== groupId));
-
-      setBudgetData(prev => ({
-        ...prev,
-        categories: prev.categories.map(cat =>
-          cat.groupId === groupId ? { ...cat, groupId: null } : cat
-        )
-      }));
-
-      try {
-        await window.electronAPI.deleteCategoryGroup(groupId, userId);
-      } catch (dbError) {
-        console.error('Error deleting from database:', dbError);
-      }
+        setLoading(true);
+        console.log('🗑️ Attempting to delete group:', groupId);
+        
+        // First, try to delete from database
+        const result = await window.electronAPI.deleteCategoryGroup(groupId, userId);
+        console.log('📝 Database result:', result);
+        
+        if (result && result.success) {
+            // Only update UI if database deletion succeeded
+            console.log('✅ Database deletion successful, updating UI...');
+            
+            // Close edit modal if open
+            if (editingGroup && editingGroup.id === groupId) {
+                setShowEditGroupModal(false);
+                setEditingGroup(null);
+                setEditGroupName('');
+            }
+            
+            // Remove group from state
+            setCategoryGroups(prevGroups => prevGroups.filter(g => g.id !== groupId));
+            
+            // Update categories that were in this group
+            setBudgetData(prev => ({
+                ...prev,
+                categories: prev.categories.map(cat =>
+                    cat.groupId === groupId ? { ...cat, groupId: null } : cat
+                )
+            }));
+            
+            alert('✅ Group deleted successfully');
+        } else {
+            // Database deletion failed
+            console.error('❌ Database deletion failed:', result?.error);
+            alert('❌ Failed to delete group: ' + (result?.error || 'Unknown error'));
+        }
     } catch (error) {
-      console.error('Error deleting category group:', error);
+        console.error('❌ Error deleting category group:', error);
+        alert('❌ Error deleting group: ' + error.message);
+    } finally {
+        setLoading(false);
     }
-  };
+};
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
@@ -1166,7 +1260,10 @@ const PropertyMapView = () => {
   // ==================== GROUP TOTALS ====================
   const getGroupTotals = (groupId) => {
     const groupCategories = getCategoriesByGroup(groupId);
-
+    // Add this right before your return statement
+    console.log('🔍 RENDER - Current categories in state:', budgetData.categories.length);
+    console.log('🔍 RENDER - Current groups in state:', categoryGroups.length);
+    console.log('🔍 RENDER - Group IDs:', categoryGroups.map(g => g.id));
     return {
       assigned: groupCategories.reduce((sum, cat) => sum + (cat.assigned || 0), 0),
       activity: groupCategories.reduce((sum, cat) => sum + (cat.activity || 0), 0),
@@ -1195,6 +1292,17 @@ const PropertyMapView = () => {
             <p style={styles.description}>
               {selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })} budget allocation
             </p>
+          </div>
+          <div style={{ marginTop: '10px', padding: '10px', background: '#333' }}>
+            <button
+              onClick={() => {
+                console.log('📊 Current budgetData.categories:', budgetData.categories);
+                console.log('📊 Current categoryGroups:', categoryGroups);
+              }}
+              style={{ background: 'orange', color: 'white', padding: '5px 10px', marginRight: '10px' }}
+            >
+              DEBUG: Show State
+            </button>
           </div>
 
           {/* Ready to Assign Card */}
@@ -1294,19 +1402,6 @@ const PropertyMapView = () => {
             </div>
           )}
         </div>
-{/* 
-        <div style={{ marginTop: '10px', padding: '10px', background: '#333' }}>
-          <button
-            onClick={async () => {
-              console.log('🟢 MANUAL TEST: Loading categories...');
-              await loadCategoriesFromDB();
-              console.log('🟢 MANUAL TEST: Complete');
-            }}
-            style={{ background: 'green', color: 'white', padding: '5px 10px' }}
-          >
-            TEST: Load Categories
-          </button>
-        </div> */}
 
         {/* Budget Table */}
         <div style={styles.tableContainer}>
@@ -1476,8 +1571,6 @@ const PropertyMapView = () => {
                               );
                             }
 
-                            // Rest of your view mode code continues here...
-                            // (the original code continues after this point)
                             // Render view mode
                             return (
                               <tr key={cat.id} style={styles.categoryRow}>

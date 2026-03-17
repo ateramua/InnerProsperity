@@ -141,6 +141,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   };
 
   const handleAccountClick = (accountId) => {
+      console.log('🔵 Navigating to account:', accountId);
     router.push(`/accounts/${accountId}`);
   };
 

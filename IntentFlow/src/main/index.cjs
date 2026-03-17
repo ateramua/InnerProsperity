@@ -457,7 +457,7 @@ function createWindow() {
         icon: path.join(__dirname, '../renderer/public/favicon.ico'),
         backgroundColor: '#111827'
     });
-   
+    win.webContents.openDevTools({ mode: 'detach' });
     mainWindow = win;
 
     if (isDev) {
@@ -754,56 +754,19 @@ function setupIpcHandlers() {
             }
 
             const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
-            const result = await db.run(query, values);
+            await db.run(query, values);
 
-            return { success: true, data: result };
+            // Fetch and return the updated category
+            const updatedCategory = await db.get('SELECT * FROM categories WHERE id = ?', [categoryId]);
+
+            return { success: true, data: updatedCategory };
         } catch (error) {
             console.error('❌ Error updating category:', error);
             return { success: false, error: error.message };
         }
     });
 
-    ipcMain.handle('update-category', async (event, categoryId, updates) => {
-        console.log('📝 Updating category (update-category):', categoryId, updates);
-        try {
-            const db = await getDatabase();
-
-            const setClauses = [];
-            const values = [];
-
-            if (updates.assigned !== undefined) {
-                setClauses.push('assigned = ?');
-                values.push(updates.assigned);
-            }
-            if (updates.target_amount !== undefined) {
-                setClauses.push('target_amount = ?');
-                values.push(updates.target_amount);
-            }
-            if (updates.target_type !== undefined) {
-                setClauses.push('target_type = ?');
-                values.push(updates.target_type);
-            }
-            if (updates.name !== undefined) {
-                setClauses.push('name = ?');
-                values.push(updates.name);
-            }
-
-            values.push(categoryId);
-
-            if (setClauses.length === 0) {
-                return { success: false, error: 'No updates provided' };
-            }
-
-            const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
-            const result = await db.run(query, values);
-
-            return { success: true, data: result };
-        } catch (error) {
-            console.error('❌ Error updating category:', error);
-            return { success: false, error: error.message };
-        }
-    });
-    console.log('✅ Category update handler registered (update-category)');
+    console.log('✅ Category update handler registered');
 
     // ==================== FORECAST HANDLERS ====================
     ipcMain.handle('generateForecast', async (event, userId, options) => {
@@ -1017,27 +980,29 @@ function setupIpcHandlers() {
 
     // ==================== CATEGORY GROUP HANDLERS ====================
     ipcMain.handle('categoryGroups:getAll', async (event, userId) => {
-        console.log('📞 IPC: categoryGroups:getAll called');
+        console.log('📞 IPC: categoryGroups:getAll called for userId:', userId);
+        try {
+            const db = await getDatabase();
 
-        let retries = 3;
-        let lastError;
+            // Simple query to get all groups
+            const groups = await db.all(
+                'SELECT * FROM category_groups WHERE user_id = ? ORDER BY sort_order',
+                [userId]
+            );
 
-        while (retries > 0) {
-            try {
-                const db = await getDatabase();
-                const service = new CategoryGroupService();
-                const result = await service.getCategoryGroups(userId);
-                return { success: true, data: result };
-            } catch (error) {
-                lastError = error;
-                console.log(`⚠️ Database access failed, retries left: ${retries - 1}`);
-                retries--;
-                await new Promise(resolve => setTimeout(resolve, 500));
+            console.log(`📞 Found ${groups.length} groups in database`);
+
+            if (groups.length > 0) {
+                console.log('📞 First group:', groups[0]);
+            } else {
+                console.log('📞 No groups found for user:', userId);
             }
-        }
 
-        console.error('❌ Error in categoryGroups:getAll after retries:', lastError);
-        return { success: false, error: lastError.message, data: [] };
+            return { success: true, data: groups };
+        } catch (error) {
+            console.error('❌ Error in categoryGroups:getAll:', error);
+            return { success: false, error: error.message, data: [] };
+        }
     });
 
     ipcMain.handle('categoryGroups:getWithCategories', async (event, userId) => {
@@ -1055,9 +1020,36 @@ function setupIpcHandlers() {
     ipcMain.handle('categoryGroups:create', async (event, userId, name, sortOrder) => {
         console.log('📞 IPC: categoryGroups:create called', { userId, name, sortOrder });
         try {
-            const service = new CategoryGroupService();
-            const result = await service.createCategoryGroup(userId, name, sortOrder);
-            return { success: true, data: result };
+            const db = await getDatabase();
+
+            // First, check if the user exists
+            const user = await db.get('SELECT id FROM users WHERE id = ?', [userId]);
+            console.log('👤 User exists:', user ? 'YES' : 'NO');
+
+            if (!user) {
+                console.log('❌ User not found with ID:', userId);
+                // Try to create a default user if not exists
+                await db.run(`
+                INSERT OR IGNORE INTO users (id, username, email, full_name) 
+                VALUES (?, ?, ?, ?)
+            `, [userId, `user_${userId}`, `user${userId}@example.com`, `User ${userId}`]);
+                console.log('✅ Created default user with ID:', userId);
+            }
+
+            // Generate a UUID for the group
+            const { v4: uuidv4 } = require('uuid');
+            const id = uuidv4();
+
+            await db.run(`
+            INSERT INTO category_groups (id, user_id, name, sort_order, created_at, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+        `, [id, userId, name, sortOrder || 0]);
+
+            // Return the created group
+            const newGroup = await db.get('SELECT * FROM category_groups WHERE id = ?', [id]);
+
+            console.log('✅ Group created successfully:', newGroup);
+            return { success: true, data: newGroup };
         } catch (error) {
             console.error('❌ Error in categoryGroups:create:', error);
             return { success: false, error: error.message };
@@ -1076,12 +1068,30 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('categoryGroups:delete', async (event, id, userId) => {
-        console.log('📞 IPC: categoryGroups:delete called', { id, userId });
+   ipcMain.handle('categoryGroups:delete', async (event, groupId, userId) => {
+        console.log('📞 IPC: categoryGroups:delete called', { groupId, userId });
         try {
-            const service = new CategoryGroupService();
-            const result = await service.deleteCategoryGroup(id, userId);
-            return { success: true, data: result };
+            const db = await getDatabase();
+
+            // First, check if there are any categories in this group
+            const categoriesInGroup = await db.get(
+                'SELECT COUNT(*) as count FROM categories WHERE group_id = ?',
+                [groupId]
+            );
+
+            if (categoriesInGroup.count > 0) {
+                console.log(`⚠️ Group has ${categoriesInGroup.count} categories, cannot delete`);
+                return {
+                    success: false,
+                    error: 'Cannot delete group that contains categories. Move or delete the categories first.'
+                };
+            }
+
+            // Delete the group
+            await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+
+            console.log('✅ Group deleted successfully');
+            return { success: true, data: { id: groupId } };
         } catch (error) {
             console.error('❌ Error in categoryGroups:delete:', error);
             return { success: false, error: error.message };
@@ -1089,7 +1099,6 @@ function setupIpcHandlers() {
     });
 
     // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
-    // FIXED: Removed 'new' keyword - accountService is an object, not a class
     ipcMain.handle('accounts:getAll', async (event, userId) => {
         console.log('\x1b[32m%s\x1b[0m', '💚💚💚💚💚💚💚💚💚💚💚💚💚💚💚');
         console.log('\x1b[32m%s\x1b[0m', '💚 accounts:getAll CALLED');
@@ -1107,16 +1116,29 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('accounts:getById', async (event, id, userId) => {
-        console.log('📞 IPC: accounts:getById called');
+        console.log('📞 IPC: accounts:getById called with:', id, userId);
         try {
-            const result = await accountService.getAccountById(id, userId);
-            return { success: true, data: result };
+            const db = await getDatabase();
+            console.log('📞 Database connected');
+
+            // Try with userId first
+            let account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [id, userId || 2]);
+            console.log('📞 Account found with userId:', account ? 'YES' : 'NO');
+
+            // If not found, try without userId
+            if (!account) {
+                console.log('📞 Trying without userId');
+                account = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
+                console.log('📞 Account found without userId:', account ? 'YES' : 'NO');
+            }
+
+            return { success: true, data: account || null };
         } catch (error) {
             console.error('❌ Error in accounts:getById:', error);
             return { success: false, error: error.message };
         }
     });
-    // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
+
     ipcMain.handle('accounts:create', async (event, accountData) => {
         console.log('\n\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷');
         console.log('\x1b[36m%s\x1b[0m', '🔷 ACCOUNT CREATION DEBUG');
@@ -1127,12 +1149,6 @@ function setupIpcHandlers() {
         console.log('\x1b[32m%s\x1b[0m', JSON.stringify(accountData, null, 2));
 
         try {
-            // Log the accountService to verify it's loaded
-            console.log('\x1b[35m%s\x1b[0m', '🛠️ accountService methods available:');
-            console.log('\x1b[35m%s\x1b[0m', `   - createAccount: ${typeof accountService.createAccount}`);
-            console.log('\x1b[35m%s\x1b[0m', `   - getAllAccounts: ${typeof accountService.getAllAccounts}`);
-            console.log('\x1b[35m%s\x1b[0m', `   - getAccountsSummary: ${typeof accountService.getAccountsSummary}`);
-
             // Check if user is logged in
             const currentUser = userService.getCurrentUser();
             console.log('\x1b[34m%s\x1b[0m', '👤 Current user:');
@@ -1150,31 +1166,6 @@ function setupIpcHandlers() {
 
             console.log('\x1b[32m%s\x1b[0m', '✅ Create account result:');
             console.log('\x1b[32m%s\x1b[0m', JSON.stringify(result, null, 2));
-
-            // Verify the account was actually saved by trying to retrieve it
-            if (result.success && result.data?.id) {
-                console.log('\x1b[36m%s\x1b[0m', `🔍 Verifying account was saved - fetching account ${result.data.id}...`);
-
-                // Wait a moment for the database to update
-                await new Promise(resolve => setTimeout(resolve, 100));
-
-                const verifyAccount = await accountService.getAccountById(result.data.id, accountData.user_id || currentUser?.id);
-                console.log('\x1b[36m%s\x1b[0m', '🔍 Verification result:');
-                console.log('\x1b[36m%s\x1b[0m', JSON.stringify(verifyAccount, null, 2));
-
-                if (verifyAccount) {
-                    console.log('\x1b[32m%s\x1b[0m', '✅✅✅ Account verified in database!');
-                } else {
-                    console.log('\x1b[31m%s\x1b[0m', '❌❌❌ Account NOT found in database after creation!');
-                }
-
-                // Get all accounts for this user to see what's there
-                console.log('\x1b[35m%s\x1b[0m', `📊 Fetching ALL accounts for user ${accountData.user_id || currentUser?.id}...`);
-                const allAccounts = await accountService.getAllAccounts(accountData.user_id || currentUser?.id);
-                console.log('\x1b[35m%s\x1b[0m', `📊 Total accounts found: ${allAccounts.length}`);
-                console.log('\x1b[35m%s\x1b[0m', '📊 All accounts:');
-                console.log('\x1b[35m%s\x1b[0m', JSON.stringify(allAccounts, null, 2));
-            }
 
             console.log('\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
 
@@ -1248,8 +1239,8 @@ function setupIpcHandlers() {
             console.log('\x1b[32m%s\x1b[0m', '✅ isArray:', Array.isArray(result));
             console.log('\x1b[32m%s\x1b[0m', `✅ result length: ${result?.length || 0}`);
 
-            // If service returned empty but we know there are accounts, use direct query
-            if ((!result || result.length === 0) && accountService) {
+            // If service returned empty, try direct database query
+            if (!result || result.length === 0) {
                 console.log('\x1b[33m%s\x1b[0m', '⚠️ Service returned empty, trying direct database query...');
 
                 try {
@@ -1324,7 +1315,6 @@ function setupIpcHandlers() {
     });
 
     // ==================== TRANSACTION HANDLERS ====================
-    // Note: TransactionService might be a class, so keeping 'new' for now
     ipcMain.handle('getTransactions', async (event) => {
         console.log('📞 IPC: getTransactions called');
         try {
@@ -1490,6 +1480,67 @@ function setupIpcHandlers() {
     });
 
     // ==================== CATEGORY HANDLERS ====================
+    ipcMain.handle('createCategory', async (event, categoryData) => {
+        console.log('📞 IPC: createCategory called with:', JSON.stringify(categoryData, null, 2));
+        try {
+            const db = await getDatabase();
+
+            // Log all available groups for debugging
+            const allGroups = await db.all('SELECT id, name FROM category_groups');
+            console.log('📋 Available groups in database:', allGroups);
+
+            // Handle group_id - if it's provided, make sure it exists
+            let groupId = categoryData.group_id;
+
+            if (groupId) {
+                console.log('🔍 Checking if group exists with ID:', groupId);
+
+                // Check if the group exists (case-sensitive comparison)
+                const groupExists = await db.get('SELECT id FROM category_groups WHERE id = ?', [groupId]);
+
+                if (groupExists) {
+                    console.log('✅ Group found with ID:', groupId);
+                } else {
+                    console.log('❌ Group NOT found with ID:', groupId);
+                    console.log('⚠️ Setting group_id to NULL');
+                    groupId = null;
+                }
+            } else {
+                console.log('ℹ️ No group_id provided, setting to NULL');
+            }
+
+            // Generate a unique ID for the category
+            const id = categoryData.id || `cat_${Date.now()}`;
+
+            console.log('📝 Inserting category with group_id:', groupId);
+
+            await db.run(`
+            INSERT INTO categories (
+                id, user_id, name, group_id, assigned, 
+                target_type, target_amount, target_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+                id,
+                categoryData.user_id,
+                categoryData.name,
+                groupId,
+                categoryData.assigned || 0,
+                categoryData.target_type || 'monthly',
+                categoryData.target_amount || 0,
+                categoryData.target_date || null
+            ]);
+
+            // Fetch and return the created category
+            const newCategory = await db.get('SELECT * FROM categories WHERE id = ?', [id]);
+
+            console.log('✅ Category created successfully:', newCategory);
+            return { success: true, data: newCategory };
+        } catch (error) {
+            console.error('❌ Error in createCategory:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('getCategories', async (event, userId) => {
         console.log('📞 IPC: getCategories called with userId:', userId);
 
@@ -1542,16 +1593,20 @@ function setupIpcHandlers() {
             return { success: false, error: error.message, data: [] };
         }
     });
-    // Add this near your other IPC handlers (around line 1200)
-    // This will log any account-related IPC calls
-    ipcMain.handle('*', (event, ...args) => {
-        const channel = event?.type || 'unknown';
-        if (channel.includes('account') || channel.includes('Account')) {
-            console.log('\x1b[33m%s\x1b[0m', `🔍🔍🔍 CAUGHT ACCOUNT CALL: ${channel}`, args);
+
+    ipcMain.handle('delete-category', async (event, categoryId) => {
+        console.log('📞 IPC: delete-category called:', categoryId);
+        try {
+            const db = await getDatabase();
+            await db.run('DELETE FROM categories WHERE id = ?', [categoryId]);
+            return { success: true, data: { id: categoryId } };
+        } catch (error) {
+            console.error('❌ Error in delete-category:', error);
+            return { success: false, error: error.message };
         }
     });
+
     // ==================== LEGACY ACCOUNT HANDLERS ====================
-    // FIXED: These already use accountService correctly (without 'new')
     ipcMain.handle('get-accounts', async () => {
         console.log('\x1b[36m%s\x1b[0m', '🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀');
         console.log('\x1b[36m%s\x1b[0m', '🌀 get-accounts CALLED (legacy)');
@@ -1566,7 +1621,7 @@ function setupIpcHandlers() {
             return { success: false, error: error.message, data: [] };
         }
     });
-    // This handler might be used by the "All Accounts" tab
+
     ipcMain.handle('getAccounts', async () => {
         console.log('\x1b[35m%s\x1b[0m', '🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥');
         console.log('\x1b[35m%s\x1b[0m', '🔥 getAccounts CALLED (All Accounts tab?)');
@@ -1586,8 +1641,6 @@ function setupIpcHandlers() {
             return { success: false, error: error.message, data: [] };
         }
     });
-
-
 
     ipcMain.handle('get-account', async (event, accountId) => {
         try {
@@ -1709,15 +1762,6 @@ function setupIpcHandlers() {
     ipcMain.handle('create-category', async (event, category) => {
         try {
             const result = { id: 1, ...category }; // Placeholder
-            return { success: true, data: result };
-        } catch (error) {
-            return { success: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle('delete-category', async (event, categoryId) => {
-        try {
-            const result = { success: true }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };

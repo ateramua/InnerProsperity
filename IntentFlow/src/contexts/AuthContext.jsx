@@ -21,11 +21,11 @@ export function AuthProvider({ children }) {
     try {
       setLoading(true);
       console.log('🔍 Checking auth status...');
-      
+
       if (window.electronAPI) {
         const result = await window.electronAPI.getCurrentUser();
         console.log('📊 Auth status result:', result);
-        
+
         if (result && result.success && result.data) {
           setUser(result.data);
           setIsAuthenticated(true);
@@ -53,11 +53,11 @@ export function AuthProvider({ children }) {
     try {
       setLoading(true);
       console.log('🔐 Login attempt for:', username);
-      
+
       if (window.electronAPI) {
         const result = await window.electronAPI.loginUser({ username, password });
         console.log('📊 Login result:', result);
-        
+
         if (result && result.success) {
           setUser(result.data);
           setIsAuthenticated(true);
@@ -75,18 +75,19 @@ export function AuthProvider({ children }) {
       setLoading(false);
     }
   };
-
   const logout = async () => {
     try {
       setLoading(true);
       console.log('👋 Logging out...');
-      
+
       if (window.electronAPI) {
         await window.electronAPI.logoutUser();
       }
-      
+
       setUser(null);
       setIsAuthenticated(false);
+      console.log('✅ Logout complete - isAuthenticated set to false');
+
       return { success: true };
     } catch (error) {
       console.error('❌ Logout error:', error);
@@ -100,11 +101,11 @@ export function AuthProvider({ children }) {
     try {
       setLoading(true);
       console.log('📝 Registering user:', userData);
-      
+
       if (window.electronAPI) {
         const result = await window.electronAPI.createUser(userData);
         console.log('📊 Register result:', result);
-        
+
         if (result && result.success) {
           return { success: true, data: result.data };
         } else {

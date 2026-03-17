@@ -9,8 +9,8 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
         setEditingId(transaction.id);
         setEditForm({
             date: transaction.date,
-            payee: transaction.payee,
-            categoryId: transaction.category_id,
+            payee: transaction.payee || transaction.description || '',
+            categoryId: transaction.category_id || '',
             amount: Math.abs(transaction.amount),
             type: transaction.amount < 0 ? 'outflow' : 'inflow',
             memo: transaction.memo || '',
@@ -18,27 +18,53 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
         });
     };
 
+    // FIXED: This should update transactions, not accounts
     const handleSaveEdit = async () => {
-        const amount = editForm.type === 'outflow' ? -Math.abs(editForm.amount) : Math.abs(editForm.amount);
-        await onUpdateTransaction(editingId, {
-            date: editForm.date,
-            payee: editForm.payee,
-            categoryId: editForm.categoryId,
-            amount: amount,
-            memo: editForm.memo,
-            is_cleared: editForm.cleared ? 1 : 0
-        });
-        setEditingId(null);
+        if (!editingId) return;
+        
+        try {
+            const amount = editForm.type === 'outflow' 
+                ? -Math.abs(parseFloat(editForm.amount) || 0)
+                : Math.abs(parseFloat(editForm.amount) || 0);
+
+            const updates = {
+                date: editForm.date,
+                payee: editForm.payee,
+                description: editForm.payee,
+                amount: amount,
+                category_id: editForm.categoryId || null,
+                memo: editForm.memo,
+                is_cleared: editForm.cleared ? 1 : 0
+            };
+
+            const result = await onUpdateTransaction(editingId, updates);
+            
+            if (result && result.success) {
+                setEditingId(null);
+                setEditForm({});
+            } else {
+                alert('Error updating transaction: ' + (result?.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error updating transaction:', error);
+            alert('Error updating transaction: ' + error.message);
+        }
     };
 
     const handleDelete = async (id) => {
         if (confirm('Are you sure you want to delete this transaction?')) {
-            await onDeleteTransaction(id);
+            const result = await onDeleteTransaction(id);
+            if (!result || !result.success) {
+                alert('Error deleting transaction');
+            }
         }
     };
 
     const handleToggleCleared = async (id, currentStatus) => {
-        await onToggleCleared(id, currentStatus ? 0 : 1);
+        const result = await onToggleCleared(id, currentStatus ? 0 : 1);
+        if (!result || !result.success) {
+            alert('Error toggling cleared status');
+        }
     };
 
     const formatCurrency = (amount) => {
@@ -68,59 +94,69 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
                         </tr>
                     </thead>
                     <tbody>
-                        {transactions.map(transaction => (
-                            <tr key={transaction.id} style={styles.tableRow}>
-                                <td style={styles.tableCell}>{transaction.date}</td>
-                                <td style={styles.tableCell}>{transaction.payee || transaction.description}</td>
-                                <td style={styles.tableCell}>
-                                    {categories.find(c => c.id === transaction.category_id)?.name || 'Uncategorized'}
-                                </td>
-                                <td style={styles.tableCell}>{transaction.memo || '-'}</td>
-                                <td style={{ ...styles.tableCell, ...styles.outflow }}>
-                                    {transaction.amount < 0 ? formatCurrency(transaction.amount) : ''}
-                                </td>
-                                <td style={{ ...styles.tableCell, ...styles.inflow }}>
-                                    {transaction.amount > 0 ? formatCurrency(transaction.amount) : ''}
-                                </td>
-                                <td style={styles.tableCell}>
-                                    <input
-                                        type="checkbox"
-                                        checked={transaction.is_cleared === 1}
-                                        onChange={() => handleToggleCleared(transaction.id, transaction.is_cleared)}
-                                        style={styles.checkbox}
-                                    />
-                                </td>
-                                <td style={styles.tableCell}>
-                                    <button
-                                        onClick={() => handleEdit(transaction)}
-                                        style={styles.actionButton}
-                                    >
-                                        ✏️
-                                    </button>
-                                    <button
-                                        onClick={() => handleDelete(transaction.id)}
-                                        style={{ ...styles.actionButton, marginLeft: '0.5rem' }}
-                                    >
-                                        🗑️
-                                    </button>
+                        {transactions && transactions.length > 0 ? (
+                            transactions.map(transaction => (
+                                <tr key={transaction.id} style={styles.tableRow}>
+                                    <td style={styles.tableCell}>{transaction.date}</td>
+                                    <td style={styles.tableCell}>{transaction.payee || transaction.description || '-'}</td>
+                                    <td style={styles.tableCell}>
+                                        {categories.find(c => c.id === transaction.category_id)?.name || 'Uncategorized'}
+                                    </td>
+                                    <td style={styles.tableCell}>{transaction.memo || '-'}</td>
+                                    <td style={{ ...styles.tableCell, ...styles.outflow }}>
+                                        {transaction.amount < 0 ? formatCurrency(transaction.amount) : ''}
+                                    </td>
+                                    <td style={{ ...styles.tableCell, ...styles.inflow }}>
+                                        {transaction.amount > 0 ? formatCurrency(transaction.amount) : ''}
+                                    </td>
+                                    <td style={styles.tableCell}>
+                                        <input
+                                            type="checkbox"
+                                            checked={transaction.is_cleared === 1}
+                                            onChange={() => handleToggleCleared(transaction.id, transaction.is_cleared)}
+                                            style={styles.checkbox}
+                                        />
+                                    </td>
+                                    <td style={styles.tableCell}>
+                                        <button
+                                            onClick={() => handleEdit(transaction)}
+                                            style={styles.actionButton}
+                                            title="Edit transaction"
+                                        >
+                                            ✏️
+                                        </button>
+                                        <button
+                                            onClick={() => handleDelete(transaction.id)}
+                                            style={{ ...styles.actionButton, marginLeft: '0.5rem' }}
+                                            title="Delete transaction"
+                                        >
+                                            🗑️
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))
+                        ) : (
+                            <tr>
+                                <td colSpan="8" style={{ ...styles.tableCell, textAlign: 'center', padding: '2rem' }}>
+                                    No transactions found
                                 </td>
                             </tr>
-                        ))}
+                        )}
                     </tbody>
                 </table>
             </div>
 
             {/* Edit Modal */}
             {editingId && (
-                <div style={styles.modal}>
-                    <div style={styles.modalContent}>
+                <div style={styles.modal} onClick={() => setEditingId(null)}>
+                    <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
                         <h3 style={styles.modalTitle}>Edit Transaction</h3>
 
                         <div style={styles.formGroup}>
                             <label style={styles.label}>Date</label>
                             <input
                                 type="date"
-                                value={editForm.date}
+                                value={editForm.date || ''}
                                 onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
                                 style={styles.input}
                             />
@@ -130,9 +166,10 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
                             <label style={styles.label}>Payee</label>
                             <input
                                 type="text"
-                                value={editForm.payee}
+                                value={editForm.payee || ''}
                                 onChange={(e) => setEditForm({ ...editForm, payee: e.target.value })}
                                 style={styles.input}
+                                placeholder="e.g., Grocery Store"
                             />
                         </div>
 
@@ -154,17 +191,19 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
                             <label style={styles.label}>Amount</label>
                             <input
                                 type="number"
-                                value={editForm.amount}
-                                onChange={(e) => setEditForm({ ...editForm, amount: parseFloat(e.target.value) || 0 })}
+                                value={editForm.amount || ''}
+                                onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
                                 style={styles.input}
                                 step="0.01"
+                                min="0"
+                                placeholder="0.00"
                             />
                         </div>
 
                         <div style={styles.formGroup}>
                             <label style={styles.label}>Type</label>
                             <select
-                                value={editForm.type}
+                                value={editForm.type || 'outflow'}
                                 onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
                                 style={styles.select}
                             >
@@ -177,9 +216,10 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
                             <label style={styles.label}>Memo</label>
                             <input
                                 type="text"
-                                value={editForm.memo}
+                                value={editForm.memo || ''}
                                 onChange={(e) => setEditForm({ ...editForm, memo: e.target.value })}
                                 style={styles.input}
+                                placeholder="Additional notes"
                             />
                         </div>
 
@@ -187,10 +227,10 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
                             <label style={styles.checkboxLabel}>
                                 <input
                                     type="checkbox"
-                                    checked={editForm.cleared}
+                                    checked={editForm.cleared || false}
                                     onChange={(e) => setEditForm({ ...editForm, cleared: e.target.checked })}
                                 />
-                                Cleared
+                                <span style={{ marginLeft: '0.5rem' }}>Cleared</span>
                             </label>
                         </div>
 
@@ -201,13 +241,6 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
                             <button onClick={() => setEditingId(null)} style={styles.cancelButton}>
                                 Cancel
                             </button>
-                            {/* Remove */}
-                            <button onClick={() => {
-                                console.log('➕ Add button clicked');
-                                // Your existing onClick code
-                            }}>
-                                Add Transaction
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -216,6 +249,7 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
     );
 };
 
+// Fixed styles with proper colors
 const styles = {
     container: {
         width: '100%'
@@ -227,17 +261,17 @@ const styles = {
         color: 'white'
     },
     tableContainer: {
-        background: '#000000',
+        background: '#1F2937',
         borderRadius: '0.75rem',
         overflow: 'hidden',
-        border: '1px solid #000000'
+        border: '1px solid #374151'
     },
     table: {
         width: '100%',
         borderCollapse: 'collapse'
     },
     tableHead: {
-        background: '#000000'
+        background: '#111827'
     },
     tableHeader: {
         padding: '1rem',
@@ -245,10 +279,10 @@ const styles = {
         color: '#9CA3AF',
         fontWeight: '500',
         fontSize: '0.875rem',
-        borderBottom: '2px solid #000000'
+        borderBottom: '2px solid #374151'
     },
     tableRow: {
-        borderBottom: '1px solid #000000'
+        borderBottom: '1px solid #374151'
     },
     tableCell: {
         padding: '0.75rem 1rem',
@@ -271,7 +305,11 @@ const styles = {
         border: 'none',
         fontSize: '1.1rem',
         cursor: 'pointer',
-        padding: '0.25rem'
+        padding: '0.25rem',
+        color: '#9CA3AF',
+        ':hover': {
+            color: 'white'
+        }
     },
     modal: {
         position: 'fixed',
@@ -286,13 +324,14 @@ const styles = {
         zIndex: 1000
     },
     modalContent: {
-        background: '#000000',
+        background: '#1F2937',
         padding: '2rem',
         borderRadius: '1rem',
         width: '90%',
         maxWidth: '500px',
         maxHeight: '80vh',
-        overflowY: 'auto'
+        overflowY: 'auto',
+        border: '1px solid #374151'
     },
     modalTitle: {
         fontSize: '1.25rem',
@@ -312,8 +351,8 @@ const styles = {
     input: {
         width: '100%',
         padding: '0.75rem',
-        background: '#000000',
-        border: '1px solid #000000',
+        background: '#111827',
+        border: '1px solid #374151',
         borderRadius: '0.5rem',
         color: 'white',
         fontSize: '1rem'
@@ -321,8 +360,8 @@ const styles = {
     select: {
         width: '100%',
         padding: '0.75rem',
-        background: '#000000',
-        border: '1px solid #000000',
+        background: '#111827',
+        border: '1px solid #374151',
         borderRadius: '0.5rem',
         color: 'white',
         fontSize: '1rem'
@@ -330,8 +369,7 @@ const styles = {
     checkboxLabel: {
         display: 'flex',
         alignItems: 'center',
-        gap: '0.5rem',
-        color: 'white',
+        color: '#9CA3AF',
         cursor: 'pointer'
     },
     modalActions: {
@@ -342,12 +380,12 @@ const styles = {
     saveButton: {
         flex: 1,
         padding: '0.75rem',
-        background: '#3B82F6',
+        background: '#10B981',
         color: 'white',
         border: 'none',
         borderRadius: '0.5rem',
         fontSize: '1rem',
-        fontWeight: '500',
+        fontWeight: '600',
         cursor: 'pointer'
     },
     cancelButton: {
@@ -358,7 +396,7 @@ const styles = {
         border: 'none',
         borderRadius: '0.5rem',
         fontSize: '1rem',
-        fontWeight: '500',
+        fontWeight: '600',
         cursor: 'pointer'
     }
 };
