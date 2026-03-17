@@ -49,9 +49,11 @@
       "output": "release"
     },
     "files": [
-      "src/**/*",
       "out/**/*",
-      "package.json"
+      "src/db/data/**/*",
+      "src/preload/**/*", 
+      "src/main/**/*",
+      "node_modules/**/*"
     ],
     "mac": {
       "target": "dmg"

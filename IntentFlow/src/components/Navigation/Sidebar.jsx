@@ -62,12 +62,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
             icon: '🥧',
             description: 'Pie chart visualization'
         },
-        {
-            id: 'allAccounts',
-            label: 'All Accounts',
-            icon: '📋',
-            description: 'All transactions'
-        },
+    
         {
             id: 'forecast',
             label: 'Forecast',

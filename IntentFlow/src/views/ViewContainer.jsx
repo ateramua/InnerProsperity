@@ -20,9 +20,13 @@ import DebtStrategist from './DebtStrategist';
 import AddLoanForm from './AddLoanForm';
 import ForecastPage from '../pages/forecast';
 
+
+
 const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavigate }) => {
-  console.log('🔍 ViewContainer rendering with currentView:', currentView);
-  console.log('🔵 ViewContainer received accounts:', accounts);
+  // DEBUG LOGS - MOVED INSIDE THE COMPONENT WHERE currentView IS DEFINED
+  console.log('🔍 ViewContainer received currentView:', currentView);
+  console.log('🔍 Available views: "accounts", "allAccounts", "creditCards", etc.');
+  console.log('🔍 accounts length:', accounts?.length);
 
   // State for credit cards data
   const [creditCards, setCreditCards] = useState([]);
@@ -34,6 +38,9 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
 
   // Load credit cards data when needed
   const loadCreditCards = async () => {
+    // At the top of the ViewContainer component function
+    console.log('🔍 ViewContainer received currentView:', currentView);
+    console.log('🔍 Available views: "accounts", "allAccounts", "creditCards", etc.');
     setIsLoadingCards(true);
     try {
       if (window.electronAPI?.getCreditCards) {
@@ -423,10 +430,26 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       case 'accounts':
         console.log('🔵 Rendering CashAccountsView with accounts:', accounts);
         return <CashAccountsView accounts={accounts} />;
-
       case 'allAccounts':
+      case 'all-accounts':
         console.log('🔵 Rendering AllAccountsView with accounts:', accounts);
-        return <AllAccountsView accounts={accounts} />;
+
+        // Define the missing handler functions right here
+        const handleAccountUpdate = (accountId, updates) => {
+          console.log('📝 Account updated:', accountId, updates);
+          // You can refresh the accounts list here if needed
+        };
+
+        const handleAccountDelete = (accountId) => {
+          console.log('🗑️ Account deleted:', accountId);
+          // You can refresh the accounts list here if needed
+        };
+
+        return <AllAccountsView
+          accounts={accounts}
+          onAccountUpdate={handleAccountUpdate}
+          onAccountDelete={handleAccountDelete}
+        />;
 
       case 'propertyMap':
         return <PropertyMapView />;

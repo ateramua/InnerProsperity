@@ -1,15 +1,79 @@
 // src/views/AllAccountsView.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 
-const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
+const AllAccountsView = ({ accounts: propAccounts, onAccountUpdate, onAccountDelete }) => {
   const router = useRouter();
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [editingAccount, setEditingAccount] = useState(null);
   const [editForm, setEditForm] = useState({
     name: '',
     balance: '',
     institution: ''
   });
+
+  // Load accounts when component mounts or prop changes
+  useEffect(() => {
+    loadAccounts();
+  }, [propAccounts]);
+
+  const loadAccounts = async () => {
+    console.log('💰 AllAccountsView - Loading accounts...');
+    setLoading(true);
+
+    try {
+      // If we have accounts from props and they're not empty, use them
+      if (propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
+        console.log('💰 Using propAccounts:', propAccounts.length);
+        setAccounts(propAccounts);
+        setLoading(false);
+        return;
+      }
+
+      console.log('💰 No propAccounts, fetching directly...');
+
+      if (!window.electronAPI) {
+        console.error('❌ electronAPI not available');
+        setError('Application API not available');
+        setLoading(false);
+        return;
+      }
+
+      // Get current user
+      const userResult = await window.electronAPI.getCurrentUser();
+      console.log('💰 User result:', userResult);
+
+      if (!userResult?.success || !userResult?.data) {
+        console.error('❌ No user logged in');
+        setError('Please log in to view accounts');
+        setLoading(false);
+        return;
+      }
+
+      const userId = userResult.data.id;
+      console.log('💰 User ID:', userId);
+
+      // Fetch all accounts using the same method that works in CashAccountsView
+      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+      console.log('💰 Accounts result:', accountsResult);
+
+      if (accountsResult?.success) {
+        const allAccounts = accountsResult.data || [];
+        console.log('💰 All accounts count:', allAccounts.length);
+        setAccounts(allAccounts);
+      } else {
+        console.error('❌ Failed to load accounts:', accountsResult?.error);
+        setError(accountsResult?.error || 'Failed to load accounts');
+      }
+    } catch (error) {
+      console.error('❌ Error loading accounts:', error);
+      setError(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleAccountClick = (account) => {
     console.log('🔵 Clicked account:', account.id, account.name);
@@ -33,7 +97,12 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
         const result = await window.electronAPI.deleteAccount(accountId);
         if (result.success) {
           alert('✅ Account deleted successfully');
-          if (onAccountDelete) onAccountDelete(accountId);
+          if (onAccountDelete) {
+            onAccountDelete(accountId);
+          } else {
+            // Refresh the list if no callback provided
+            loadAccounts();
+          }
         } else {
           alert('❌ Error deleting account: ' + result.error);
         }
@@ -56,7 +125,12 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
       if (result.success) {
         setEditingAccount(null);
         alert('✅ Account updated successfully');
-        if (onAccountUpdate) onAccountUpdate(accountId, updates);
+        if (onAccountUpdate) {
+          onAccountUpdate(accountId, updates);
+        } else {
+          // Refresh the list if no callback provided
+          loadAccounts();
+        }
       } else {
         alert('❌ Error updating account: ' + result.error);
       }
@@ -79,7 +153,7 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
   };
 
   const getAccountTypeColor = (type) => {
-    switch(type) {
+    switch (type) {
       case 'credit': return '#7C3AED';
       case 'checking': return '#3B82F6';
       case 'savings': return '#10B981';
@@ -87,11 +161,41 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
     }
   };
 
+  // Loading state
+  if (loading) {
+    return (
+      <div style={styles.container}>
+        <h1 style={styles.title}>All Accounts</h1>
+        <p style={styles.description}>Loading your accounts...</p>
+        <div style={styles.placeholder}>
+          <div style={styles.loadingSpinner}></div>
+          <p>Loading accounts...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div style={styles.container}>
+        <h1 style={styles.title}>All Accounts</h1>
+        <p style={styles.description}>Error loading accounts</p>
+        <div style={styles.placeholder}>
+          <p>❌ {error}</p>
+          <button onClick={loadAccounts} style={styles.retryButton}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.container}>
       <h1 style={styles.title}>All Accounts</h1>
       <p style={styles.description}>Click any account to view transactions • Hover for edit/delete options</p>
-      
+
       {!accounts || accounts.length === 0 ? (
         <div style={styles.placeholder}>
           No accounts found
@@ -110,8 +214,8 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
             </thead>
             <tbody>
               {accounts.map((account) => (
-                <tr 
-                  key={account.id} 
+                <tr
+                  key={account.id}
                   style={styles.tableRow}
                   onClick={() => editingAccount !== account.id && handleAccountClick(account)}
                   className="account-row"
@@ -123,7 +227,7 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
                         <input
                           type="text"
                           value={editForm.name}
-                          onChange={(e) => setEditForm({...editForm, name: e.target.value})}
+                          onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
                           style={styles.editInput}
                           placeholder="Account name"
                           onClick={(e) => e.stopPropagation()}
@@ -141,7 +245,7 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
                         <input
                           type="number"
                           value={editForm.balance}
-                          onChange={(e) => setEditForm({...editForm, balance: e.target.value})}
+                          onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })}
                           style={styles.editInput}
                           placeholder="0.00"
                           step="0.01"
@@ -152,7 +256,7 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
                         <input
                           type="text"
                           value={editForm.institution}
-                          onChange={(e) => setEditForm({...editForm, institution: e.target.value})}
+                          onChange={(e) => setEditForm({ ...editForm, institution: e.target.value })}
                           style={styles.editInput}
                           placeholder="Institution"
                           onClick={(e) => e.stopPropagation()}
@@ -228,7 +332,17 @@ const AllAccountsView = ({ accounts, onAccountUpdate, onAccountDelete }) => {
   );
 };
 
+// Add these new styles
 const styles = {
+  loadingSpinner: {
+    width: '40px',
+    height: '40px',
+    border: '4px solid #3B82F6',
+    borderTopColor: 'transparent',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+    margin: '0 auto 1rem'
+  },
   container: {
     width: '100%'
   },
@@ -249,7 +363,11 @@ const styles = {
     padding: '3rem',
     textAlign: 'center',
     color: '#6B7280',
-    border: '2px dashed #374151'
+    border: '2px dashed #374151',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '1rem'
   },
   tableContainer: {
     background: '#1F2937',
@@ -359,6 +477,26 @@ const styles = {
     borderRadius: '0.25rem',
     fontSize: '0.75rem',
     cursor: 'pointer'
+  },
+  // New styles for loading and error states
+  loadingSpinner: {
+    width: '40px',
+    height: '40px',
+    border: '4px solid #3B82F6',
+    borderTopColor: 'transparent',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+    margin: '0 auto 1rem'
+  },
+  retryButton: {
+    padding: '0.5rem 1rem',
+    background: '#3B82F6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    cursor: 'pointer',
+    marginTop: '1rem',
+    fontSize: '0.875rem'
   }
 };
 

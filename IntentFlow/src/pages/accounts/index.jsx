@@ -31,7 +31,7 @@ export default function AccountsDashboard() {
         name: '',
         type: 'checking',
         account_type_category: 'budget',
-        balance: 0,
+        balance: '',
         currency: 'USD',
         institution: ''
     });
@@ -49,6 +49,9 @@ export default function AccountsDashboard() {
     };
 
     useEffect(() => {
+        console.log('🔥🔥🔥 ACCOUNTS PAGE MOUNTED - CHECKING ELECTRON API');
+        console.log('🔥 window.electronAPI exists:', !!window.electronAPI);
+        console.log('🔥 accounts:getSummary available:', !!window.electronAPI?.invoke);
         console.log('🔵 [useEffect] Component mounted, calling loadAccounts()');
         loadAccounts();
 
@@ -551,11 +554,10 @@ const styles = {
         background: '#0047AB',
         padding: '1.5rem',
         borderRadius: '0.75rem',
-        borderLeft: `4px solid ${
-            color === 'blue' ? '#3B82F6' :
-            color === 'purple' ? '#8B5CF6' :
-            color === 'green' ? '#10B981' : '#F59E0B'
-        }`
+        borderLeft: `4px solid ${color === 'blue' ? '#3B82F6' :
+                color === 'purple' ? '#8B5CF6' :
+                    color === 'green' ? '#10B981' : '#F59E0B'
+            }`
     }),
     summaryLabel: {
         color: '#9CA3AF',

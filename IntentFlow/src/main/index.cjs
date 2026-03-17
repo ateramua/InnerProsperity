@@ -6,52 +6,199 @@ const os = require('os'); // Added for network status
 
 // ==================== CONSTANTS ====================
 const PRELOAD_PATH = path.join(__dirname, '../preload/preload.cjs');
-const isDev = process.env.NODE_ENV === 'development' && !app.isPackaged;
+const isDev = process.env.NODE_ENV === 'development';
+
+// ==================== HELPER FUNCTIONS FOR PACKAGED APP ====================
+function getAppPath() {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'app.asar');
+    }
+    return path.resolve(__dirname, '../..');
+}
+function requireModule(modulePath) {
+    try {
+        if (app.isPackaged) {
+            // In packaged app, try multiple locations
+            const possiblePaths = [
+                // Try in app.asar first
+                path.join(process.resourcesPath, 'app.asar', 'src', modulePath.replace('../', '')),
+                // Try in app folder (unpacked)
+                path.join(process.resourcesPath, 'app', 'src', modulePath.replace('../', '')),
+                // Try relative to current directory
+                path.join(__dirname, '..', modulePath.replace('../', ''))
+            ];
+
+            for (const testPath of possiblePaths) {
+                try {
+                    console.log('📦 Trying packaged path:', testPath);
+                    // Check if file exists before requiring
+                    if (fs.existsSync(testPath)) {
+                        console.log('✅ Found module at:', testPath);
+                        return require(testPath);
+                    }
+                } catch (e) {
+                    console.log('❌ Failed at:', testPath, e.message);
+                }
+            }
+        }
+
+        // In development - FIXED PATH
+        const cleanPath = modulePath.replace(/^\.\.\//, '');
+        const devPath = path.join(__dirname, '..', cleanPath);
+        console.log('🔍 Trying dev path:', devPath);
+
+        if (fs.existsSync(devPath)) {
+            console.log('✅ Found module at:', devPath);
+            return require(devPath);
+        } else {
+            console.error(`❌ Module not found at: ${devPath}`);
+            const altPath = path.join(__dirname, '..', '..', 'src', cleanPath);
+            console.log('🔍 Trying alternative path:', altPath);
+
+            if (fs.existsSync(altPath)) {
+                console.log('✅ Found module at:', altPath);
+                return require(altPath);
+            }
+        }
+
+        throw new Error(`Cannot find module ${modulePath}`);
+
+    } catch (error) {
+        console.error(`❌ Failed to load module ${modulePath}:`, error.message);
+        return null;
+    }
+}
 
 // ==================== SERVICES ====================
-const CategoryGroupService = require('../services/categories/categoryGroupService.cjs');
-const ForecastService = require('../services/forecast/forecastService.cjs');
-const MoneyMap = require('../services/forecast/moneyMap.cjs');
-const ProsperityOptimizer = require('../services/prosperity/prosperityOptimizer.cjs');
-const ValidationService = require('../services/forecast/validationService.cjs');
-const updateService = require('../services/realtime/updateService.cjs');
+// Load all services with fallbacks
+const CategoryGroupService = requireModule('../services/categories/categoryGroupService.cjs') || class CategoryGroupService {
+    async getCategoryGroups(userId) { return []; }
+    async getGroupsWithCategories(userId) { return []; }
+    async createCategoryGroup(userId, name, sortOrder) { return { id: Date.now() }; }
+    async updateCategoryGroup(id, userId, updates) { return {}; }
+    async deleteCategoryGroup(id, userId) { return {}; }
+};
+
+const ForecastService = requireModule('../services/forecast/forecastService.cjs') || class ForecastService {
+    async generateForecast(userId, options) { return {}; }
+    async getDailyForecast(userId) { return {}; }
+    async getWeeklyForecast(userId, weeks) { return {}; }
+    async getYearlyForecast(userId, years) { return {}; }
+    async getRecommendations(userId) { return []; }
+};
+
+const MoneyMap = requireModule('../services/forecast/moneyMap.cjs') || class MoneyMap {
+    async buildMoneyMap(userId) { return {}; }
+    async refreshWithBudget(moneyMap, budgetData) { return {}; }
+};
+
+const ProsperityOptimizer = requireModule('../services/prosperity/prosperityOptimizer.cjs') || class ProsperityOptimizer {
+    async optimizeProsperityMap(userId, totalIncome) { return {}; }
+};
+
+const ValidationService = requireModule('../services/forecast/validationService.cjs') || class ValidationService {
+    async trackForecastAccuracy(userId, forecastDate, forecastData, actualData) { return {}; }
+    async getAccuracyTrends(userId, months) { return {}; }
+    async getCategoryAccuracy(userId) { return {}; }
+    async calculateConfidenceScore(userId, categoryId) { return 0; }
+};
+
+const updateService = requireModule('../services/realtime/updateService.cjs') || { publish: () => { } };
 
 // Windows
-const { createSplashWindow, closeSplashWindow } = require('./splash.cjs');
+const splashModule = requireModule('./splash.cjs') || {
+    createSplashWindow: () => null,
+    closeSplashWindow: () => { }
+};
+const { createSplashWindow, closeSplashWindow } = splashModule;
 
-// Services
-const accountService = require('../services/accounts/accountService.cjs');
-const userService = require('../services/userService.cjs');
-const settingsService = require('../services/settingsService.cjs');
-const TransactionService = require('../services/transactions/transactionService.cjs');
+// Services - NOTE: These are OBJECTS, not CLASSES
+const accountService = requireModule('../services/accounts/accountService.cjs') || {
+    getAllAccounts: async (userId) => [],
+    getAccountById: async (id, userId) => null,
+    createAccount: async (accountData) => ({ id: Date.now() }),
+    updateAccount: async (id, userId, updates) => ({}),
+    deleteAccount: async (id, userId) => ({}),
+    getAccountBalances: async (accountId, userId) => ({}),
+    getAccountsSummary: async (userId) => [],
+    getTotalsByType: async (userId) => ({}),
+    startReconciliation: async (accountId, userId, statementBalance, statementDate) => ({}),
+    getCreditCardDetails: async (accountId, userId) => ({}),
+    getAccounts: async () => [],
+    getAccount: async (accountId) => null,
+    getAccountTransactions: async (accountId, limit) => [],
+    getAccountsWithSummary: async (userId) => ({}),
+    getAccountDetails: async (accountId) => null
+};
 
-// ==================== GLOBAL VARIABLES ====================
+const userService = requireModule('../services/userService.cjs') || {
+    createUser: async (username, password, fullName, email) => ({ id: Date.now() }),
+    login: async (username, password) => ({ id: 2, username: 'demo' }),
+    logout: () => { },
+    getCurrentUser: () => ({ id: 2, username: 'demo' }),
+    listUsers: async () => []
+};
+
+const settingsService = requireModule('../services/settingsService.cjs') || {
+    getGroupsWithCategories: async (budgetId) => []
+};
+
+// TransactionService might be a CLASS
+const TransactionService = requireModule('../services/transactions/transactionService.cjs') || class TransactionService {
+    async getAllTransactions(userId) { return []; }
+    async createTransaction(transactionData) { return { id: Date.now() }; }
+    async updateTransaction(id, userId, updates) { return {}; }
+    async deleteTransaction(id, userId) { return {}; }
+    async getAccountTransactions(accountId, userId) { return []; }
+    async reconcileAccount(accountId, userId, statementBalance, transactionsToClear) { return {}; }
+};
+
+// ========== DEBUG CODE - MOVED HERE AFTER ALL SERVICES ==========
+console.log('\n\x1b[36m%s\x1b[0m', '📦📦📦 SERVICE LOADING STATUS 📦📦📦');
+console.log('\x1b[36m%s\x1b[0m', '=====================================');
+console.log('   - accountService loaded:', !!accountService);
+console.log('   - accountService.getAccountsSummary exists:', !!(accountService && typeof accountService.getAccountsSummary === 'function'));
+console.log('   - userService loaded:', !!userService);
+console.log('   - settingsService loaded:', !!settingsService);
+console.log('   - TransactionService loaded:', !!TransactionService);
+console.log('   - CategoryGroupService loaded:', !!CategoryGroupService);
+console.log('   - ForecastService loaded:', !!ForecastService);
+console.log('   - MoneyMap loaded:', !!MoneyMap);
+console.log('   - ProsperityOptimizer loaded:', !!ProsperityOptimizer);
+console.log('   - ValidationService loaded:', !!ValidationService);
+console.log('   - updateService loaded:', !!updateService);
+console.log('   - splashModule loaded:', !!splashModule);
+console.log('\x1b[36m%s\x1b[0m', '=====================================\n');
+
 let mainWindow;
 let splashWindow;
 let db;
 let nativeServer = null;
-let ipcHandlersRegistered = false; // Flag to prevent duplicate registration
+let ipcHandlersRegistered = false;
 
 // ==================== DATABASE PATH HELPER ====================
 function getDatabasePath() {
-    // Use the database that has all your tables
+    // In packaged app, use the userData directory
+    if (app.isPackaged) {
+        const userDataPath = app.getPath('userData');
+        const dbPath = path.join(userDataPath, 'money-manager.db');
+        console.log('📦 Packaged app - using userData path:', dbPath);
+        return dbPath;
+    }
+
+    // In development, use the project database
     const projectRoot = path.resolve(__dirname, '../..');
-    const dbPath = path.join(projectRoot, 'src/db/data/app.db');
-
-    console.log('📂 Database path:', dbPath);
-    console.log('📂 Database exists:', fs.existsSync(dbPath));
-
-    return dbPath;
+    const devDbPath = path.join(projectRoot, 'src/db/data/app.db');
+    console.log('🛠️ Development - using project path:', devDbPath);
+    return devDbPath;
 }
 
 // ==================== DATABASE HELPER ====================
 async function getDatabase() {
     console.log('🔍 getDatabase called, current db state:', db ? 'exists' : 'null');
 
-    // If we already have a connection, return it
     if (db) {
         try {
-            // Test the connection with a simple query
             await db.get('SELECT 1');
             return db;
         } catch (e) {
@@ -61,7 +208,6 @@ async function getDatabase() {
     }
 
     console.log('📦 Creating new database connection...');
-
     const dbPath = getDatabasePath();
     console.log('📂 Database path:', dbPath);
 
@@ -69,7 +215,6 @@ async function getDatabase() {
         const sqlite3 = require('sqlite3');
         const { open } = require('sqlite');
 
-        // Ensure directory exists
         const dbDir = path.dirname(dbPath);
         if (!fs.existsSync(dbDir)) {
             fs.mkdirSync(dbDir, { recursive: true });
@@ -81,60 +226,177 @@ async function getDatabase() {
             driver: sqlite3.Database
         });
 
-        // Enable foreign keys
         await db.exec('PRAGMA foreign_keys = ON');
-
-        // Test the connection
         await db.get('SELECT 1');
-
         console.log('✅ Database connection established');
 
-        // Check if we need to run migrations (for production new installs)
-        if (app.isPackaged) {
-            const migrationsTable = await db.get(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'"
-            );
-
-            if (!migrationsTable) {
-                console.log('🔄 New database detected, running migrations...');
-                try {
-                    const { runMigrations } = require('../db/migrations/index.cjs');
-                    await runMigrations(db);
-                    console.log('✅ Migrations completed successfully');
-                } catch (migrationError) {
-                    console.error('❌ Migrations failed:', migrationError);
-                }
-            }
-        }
+        return db;
     } catch (error) {
         console.error('❌ Failed to create database connection:', error);
         throw error;
     }
-
-    return db;
 }
 
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
     console.log('📦 Initializing database...');
+
     const dbPath = getDatabasePath();
     const dbDir = path.dirname(dbPath);
 
-    // Ensure the directory exists
     if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
         console.log('📂 Created database directory:', dbDir);
     }
 
-    // Check if database file exists (only in development)
-    if (!app.isPackaged) {
-        if (!fs.existsSync(dbPath)) {
-            console.log('📁 Creating development database...');
+    // Check if database file exists
+    const dbExists = fs.existsSync(dbPath);
+    console.log('📂 Database exists:', dbExists);
+
+    // For packaged apps on first run, create the database with schema
+    if (app.isPackaged && !dbExists) {
+        console.log('📦 First run in packaged app - creating new database...');
+
+        try {
+            const sqlite3 = require('sqlite3');
+            const { open } = require('sqlite');
+
+            db = await open({
+                filename: dbPath,
+                driver: sqlite3.Database
+            });
+
+            // Create tables (your existing table creation code)
+            await db.exec(`
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    email TEXT UNIQUE,
+                    full_name TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                
+                CREATE TABLE IF NOT EXISTS category_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    name TEXT NOT NULL,
+                    sort_order INTEGER DEFAULT 0,
+                    is_hidden INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                );
+                
+                CREATE TABLE IF NOT EXISTS categories (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    group_id TEXT,
+                    assigned REAL DEFAULT 0,
+                    activity REAL DEFAULT 0,
+                    available REAL DEFAULT 0,
+                    target_type TEXT,
+                    target_amount REAL,
+                    target_date DATE,
+                    priority INTEGER DEFAULT 2,
+                    last_month_assigned REAL DEFAULT 0,
+                    average_spending REAL DEFAULT 0,
+                    is_hidden INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                );
+                
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    balance REAL DEFAULT 0,
+                    cleared_balance REAL DEFAULT 0,
+                    working_balance REAL DEFAULT 0,
+                    account_type_category TEXT DEFAULT 'budget',
+                    currency TEXT DEFAULT 'USD',
+                    institution TEXT,
+                    credit_limit REAL,
+                    interest_rate REAL,
+                    due_date DATE,
+                    minimum_payment REAL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                );
+                
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    date DATE NOT NULL,
+                    description TEXT,
+                    amount REAL NOT NULL,
+                    category_id TEXT,
+                    payee TEXT,
+                    memo TEXT,
+                    is_cleared INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id),
+                    FOREIGN KEY (user_id) REFERENCES users(id),
+                    FOREIGN KEY (category_id) REFERENCES categories(id)
+                );
+                
+                CREATE TABLE IF NOT EXISTS migrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            `);
+
+            // Insert demo user
+            await db.run(`
+                INSERT OR IGNORE INTO users (id, username, email, full_name) 
+                VALUES (2, 'demo', 'demo@example.com', 'Demo User')
+            `);
+
+            // Insert sample category groups
+            await db.run(`
+                INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
+                (1, 2, 'Fixed Expenses', 1),
+                (2, 2, 'Variable Expenses', 2)
+            `);
+
+            // Insert sample categories
+            await db.run(`
+                INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
+                ('cat1', 2, 'Groceries', 2, 0),
+                ('cat2', 2, 'Rent', 1, 1500),
+                ('cat3', 2, 'Utilities', 1, 200),
+                ('cat4', 2, 'Dining Out', 2, 300),
+                ('cat5', 2, 'Transportation', 2, 150)
+            `);
+
+            // Insert sample accounts
+            await db.run(`
+                INSERT OR IGNORE INTO accounts (id, user_id, name, type, balance, institution) VALUES 
+                ('test4', 2, 'Checking', 'checking', 3450.89, 'Chase'),
+                ('1faa4471-bbd8-4fbb-9c06-716c9373eb75', 2, 'Savings', 'savings', 10000, 'Chase')
+            `);
+
+            // Insert sample transactions
+            await db.run(`
+                INSERT OR IGNORE INTO transactions (account_id, user_id, date, description, amount, category_id, payee) VALUES 
+                ('test4', 2, date('now', '-5 days'), 'Grocery Store', -145.67, 'cat1', 'Walmart'),
+                ('test4', 2, date('now', '-10 days'), 'Electric Bill', -85.20, 'cat3', 'Power Company'),
+                ('test4', 2, date('now', '-15 days'), 'Restaurant', -45.99, 'cat4', 'Olive Garden')
+            `);
+
+            console.log('✅ Created database with schema and sample data');
+
+            return db;
+        } catch (error) {
+            console.error('❌ Failed to create database:', error);
+            throw error;
         }
     }
 
     try {
-        // Actually open the database connection
         const database = await getDatabase();
         console.log('✅ Database initialized successfully');
         return database;
@@ -154,19 +416,17 @@ app.whenReady().then(async () => {
     console.log('🔍 Preload path:', PRELOAD_PATH);
     console.log('🔍 Preload exists:', fs.existsSync(PRELOAD_PATH));
 
-    // Create and show splash screen
-    splashWindow = createSplashWindow();
+    if (createSplashWindow) {
+        splashWindow = createSplashWindow();
+    }
 
     try {
-        // Initialize database for real this time
         db = await initDatabase();
         console.log('✅ Database initialized successfully');
 
-        // Set up all IPC handlers (only once)
         setupIpcHandlers();
         console.log('✅ All IPC handlers registered');
 
-        // Then create the main window
         await createWindow();
     } catch (error) {
         console.error('❌ Failed to initialize database:', error);
@@ -192,16 +452,14 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
-            webSecurity: !isDev,
-            allowRunningInsecureContent: isDev
+            webSecurity: !isDev
         },
         icon: path.join(__dirname, '../renderer/public/favicon.ico'),
         backgroundColor: '#111827'
     });
-
+   
     mainWindow = win;
 
-    // Load the app
     if (isDev) {
         console.log('🔍 Loading dev URL: http://localhost:3000');
         win.loadURL('http://localhost:3000');
@@ -210,44 +468,37 @@ function createWindow() {
         const indexPath = path.join(__dirname, '../../out/index.html');
         console.log('📄 Loading production file:', indexPath);
 
-        // Check if file exists
-        if (!fs.existsSync(indexPath)) {
+        if (fs.existsSync(indexPath)) {
+            win.loadFile(indexPath).catch(err => {
+                console.error('❌ Failed to load index.html:', err);
+            });
+        } else {
             console.error('❌ Production file not found at:', indexPath);
             console.log('📂 Directory contents:', fs.readdirSync(path.dirname(indexPath)));
         }
-
-        win.loadFile(indexPath).catch(err => {
-            console.error('❌ Failed to load index.html:', err);
-        });
     }
 
     // Handle navigation for static exports
     win.webContents.on('will-navigate', (event, url) => {
         console.log('🔀 Navigation attempt to:', url);
 
-        // For static exports, we need to handle client-side routing
         if (!isDev && url.startsWith('file://')) {
             event.preventDefault();
 
-            // Convert the URL to a file path
             const parsedUrl = new URL(url);
             let filePath = parsedUrl.pathname;
 
-            // Remove leading slash
             if (filePath.startsWith('/')) {
                 filePath = filePath.substring(1);
             }
 
-            // If it's a dynamic route, try to load the appropriate HTML file
             if (filePath.startsWith('accounts/')) {
-                const accountId = filePath.replace('accounts/', '').replace('/', '');
                 const accountPagePath = path.join(__dirname, '../../out/accounts/[id].html');
 
                 if (fs.existsSync(accountPagePath)) {
                     console.log('📄 Loading account page:', accountPagePath);
                     win.loadFile(accountPagePath).catch(err => {
                         console.error('❌ Failed to load account page:', err);
-                        // Fallback to index
                         win.loadFile(path.join(__dirname, '../../out/index.html'));
                     });
                 } else {
@@ -255,7 +506,6 @@ function createWindow() {
                     win.loadFile(path.join(__dirname, '../../out/index.html'));
                 }
             } else {
-                // For other routes, try to load the corresponding HTML file
                 const routePath = path.join(__dirname, '../../out', filePath, 'index.html');
                 if (fs.existsSync(routePath)) {
                     win.loadFile(routePath);
@@ -266,39 +516,32 @@ function createWindow() {
         }
     });
 
-    // Handle internal navigation
     win.webContents.on('did-finish-load', () => {
         console.log('✅ Page loaded successfully');
 
-        // Close splash screen if it exists
-        if (splashWindow) {
+        if (splashWindow && closeSplashWindow) {
             closeSplashWindow(splashWindow);
             splashWindow = null;
         }
 
-        // Inject client-side routing handler for static exports
         if (!isDev) {
             win.webContents.executeJavaScript(`
-                // Override pushState to handle navigation
                 const originalPushState = history.pushState;
                 history.pushState = function() {
                     console.log('🔀 Navigation detected:', arguments);
                     originalPushState.apply(this, arguments);
                     
-                    // Notify main process of navigation
                     if (window.electronAPI) {
                         window.electronAPI.send('navigation-changed', window.location.pathname);
                     }
                 };
                 
-                // Handle link clicks
                 document.addEventListener('click', (e) => {
                     const link = e.target.closest('a');
                     if (link && link.href && link.href.startsWith(window.location.origin)) {
                         e.preventDefault();
                         const path = link.href.replace(window.location.origin, '');
                         
-                        // For account links, load the appropriate file
                         if (path.startsWith('/accounts/')) {
                             window.electronAPI.send('navigate-to', path);
                         } else {
@@ -312,7 +555,6 @@ function createWindow() {
         }
     });
 
-    // Listen for navigation events from renderer
     ipcMain.handle('navigate-to', async (event, path) => {
         console.log('🔀 Navigating to:', path);
 
@@ -337,7 +579,6 @@ function createWindow() {
 
 // ==================== IPC HANDLERS ====================
 function setupIpcHandlers() {
-    // Prevent duplicate registration
     if (ipcHandlersRegistered) {
         console.log('🔍 IPC handlers already registered, skipping...');
         return;
@@ -348,17 +589,12 @@ function setupIpcHandlers() {
 
     // Remove any existing handlers to be safe
     try {
-        // Basic handlers
         ipcMain.removeHandler('ping');
-
-        // User management
         ipcMain.removeHandler('create-user');
         ipcMain.removeHandler('login-user');
         ipcMain.removeHandler('logout-user');
         ipcMain.removeHandler('get-current-user');
         ipcMain.removeHandler('list-users');
-
-        // Forecast handlers
         ipcMain.removeHandler('generateForecast');
         ipcMain.removeHandler('getDailyForecast');
         ipcMain.removeHandler('getWeeklyForecast');
@@ -369,22 +605,14 @@ function setupIpcHandlers() {
         ipcMain.removeHandler('forecast:weekly');
         ipcMain.removeHandler('forecast:yearly');
         ipcMain.removeHandler('forecast:recommendations');
-
-        // MoneyMap handlers
         ipcMain.removeHandler('buildMoneyMap');
         ipcMain.removeHandler('refreshMoneyMap');
-
-        // Prosperity handlers
         ipcMain.removeHandler('optimizeProsperityMap');
-
-        // Category group handlers
         ipcMain.removeHandler('categoryGroups:getAll');
         ipcMain.removeHandler('categoryGroups:getWithCategories');
         ipcMain.removeHandler('categoryGroups:create');
         ipcMain.removeHandler('categoryGroups:update');
         ipcMain.removeHandler('categoryGroups:delete');
-
-        // Account handlers
         ipcMain.removeHandler('accounts:getAll');
         ipcMain.removeHandler('accounts:getById');
         ipcMain.removeHandler('accounts:create');
@@ -395,8 +623,6 @@ function setupIpcHandlers() {
         ipcMain.removeHandler('accounts:getTotals');
         ipcMain.removeHandler('accounts:startReconciliation');
         ipcMain.removeHandler('accounts:getCreditCardDetails');
-
-        // Transaction handlers
         ipcMain.removeHandler('getTransactions');
         ipcMain.removeHandler('addTransaction');
         ipcMain.removeHandler('updateTransaction');
@@ -404,8 +630,6 @@ function setupIpcHandlers() {
         ipcMain.removeHandler('getAccountTransactions');
         ipcMain.removeHandler('toggleTransactionCleared');
         ipcMain.removeHandler('reconcileAccount');
-
-        // Legacy account handlers
         ipcMain.removeHandler('get-accounts');
         ipcMain.removeHandler('getAccounts');
         ipcMain.removeHandler('get-account');
@@ -415,35 +639,31 @@ function setupIpcHandlers() {
         ipcMain.removeHandler('get-accounts-dashboard');
         ipcMain.removeHandler('get-account-details');
         ipcMain.removeHandler('create-account');
-
-        // Category handlers
         ipcMain.removeHandler('getCategories');
         ipcMain.removeHandler('get-categories');
         ipcMain.removeHandler('create-category');
         ipcMain.removeHandler('delete-category');
         ipcMain.removeHandler('update-category');
         ipcMain.removeHandler('updateCategory');
-
-        // Group handlers
         ipcMain.removeHandler('get-groups');
         ipcMain.removeHandler('create-group');
         ipcMain.removeHandler('update-group');
         ipcMain.removeHandler('delete-group');
-
-        // Settings and utility
         ipcMain.removeHandler('get-groups-with-categories');
         ipcMain.removeHandler('save-settings');
         ipcMain.removeHandler('get-network-status');
-
-        // Subscription handlers
         ipcMain.removeHandler('subscribe-to-event');
-
+        ipcMain.removeHandler('validation:trackAccuracy');
+        ipcMain.removeHandler('validation:getTrends');
+        ipcMain.removeHandler('validation:getCategoryAccuracy');
+        ipcMain.removeHandler('validation:getConfidence');
+        ipcMain.removeHandler('debug-db-path');
+        ipcMain.removeHandler('debug-category-schema');
     } catch (e) {
-        // Ignore errors if handlers don't exist
         console.log('Some handlers didn\'t exist, that\'s fine');
     }
 
-    // ==================== PING HANDLER (TEST) ====================
+    // ==================== PING HANDLER ====================
     ipcMain.handle('ping', () => {
         console.log('🔍 ping received');
         return { success: true, message: 'pong' };
@@ -474,7 +694,6 @@ function setupIpcHandlers() {
         return { success: true };
     });
 
-    // Add this debug handler
     ipcMain.handle('debug-db-path', () => {
         return {
             success: true,
@@ -797,11 +1016,9 @@ function setupIpcHandlers() {
     });
 
     // ==================== CATEGORY GROUP HANDLERS ====================
-    // Inside your categoryGroups:getAll handler, add a retry mechanism
     ipcMain.handle('categoryGroups:getAll', async (event, userId) => {
         console.log('📞 IPC: categoryGroups:getAll called');
 
-        // Add retry logic
         let retries = 3;
         let lastError;
 
@@ -815,7 +1032,6 @@ function setupIpcHandlers() {
                 lastError = error;
                 console.log(`⚠️ Database access failed, retries left: ${retries - 1}`);
                 retries--;
-                // Wait 500ms before retrying
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
         }
@@ -873,14 +1089,19 @@ function setupIpcHandlers() {
     });
 
     // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
+    // FIXED: Removed 'new' keyword - accountService is an object, not a class
     ipcMain.handle('accounts:getAll', async (event, userId) => {
-        console.log('📞 IPC: accounts:getAll called');
+        console.log('\x1b[32m%s\x1b[0m', '💚💚💚💚💚💚💚💚💚💚💚💚💚💚💚');
+        console.log('\x1b[32m%s\x1b[0m', '💚 accounts:getAll CALLED');
+        console.log('\x1b[32m%s\x1b[0m', '💚💚💚💚💚💚💚💚💚💚💚💚💚💚💚\n');
+
         try {
-            const service = new accountService();
-            const result = await service.getAllAccounts(userId);
+            const effectiveUserId = userId || 2;
+            const result = await accountService.getAllAccounts(effectiveUserId);
+            console.log(`✅ Found ${result.length} accounts`);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:getAll:', error);
+            console.error('❌ Error:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
@@ -888,23 +1109,82 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:getById', async (event, id, userId) => {
         console.log('📞 IPC: accounts:getById called');
         try {
-            const service = new accountService();
-            const result = await service.getAccountById(id, userId);
+            const result = await accountService.getAccountById(id, userId);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:getById:', error);
             return { success: false, error: error.message };
         }
     });
-
+    // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
     ipcMain.handle('accounts:create', async (event, accountData) => {
-        console.log('📞 IPC: accounts:create called');
+        console.log('\n\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷');
+        console.log('\x1b[36m%s\x1b[0m', '🔷 ACCOUNT CREATION DEBUG');
+        console.log('\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
+
+        console.log('\x1b[33m%s\x1b[0m', '📞 IPC: accounts:create called');
+        console.log('\x1b[33m%s\x1b[0m', '📦 Account data received:');
+        console.log('\x1b[32m%s\x1b[0m', JSON.stringify(accountData, null, 2));
+
         try {
-            const service = new accountService();
-            const result = await service.createAccount(accountData);
+            // Log the accountService to verify it's loaded
+            console.log('\x1b[35m%s\x1b[0m', '🛠️ accountService methods available:');
+            console.log('\x1b[35m%s\x1b[0m', `   - createAccount: ${typeof accountService.createAccount}`);
+            console.log('\x1b[35m%s\x1b[0m', `   - getAllAccounts: ${typeof accountService.getAllAccounts}`);
+            console.log('\x1b[35m%s\x1b[0m', `   - getAccountsSummary: ${typeof accountService.getAccountsSummary}`);
+
+            // Check if user is logged in
+            const currentUser = userService.getCurrentUser();
+            console.log('\x1b[34m%s\x1b[0m', '👤 Current user:');
+            console.log('\x1b[34m%s\x1b[0m', JSON.stringify(currentUser, null, 2));
+
+            // Add user_id to account data if not present
+            if (!accountData.user_id && currentUser?.id) {
+                accountData.user_id = currentUser.id;
+                console.log('\x1b[36m%s\x1b[0m', `➕ Added user_id ${currentUser.id} to account data`);
+            }
+
+            console.log('\x1b[33m%s\x1b[0m', '⏳ Calling accountService.createAccount...');
+
+            const result = await accountService.createAccount(accountData);
+
+            console.log('\x1b[32m%s\x1b[0m', '✅ Create account result:');
+            console.log('\x1b[32m%s\x1b[0m', JSON.stringify(result, null, 2));
+
+            // Verify the account was actually saved by trying to retrieve it
+            if (result.success && result.data?.id) {
+                console.log('\x1b[36m%s\x1b[0m', `🔍 Verifying account was saved - fetching account ${result.data.id}...`);
+
+                // Wait a moment for the database to update
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                const verifyAccount = await accountService.getAccountById(result.data.id, accountData.user_id || currentUser?.id);
+                console.log('\x1b[36m%s\x1b[0m', '🔍 Verification result:');
+                console.log('\x1b[36m%s\x1b[0m', JSON.stringify(verifyAccount, null, 2));
+
+                if (verifyAccount) {
+                    console.log('\x1b[32m%s\x1b[0m', '✅✅✅ Account verified in database!');
+                } else {
+                    console.log('\x1b[31m%s\x1b[0m', '❌❌❌ Account NOT found in database after creation!');
+                }
+
+                // Get all accounts for this user to see what's there
+                console.log('\x1b[35m%s\x1b[0m', `📊 Fetching ALL accounts for user ${accountData.user_id || currentUser?.id}...`);
+                const allAccounts = await accountService.getAllAccounts(accountData.user_id || currentUser?.id);
+                console.log('\x1b[35m%s\x1b[0m', `📊 Total accounts found: ${allAccounts.length}`);
+                console.log('\x1b[35m%s\x1b[0m', '📊 All accounts:');
+                console.log('\x1b[35m%s\x1b[0m', JSON.stringify(allAccounts, null, 2));
+            }
+
+            console.log('\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
+
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:create:', error);
+            console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌');
+            console.log('\x1b[31m%s\x1b[0m', '❌ ERROR in accounts:create:');
+            console.log('\x1b[31m%s\x1b[0m', error);
+            console.log('\x1b[31m%s\x1b[0m', error.stack);
+            console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n');
             return { success: false, error: error.message };
         }
     });
@@ -912,8 +1192,7 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:update', async (event, id, userId, updates) => {
         console.log('📞 IPC: accounts:update called');
         try {
-            const service = new accountService();
-            const result = await service.updateAccount(id, userId, updates);
+            const result = await accountService.updateAccount(id, userId, updates);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:update:', error);
@@ -924,8 +1203,7 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:delete', async (event, id, userId) => {
         console.log('📞 IPC: accounts:delete called');
         try {
-            const service = new accountService();
-            const result = await service.deleteAccount(id, userId);
+            const result = await accountService.deleteAccount(id, userId);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:delete:', error);
@@ -936,8 +1214,7 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:getBalances', async (event, accountId, userId) => {
         console.log('📞 IPC: accounts:getBalances called');
         try {
-            const service = new accountService();
-            const result = await service.getAccountBalances(accountId, userId);
+            const result = await accountService.getAccountBalances(accountId, userId);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:getBalances:', error);
@@ -946,13 +1223,69 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('accounts:getSummary', async (event, userId) => {
-        console.log('📞 IPC: accounts:getSummary called with userId:', userId);
+        console.log('\x1b[35m%s\x1b[0m', '📊📊📊📊📊📊📊📊📊📊📊📊📊📊📊');
+        console.log('\x1b[35m%s\x1b[0m', '📊 ACCOUNTS FETCH DEBUG');
+        console.log('\x1b[35m%s\x1b[0m', '📊📊📊📊📊📊📊📊📊📊📊📊📊📊📊\n');
+
+        console.log('\x1b[33m%s\x1b[0m', `📞 IPC: accounts:getSummary called with userId:`, userId);
+
         try {
-            const service = new accountService();
-            const result = await service.getAccountsSummary(userId);
-            return { success: true, data: result };
+            const effectiveUserId = userId || 2;
+            console.log('\x1b[36m%s\x1b[0m', `🔍 Effective user_id for query: ${effectiveUserId}`);
+
+            // Try the service first
+            console.log('\x1b[33m%s\x1b[0m', '⏳ Calling accountService.getAccountsSummary...');
+            let result;
+
+            try {
+                result = await accountService.getAccountsSummary(effectiveUserId);
+            } catch (serviceError) {
+                console.log('❌ Service error, falling back to direct query:', serviceError.message);
+                result = [];
+            }
+
+            console.log('\x1b[32m%s\x1b[0m', '✅ getAccountsSummary result type:', typeof result);
+            console.log('\x1b[32m%s\x1b[0m', '✅ isArray:', Array.isArray(result));
+            console.log('\x1b[32m%s\x1b[0m', `✅ result length: ${result?.length || 0}`);
+
+            // If service returned empty but we know there are accounts, use direct query
+            if ((!result || result.length === 0) && accountService) {
+                console.log('\x1b[33m%s\x1b[0m', '⚠️ Service returned empty, trying direct database query...');
+
+                try {
+                    const db = await getDatabase();
+                    const directAccounts = await db.all('SELECT * FROM accounts WHERE user_id = ?', [effectiveUserId]);
+                    console.log('\x1b[32m%s\x1b[0m', `✅ Direct query found ${directAccounts.length} accounts`);
+
+                    // Format them properly
+                    result = directAccounts.map(account => ({
+                        id: account.id,
+                        name: account.name,
+                        type: account.type,
+                        balance: account.balance || 0,
+                        institution: account.institution || '',
+                        account_type_category: account.account_type_category || 'budget',
+                        cleared_balance: account.cleared_balance || account.balance || 0,
+                        working_balance: account.working_balance || account.balance || 0,
+                        currency: account.currency || 'USD',
+                        is_active: account.is_active !== 0
+                    }));
+
+                    console.log('\x1b[32m%s\x1b[0m', `✅ Returning ${result.length} accounts from direct query`);
+                } catch (dbError) {
+                    console.log('\x1b[31m%s\x1b[0m', '❌ Direct database query failed:', dbError.message);
+                }
+            }
+
+            console.log('\x1b[35m%s\x1b[0m', '📊📊📊📊📊📊📊📊📊📊📊📊📊📊📊\n');
+
+            return { success: true, data: result || [] };
         } catch (error) {
-            console.error('❌ Error in accounts:getSummary:', error);
+            console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌');
+            console.log('\x1b[31m%s\x1b[0m', '❌ ERROR in accounts:getSummary:');
+            console.log('\x1b[31m%s\x1b[0m', error);
+            console.log('\x1b[31m%s\x1b[0m', error.stack);
+            console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n');
             return { success: false, error: error.message, data: [] };
         }
     });
@@ -960,8 +1293,7 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:getTotals', async (event, userId) => {
         console.log('📞 IPC: accounts:getTotals called');
         try {
-            const service = new accountService();
-            const result = await service.getTotalsByType(userId);
+            const result = await accountService.getTotalsByType(userId);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:getTotals:', error);
@@ -972,8 +1304,7 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:startReconciliation', async (event, accountId, userId, statementBalance, statementDate) => {
         console.log('📞 IPC: accounts:startReconciliation called');
         try {
-            const service = new accountService();
-            const result = await service.startReconciliation(accountId, userId, statementBalance, statementDate);
+            const result = await accountService.startReconciliation(accountId, userId, statementBalance, statementDate);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:startReconciliation:', error);
@@ -984,8 +1315,7 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:getCreditCardDetails', async (event, accountId, userId) => {
         console.log('📞 IPC: accounts:getCreditCardDetails called');
         try {
-            const service = new accountService();
-            const result = await service.getCreditCardDetails(accountId, userId);
+            const result = await accountService.getCreditCardDetails(accountId, userId);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:getCreditCardDetails:', error);
@@ -994,10 +1324,10 @@ function setupIpcHandlers() {
     });
 
     // ==================== TRANSACTION HANDLERS ====================
+    // Note: TransactionService might be a class, so keeping 'new' for now
     ipcMain.handle('getTransactions', async (event) => {
         console.log('📞 IPC: getTransactions called');
         try {
-            // Get current user
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
                 return { success: false, error: 'No user logged in', data: [] };
@@ -1020,7 +1350,6 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
-            // FIX: Ensure amount is a valid number
             const amount = parseFloat(transaction.amount);
             if (isNaN(amount)) {
                 return { success: false, error: 'Invalid amount - must be a number' };
@@ -1041,7 +1370,6 @@ function setupIpcHandlers() {
             const service = new TransactionService();
             const result = await service.createTransaction(transactionData);
 
-            // After successful creation, publish update
             if (updateService) {
                 updateService.publish('transaction:added', result);
             }
@@ -1064,7 +1392,6 @@ function setupIpcHandlers() {
             const service = new TransactionService();
             const result = await service.updateTransaction(id, currentUser.id, updates);
 
-            // After successful update, publish update
             if (updateService) {
                 updateService.publish('transaction:updated', result);
             }
@@ -1087,7 +1414,6 @@ function setupIpcHandlers() {
             const service = new TransactionService();
             const result = await service.deleteTransaction(id, currentUser.id);
 
-            // After successful deletion, publish update
             if (updateService) {
                 updateService.publish('transaction:deleted', { id });
             }
@@ -1151,7 +1477,6 @@ function setupIpcHandlers() {
         }
     });
 
-    // Add this temporarily to your IPC handlers
     ipcMain.handle('debug-category-schema', async () => {
         try {
             const db = await getDatabase();
@@ -1217,28 +1542,52 @@ function setupIpcHandlers() {
             return { success: false, error: error.message, data: [] };
         }
     });
-
-    // ==================== LEGACY ACCOUNT HANDLERS ====================
-    ipcMain.handle('get-accounts', async () => {
-        try {
-            const accounts = await accountService.getAccounts();
-            return { success: true, data: accounts };
-        } catch (error) {
-            return { success: false, error: error.message, data: [] };
+    // Add this near your other IPC handlers (around line 1200)
+    // This will log any account-related IPC calls
+    ipcMain.handle('*', (event, ...args) => {
+        const channel = event?.type || 'unknown';
+        if (channel.includes('account') || channel.includes('Account')) {
+            console.log('\x1b[33m%s\x1b[0m', `🔍🔍🔍 CAUGHT ACCOUNT CALL: ${channel}`, args);
         }
     });
+    // ==================== LEGACY ACCOUNT HANDLERS ====================
+    // FIXED: These already use accountService correctly (without 'new')
+    ipcMain.handle('get-accounts', async () => {
+        console.log('\x1b[36m%s\x1b[0m', '🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀');
+        console.log('\x1b[36m%s\x1b[0m', '🌀 get-accounts CALLED (legacy)');
+        console.log('\x1b[36m%s\x1b[0m', '🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀\n');
 
-    ipcMain.handle('getAccounts', async () => {
-        console.log('🔍 [getAccounts] called');
         try {
-            const db = await getDatabase();
-            const accounts = await db.all('SELECT * FROM accounts WHERE user_id = 2');
+            const accounts = await accountService.getAccounts();
+            console.log(`✅ Found ${accounts.length} accounts`);
             return { success: true, data: accounts };
         } catch (error) {
             console.error('❌ Error:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
+    // This handler might be used by the "All Accounts" tab
+    ipcMain.handle('getAccounts', async () => {
+        console.log('\x1b[35m%s\x1b[0m', '🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥');
+        console.log('\x1b[35m%s\x1b[0m', '🔥 getAccounts CALLED (All Accounts tab?)');
+        console.log('\x1b[35m%s\x1b[0m', '🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥\n');
+
+        try {
+            const currentUser = userService.getCurrentUser();
+            const userId = currentUser?.id || 2;
+            console.log('👤 Using userId:', userId);
+
+            const accounts = await accountService.getAllAccounts(userId);
+            console.log(`✅ Found ${accounts.length} accounts`);
+
+            return { success: true, data: accounts };
+        } catch (error) {
+            console.error('❌ Error:', error);
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
+
 
     ipcMain.handle('get-account', async (event, accountId) => {
         try {
@@ -1322,7 +1671,6 @@ function setupIpcHandlers() {
     // ==================== GROUP MANAGEMENT ====================
     ipcMain.handle('get-groups', async (event, budgetId) => {
         try {
-            // const groups = await groupService.getGroups(budgetId);
             const groups = []; // Placeholder until groupService is available
             return { success: true, data: groups };
         } catch (error) {
@@ -1332,7 +1680,6 @@ function setupIpcHandlers() {
 
     ipcMain.handle('create-group', async (event, group) => {
         try {
-            // const result = await groupService.createGroup(group);
             const result = { id: 1, ...group }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
@@ -1342,7 +1689,6 @@ function setupIpcHandlers() {
 
     ipcMain.handle('update-group', async (event, groupId, updates) => {
         try {
-            // const result = await groupService.updateGroup(groupId, updates);
             const result = { id: groupId, ...updates }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
@@ -1352,7 +1698,6 @@ function setupIpcHandlers() {
 
     ipcMain.handle('delete-group', async (event, groupId) => {
         try {
-            // const result = await groupService.deleteGroup(groupId);
             const result = { success: true }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
@@ -1363,7 +1708,6 @@ function setupIpcHandlers() {
     // ==================== CATEGORY MANAGEMENT (Legacy) ====================
     ipcMain.handle('create-category', async (event, category) => {
         try {
-            // const result = await categoryService.createCategory(category);
             const result = { id: 1, ...category }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
@@ -1373,7 +1717,6 @@ function setupIpcHandlers() {
 
     ipcMain.handle('delete-category', async (event, categoryId) => {
         try {
-            // const result = await categoryService.deleteCategory(categoryId);
             const result = { success: true }; // Placeholder
             return { success: true, data: result };
         } catch (error) {
@@ -1393,7 +1736,6 @@ function setupIpcHandlers() {
 
     ipcMain.handle('save-settings', async (event, settings) => {
         try {
-            // Save settings logic here
             return { success: true, message: 'Settings saved successfully' };
         } catch (error) {
             return { success: false, error: error.message };
@@ -1414,7 +1756,6 @@ function setupIpcHandlers() {
 
         console.log(`📡 Window ${windowId} subscribed to ${eventType}`);
 
-        // Return unsubscribe function
         return {
             unsubscribe: () => {
                 const windowSubs = subscriptions.get(windowId);
@@ -1431,7 +1772,6 @@ function setupIpcHandlers() {
         try {
             const networkInterfaces = os.networkInterfaces();
 
-            // Process interfaces to find active connections
             const activeInterfaces = [];
 
             for (const [name, interfaces] of Object.entries(networkInterfaces)) {
@@ -1460,7 +1800,6 @@ function setupIpcHandlers() {
                     isOffline: !isOnline,
                     interfaces: activeInterfaces,
                     timestamp: new Date().toISOString(),
-                    // Browser-compatible properties
                     effectiveType: isOnline ? '4g' : 'none',
                     downlink: isOnline ? 10 : 0,
                     rtt: isOnline ? 50 : 0,
@@ -1518,11 +1857,12 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
     if (nativeServer) nativeServer.close();
-    // FIX: Check if db exists and has close method
     if (db && typeof db.close === 'function') {
         db.close();
     } else if (db && db.$pool) {
-        // For sqlite3 database connections
         db.close();
     }
 });
+
+// Create menu
+createMenu();

@@ -165,7 +165,7 @@ class SettingsService {
               db.close();
               return reject(err);
             }
-            
+
             db.run('COMMIT', (err) => {
               db.close();
               if (err) reject(err);
@@ -178,46 +178,33 @@ class SettingsService {
   }
 
   // Get account summary for dashboard
-  async getAccountSummary() {
-    const db = getDatabase();
+  async getAccountsSummary(userId) {
+    console.log('🔵🔵🔵 accountService.getAccountsSummary CALLED for userId:', userId);
+    console.log('🔵 This is the CORRECT accountService function');
 
-    return new Promise((resolve, reject) => {
-      db.get(`
-        SELECT 
-          COUNT(*) as totalAccounts,
-          SUM(CASE WHEN type IN ('checking','savings','cash') THEN 1 ELSE 0 END) as cashAccounts,
-          SUM(CASE WHEN type = 'credit' THEN 1 ELSE 0 END) as creditAccounts,
-          SUM(CASE WHEN type = 'investment' THEN 1 ELSE 0 END) as investmentAccounts,
-          COALESCE(SUM(
-            (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE accountId = a.id)
-          ), 0) as totalBalance,
-          COALESCE(SUM(
-            CASE WHEN a.type = 'credit'
-              THEN -(SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE accountId = a.id)
-              ELSE (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE accountId = a.id)
-            END
-          ), 0) as netWorth,
-          MAX(t.lastTransactionDate) as mostRecentActivity
-        FROM accounts a
-        LEFT JOIN (
-          SELECT accountId, MAX(date) as lastTransactionDate
-          FROM transactions
-          GROUP BY accountId
-        ) t ON a.id = t.accountId
-      `, [], (err, result) => {
-        db.close();
-        if (err) reject(err);
-        else resolve(result || {
-          totalAccounts: 0,
-          cashAccounts: 0,
-          creditAccounts: 0,
-          investmentAccounts: 0,
-          totalBalance: 0,
-          netWorth: 0,
-          mostRecentActivity: null
-        });
-      });
-    });
+    try {
+      const db = await getDatabase();
+      console.log('🔵 Database connection obtained');
+
+      const accounts = await db.all(`
+            SELECT * FROM accounts 
+            WHERE user_id = ? 
+            ORDER BY type, name
+        `, [userId]);
+
+      console.log(`🔵 Found ${accounts.length} accounts in database`);
+
+      if (accounts.length > 0) {
+        console.log('🔵 First account:', accounts[0]);
+        return accounts; // Return the array directly
+      } else {
+        console.log('🔵 No accounts found');
+        return [];
+      }
+    } catch (error) {
+      console.error('🔴 Error in getAccountsSummary:', error);
+      return [];
+    }
   }
 
   // Get account by ID
@@ -322,7 +309,7 @@ class SettingsService {
   // Reorder accounts
   async reorderAccounts(accountIds) {
     const db = getDatabase();
-    
+
     return new Promise((resolve, reject) => {
       // First ensure sortOrder column exists
       db.run(`ALTER TABLE accounts ADD COLUMN sortOrder INTEGER DEFAULT 0`, (err) => {
@@ -333,7 +320,7 @@ class SettingsService {
 
         db.serialize(() => {
           db.run('BEGIN TRANSACTION');
-          
+
           let completed = 0;
           let hasError = false;
 
@@ -403,7 +390,7 @@ class SettingsService {
               } else if (!hasError) {
                 results.push({ id, ...accountData });
                 completed++;
-                
+
                 if (completed === accountsData.length) {
                   db.run('COMMIT', (err) => {
                     db.close();
