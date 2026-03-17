@@ -86,6 +86,48 @@ const PropertyMapView = () => {
     });
   }, []);
 
+  // ==================== DEBUG FUNCTION ====================
+  const debugSavingsGroups = async () => {
+    try {
+      console.log('🔍 DEBUG: Checking Savings Goals groups...');
+
+      // Get all groups
+      const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+      const savingsGroups = groupsResult.data.filter(g =>
+        g.name.toUpperCase() === 'SAVINGS GOALS'
+      );
+
+      console.log('📊 Found', savingsGroups.length, 'Savings Goals groups:');
+      savingsGroups.forEach((group, index) => {
+        console.log(`  Group ${index + 1}: ID=${group.id}, Name="${group.name}"`);
+      });
+
+      // Get all categories
+      const categoriesResult = await window.electronAPI.getCategories(userId);
+
+      // For each savings group, find categories that belong to it
+      for (const group of savingsGroups) {
+        const categoriesInGroup = categoriesResult.data.filter(c =>
+          c.group_id === group.id
+        );
+
+        console.log(`\n📋 Categories in group "${group.name}" (ID: ${group.id}):`,
+          categoriesInGroup.length > 0 ? categoriesInGroup : 'No categories found');
+
+        if (categoriesInGroup.length > 0) {
+          categoriesInGroup.forEach(cat => {
+            console.log(`  - Category: "${cat.name}" (ID: ${cat.id}, hidden: ${cat.hidden || 0})`);
+          });
+        }
+      }
+
+      alert(`Check console for debug info. Found ${savingsGroups.length} Savings Goals groups.`);
+    } catch (error) {
+      console.error('Debug error:', error);
+      alert('Error running debug: ' + error.message);
+    }
+  };
+
   // ==================== TARGET CALCULATIONS ====================
   const calculateTargetProgress = (category) => {
     if (!category.target_amount || category.target_amount === 0) {
@@ -243,24 +285,6 @@ const PropertyMapView = () => {
       }))
     });
   }, [budgetData.categories]);
-
-  // // Sync BudgetEngine with categories
-  // useEffect(() => {
-  //   if (budgetData && budgetData.categories) {
-  //     try {
-  //       console.log('🔄 Syncing budgetEngine with categories:', budgetData.categories.length);
-
-  //       if (Array.isArray(budgetData.categories)) {
-  //         budgetEngine.setCategories(budgetData.categories);
-  //         console.log('✅ BudgetEngine synced successfully');
-  //       } else {
-  //         console.error('❌ budgetData.categories is not an array:', budgetData.categories);
-  //       }
-  //     } catch (error) {
-  //       console.error('❌ Error syncing BudgetEngine:', error);
-  //     }
-  //   }
-  // }, [budgetData, budgetEngine]);
 
   // Debug useEffect for initial data
   useEffect(() => {
@@ -761,31 +785,44 @@ const PropertyMapView = () => {
     });
   };
 
-  const handleDeleteCategory = async (categoryId) => {
-    if (!confirm('Are you sure you want to delete this category?')) return;
+ const handleDeleteCategory = async (categoryId) => {
+  if (!confirm('Are you sure you want to delete this category?')) return;
 
-    try {
-      // Remove from local state
+  try {
+    console.log('🗑️ Attempting to delete category:', { 
+      categoryId, 
+      type: typeof categoryId,
+      categoryDetails: budgetData.categories.find(c => c.id === categoryId)
+    });
+
+    // Check if window.electronAPI exists and has deleteCategory
+    console.log('🔍 electronAPI.deleteCategory available:', !!window.electronAPI?.deleteCategory);
+
+    // Delete from database FIRST (don't update UI until we know it worked)
+    console.log('📤 Calling deleteCategory with:', categoryId);
+    const deleteResult = await window.electronAPI.deleteCategory(categoryId);
+    console.log('📥 Delete result:', deleteResult);
+
+    if (deleteResult && deleteResult.success) {
+      // Only update UI if database deletion succeeded
+      console.log('✅ Database deletion successful, updating UI...');
       setBudgetData(prev => ({
         ...prev,
         categories: prev.categories.filter(cat => cat.id !== categoryId)
       }));
-
-      // Delete from database
-      const deleteResult = await window.electronAPI.deleteCategory(categoryId);
-
-      if (deleteResult.success) {
-        console.log('✅ Category deleted successfully');
-      } else {
-        console.error('❌ Failed to delete category');
-        // Optionally reload from DB if delete failed
-        await loadCategoriesFromDB();
-      }
-    } catch (error) {
-      console.error('Error deleting category:', error);
-      alert('Failed to delete category');
+      alert('✅ Category deleted successfully');
+    } else {
+      console.error('❌ Database deletion failed:', deleteResult?.error || 'Unknown error');
+      
+      // Reload from DB to ensure UI is in sync
+      await loadCategoriesFromDB();
+      alert('❌ Failed to delete category: ' + (deleteResult?.error || 'Unknown error'));
     }
-  };
+  } catch (error) {
+    console.error('❌ Error in delete category:', error);
+    alert('❌ Error deleting category: ' + error.message);
+  }
+};
 
   // ==================== DATABASE UPDATE FUNCTIONS ====================
   const updateCategoryAssigned = async (categoryId, newAssigned) => {
@@ -1049,10 +1086,6 @@ const PropertyMapView = () => {
 
 
   // ==================== LOAD CATEGORY GROUPS ====================
-  // ==================== LOAD CATEGORY GROUPS ====================
-  // ==================== LOAD CATEGORY GROUPS ====================
-  // ==================== LOAD CATEGORY GROUPS ====================
-  // ==================== LOAD CATEGORY GROUPS ====================
   const loadCategoryGroups = async () => {
     try {
       setLoading(true);
@@ -1195,7 +1228,88 @@ const PropertyMapView = () => {
       setLoading(false);
     }
   };
+  // ==================== DEBUG CATEGORY DISPLAY ====================
+  const debugCategoryDisplay = async () => {
+    try {
+      console.log('🔍 DEBUG: Checking category-group relationships');
 
+      // Get all groups from database
+      const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+      const allGroups = groupsResult.data || [];
+
+      // Get all categories from database
+      const categoriesResult = await window.electronAPI.getCategories(userId);
+      const allCategories = categoriesResult.data || [];
+
+      console.log('📊 CURRENT UI STATE:');
+      console.log('  categoryGroups state:', categoryGroups.map(g => ({
+        id: g.id,
+        name: g.name
+      })));
+
+      console.log('📊 CURRENT BUDGET DATA:');
+      console.log('  budgetData.categories:', budgetData.categories.map(c => ({
+        id: c.id,
+        name: c.name,
+        groupId: c.groupId,
+        groupName: categoryGroups.find(g => g.id === c.groupId)?.name || '⚠️ GROUP NOT IN STATE'
+      })));
+
+      // Check for Savings Goals specifically
+      const savingsGroups = allGroups.filter(g =>
+        g.name.toUpperCase() === 'SAVINGS GOALS'
+      );
+
+      console.log(`\n🔍 SAVINGS GOALS ANALYSIS:`);
+      console.log(`Found ${savingsGroups.length} Savings Goals groups in DB:`);
+
+      for (const group of savingsGroups) {
+        // Categories in this group from DB
+        const dbCategories = allCategories.filter(c => c.group_id === group.id);
+
+        // Categories in this group from current state
+        const stateCategories = budgetData.categories.filter(c => c.groupId === group.id);
+
+        console.log(`\n📋 Group: "${group.name}" (ID: ${group.id})`);
+        console.log(`  - In DB: ${dbCategories.length} categories`);
+        console.log(`  - In State: ${stateCategories.length} categories`);
+        console.log(`  - In UI: Should show ${stateCategories.length} categories`);
+
+        if (dbCategories.length > 0) {
+          console.log(`  DB Categories:`, dbCategories.map(c => ({
+            id: c.id,
+            name: c.name,
+            hidden: c.hidden
+          })));
+        }
+
+        if (stateCategories.length > 0) {
+          console.log(`  State Categories:`, stateCategories.map(c => ({
+            id: c.id,
+            name: c.name
+          })));
+        }
+
+        // Check if group is in current state
+        const groupInState = categoryGroups.some(g => g.id === group.id);
+        if (!groupInState) {
+          console.log(`  ⚠️ Group ${group.id} is NOT in categoryGroups state!`);
+        }
+      }
+
+      // Check for hidden categories
+      const hiddenCategories = allCategories.filter(c => c.hidden === 1);
+      if (hiddenCategories.length > 0) {
+        console.log(`\n⚠️ Found ${hiddenCategories.length} hidden categories:`,
+          hiddenCategories.map(c => ({ id: c.id, name: c.name, groupId: c.group_id })));
+      }
+
+      alert('Check the console (F12) for debug output');
+    } catch (error) {
+      console.error('Debug error:', error);
+      alert('Error running debug: ' + error.message);
+    }
+  };
   // ===== PART 3: MODIFY THE CREATE GROUP FUNCTION TO PREVENT DUPLICATES =====
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return;
@@ -1385,6 +1499,17 @@ const PropertyMapView = () => {
 
   const getCategoriesByGroup = (groupId) => {
     const filtered = budgetData.categories.filter(c => c.groupId === groupId);
+
+    // Add debug specifically for Savings Goals
+    if (groupId === '5edc8b38-30fc-46d4-b4d1-61d62c84e7e8' ||
+      groupId === '10a04501-b095-4712-884b-31adc8a864e6' ||
+      groupId === '962a8a6c-9c79-42eb-aeb3-8307fe380663') {
+      console.log(`🔍 getCategoriesByGroup for Savings Goals (${groupId}):`, {
+        filteredCount: filtered.length,
+        categories: filtered.map(c => ({ id: c.id, name: c.name }))
+      });
+    }
+
     return filtered;
   };
 
@@ -1426,13 +1551,16 @@ const PropertyMapView = () => {
           </div>
           <div style={{ marginTop: '10px', padding: '10px', background: '#333' }}>
             <button
-              onClick={() => {
-                console.log('📊 Current budgetData.categories:', budgetData.categories);
-                console.log('📊 Current categoryGroups:', categoryGroups);
-              }}
-              style={{ background: 'orange', color: 'white', padding: '5px 10px', marginRight: '10px' }}
+              onClick={debugSavingsGroups}
+              style={{ background: 'purple', color: 'white', padding: '5px 10px', marginLeft: '10px' }}
             >
-              DEBUG: Show State
+              DEBUG SAVINGS GROUPS
+            </button>
+            <button
+              onClick={debugCategoryDisplay}
+              style={{ background: 'green', color: 'white', padding: '5px 10px' }}
+            >
+              DEBUG CATEGORY DISPLAY
             </button>
           </div>
 
@@ -1553,6 +1681,14 @@ const PropertyMapView = () => {
               <tbody>
                 {categoryGroups.map((group) => {
                   const groupCategories = getCategoriesByGroup(group.id);
+                  
+                  // 🔍 CRITICAL DEBUG - shows what's happening for each group
+                  console.log(`🔴 RENDER CHECK for group "${group.name}" (${group.id}):`, {
+                    categoriesLength: groupCategories.length,
+                    willRender: groupCategories.length > 0 ? 'CATEGORIES' : 'EMPTY MESSAGE',
+                    categoryNames: groupCategories.map(c => c.name),
+                    groupId: group.id
+                  });
 
                   return (
                     <React.Fragment key={group.id}>
@@ -1594,6 +1730,9 @@ const PropertyMapView = () => {
                       {groupCategories.length > 0 ? (
                         <>
                           {groupCategories.map((cat) => {
+                            // Debug inside category render
+                            console.log(`  📝 Rendering category: "${cat.name}" (ID: ${cat.id}) in group "${group.name}"`);
+                            
                             const targetInfo = getTargetInfo(cat);
                             const hasTarget = targetInfo.status !== 'no-target';
                             const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
@@ -2262,6 +2401,14 @@ const PropertyMapView = () => {
 };
 
 const styles = {
+    categoryRow: {
+    borderBottom: '1px solid #000000',
+    display: 'table-row !important', // Force display
+    visibility: 'visible !important', // Force visibility
+    height: 'auto !important', // Force height
+    opacity: '1 !important', // Force opacity
+    backgroundColor: '#f0f0f0' // Bright background to make them stand out
+  },
   container: {
     display: 'flex',
     gap: '2rem',

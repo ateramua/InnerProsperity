@@ -1659,6 +1659,29 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+    ipcMain.handle('deleteCategory', async (event, categoryId) => {
+  console.log('🗑️ deleteCategory called with ID:', categoryId);
+  try {
+    const db = await getDatabase();
+    
+    // Check if category has transactions
+    const transactions = await db.get(
+      'SELECT COUNT(*) as count FROM transactions WHERE category_id = ?', 
+      categoryId
+    );
+    
+    if (transactions.count > 0) {
+      // Option: delete transactions first or return error
+      await db.run('DELETE FROM transactions WHERE category_id = ?', categoryId);
+    }
+    
+    const result = await db.run('DELETE FROM categories WHERE id = ?', categoryId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error('❌ Error deleting category:', error);
+    return { success: false, error: error.message };
+  }
+});
 
     ipcMain.handle('delete-account', async (event, accountId) => {
         try {
