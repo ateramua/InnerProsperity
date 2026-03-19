@@ -1,6 +1,7 @@
 // src/views/CashAccountsView.jsx
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
+import EditAccountModal from './EditAccountModal'; // <-- ADD THIS IMPORT
 
 const CashAccountsView = ({ accounts: propAccounts }) => {
   const router = useRouter();
@@ -8,6 +9,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showNewAccountModal, setShowNewAccountModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);      // <-- ADD
+  const [editingAccount, setEditingAccount] = useState(null);     // <-- ADD
   const [newAccountData, setNewAccountData] = useState({
     name: '',
     type: 'checking',
@@ -28,7 +31,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         }
       `;
       document.head.appendChild(style);
-      
+
       // Cleanup
       return () => {
         document.head.removeChild(style);
@@ -43,11 +46,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   const loadAccounts = async () => {
     console.log('💰 CashAccountsView - Loading accounts...');
     setLoading(true);
-    
+
     try {
       if (propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
         console.log('💰 Using propAccounts:', propAccounts.length);
-        const cashAccounts = propAccounts.filter(a => 
+        const cashAccounts = propAccounts.filter(a =>
           a.type === 'checking' || a.type === 'savings'
         );
         setAccounts(cashAccounts);
@@ -56,7 +59,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       }
 
       console.log('💰 No propAccounts, fetching directly...');
-      
+
       if (!window.electronAPI) {
         console.error('❌ electronAPI not available');
         setError('Application API not available');
@@ -83,12 +86,12 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       if (accountsResult?.success) {
         const allAccounts = accountsResult.data || [];
         console.log('💰 All accounts count:', allAccounts.length);
-        
-        const cashAccounts = allAccounts.filter(a => 
+
+        const cashAccounts = allAccounts.filter(a =>
           a.type === 'checking' || a.type === 'savings'
         );
         console.log('💰 Cash accounts count:', cashAccounts.length);
-        
+
         setAccounts(cashAccounts);
       } else {
         console.error('❌ Failed to load accounts:', accountsResult?.error);
@@ -104,6 +107,13 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const handleCreateAccount = async () => {
     try {
+      // Validate required fields
+      if (!newAccountData.name.trim()) {
+        alert('Please enter an account name');
+        return;
+      }
+
+      // Get current user
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         alert('You must be logged in to create an account');
@@ -111,17 +121,26 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       }
 
       const userId = userResult.data.id;
+
+      // Prepare account data with proper structure
       const accountData = {
-        ...newAccountData,
-        userId: userId,
+        name: newAccountData.name.trim(),
         type: newAccountData.type,
-        account_type_category: 'budget'
+        account_type_category: 'budget',
+        balance: parseFloat(newAccountData.balance) || 0,
+        currency: 'USD',
+        institution: newAccountData.institution.trim() || null,
+        user_id: userId
       };
 
+      console.log('📝 Creating account with data:', accountData);
+
       const result = await window.electronAPI.createAccount(accountData);
+
       if (result.success) {
+        console.log('✅ Account created successfully:', result.data);
         setShowNewAccountModal(false);
-        await loadAccounts();
+
         setNewAccountData({
           name: '',
           type: 'checking',
@@ -130,18 +149,79 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           currency: 'USD',
           institution: ''
         });
+
+        await loadAccounts();
+        window.dispatchEvent(new Event('accounts-changed'));
         alert('✅ Account created successfully!');
       } else {
+        console.error('❌ Failed to create account:', result.error);
         alert(`Failed to create account: ${result.error}`);
       }
     } catch (error) {
-      console.error('Error creating account:', error);
+      console.error('❌ Error creating account:', error);
       alert(`Error: ${error.message}`);
     }
   };
 
+  // <-- ADD: Edit handlers
+  const handleEditClick = (e, account) => {
+    e.stopPropagation(); // prevent row click navigation
+    setEditingAccount(account);
+    setShowEditModal(true);
+  };
+
+  const handleSaveEdit = async (accountId, updatedData) => {
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return;
+      }
+      const userId = userResult.data.id;
+
+      const result = await window.electronAPI.updateAccount(accountId, userId, updatedData);
+      if (result.success) {
+        await loadAccounts();
+        window.dispatchEvent(new Event('accounts-changed'));
+        alert('✅ Account updated successfully');
+      } else {
+        alert('Failed to update account: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Error updating account:', error);
+      alert('Error: ' + error.message);
+    }
+  };
+
+  const handleDeleteAccount = async (accountId) => {
+    if (!window.confirm('Are you sure you want to delete this account? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return;
+      }
+      const userId = userResult.data.id;
+
+      const result = await window.electronAPI['accounts:delete'](accountId, userId);
+      if (result.success) {
+        await loadAccounts();
+        window.dispatchEvent(new Event('accounts-changed'));
+        alert('✅ Account deleted successfully');
+      } else {
+        alert('Failed to delete account: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Error deleting account:', error);
+      alert('Error: ' + error.message);
+    }
+  };
+
   const handleAccountClick = (accountId) => {
-      console.log('🔵 Navigating to account:', accountId);
+    console.log('🔵 Navigating to account:', accountId);
     router.push(`/accounts/${accountId}`);
   };
 
@@ -202,9 +282,17 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
             {accounts.filter(a => a.type === 'checking').map(account => (
               <div
                 key={account.id}
-                style={styles.accountRow}
+                style={styles.accountRow} // position relative added via styles
                 onClick={() => handleAccountClick(account.id)}
               >
+                {/* <-- ADD: Edit button */}
+                <button
+                  onClick={(e) => handleEditClick(e, account)}
+                  style={styles.editButton}
+                  title="Edit Account"
+                >
+                  ✏️
+                </button>
                 <div style={styles.accountInfo}>
                   <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
                   <div>
@@ -235,9 +323,17 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
             {accounts.filter(a => a.type === 'savings').map(account => (
               <div
                 key={account.id}
-                style={styles.accountRow}
+                style={styles.accountRow} // position relative added via styles
                 onClick={() => handleAccountClick(account.id)}
               >
+                {/* <-- ADD: Edit button */}
+                <button
+                  onClick={(e) => handleEditClick(e, account)}
+                  style={styles.editButton}
+                  title="Edit Account"
+                >
+                  ✏️
+                </button>
                 <div style={styles.accountInfo}>
                   <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
                   <div>
@@ -269,23 +365,30 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
             <h2 style={styles.modalTitle}>Create New Account</h2>
 
             <div style={styles.formGroup}>
-              <label style={styles.label}>Account Name</label>
+              <label style={styles.label}>
+                Account Name <span style={styles.required}>*</span>
+              </label>
               <input
                 type="text"
                 value={newAccountData.name}
                 onChange={(e) => setNewAccountData({ ...newAccountData, name: e.target.value })}
                 style={styles.input}
                 placeholder="e.g., Main Checking"
+                autoFocus
               />
             </div>
 
             <div style={styles.formGroup}>
-              <label style={styles.label}>Account Type</label>
+              <label style={styles.label}>
+                Account Type <span style={styles.required}>*</span>
+              </label>
               <select
                 value={newAccountData.type}
                 onChange={(e) => setNewAccountData({ ...newAccountData, type: e.target.value })}
                 style={styles.select}
+                required
               >
+                <option value="">Select account type</option>
                 <option value="checking">Checking</option>
                 <option value="savings">Savings</option>
               </select>
@@ -299,6 +402,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 onChange={(e) => setNewAccountData({ ...newAccountData, balance: parseFloat(e.target.value) || 0 })}
                 style={styles.input}
                 step="0.01"
+                placeholder="0.00"
               />
             </div>
 
@@ -324,6 +428,17 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           </div>
         </div>
       )}
+
+      {/* <-- ADD: Edit Modal */}
+      <EditAccountModal
+        isOpen={showEditModal}
+        onClose={() => {
+          setShowEditModal(false);
+          setEditingAccount(null);
+        }}
+        onSave={handleSaveEdit}
+        account={editingAccount}
+      />
     </div>
   );
 };
@@ -389,6 +504,7 @@ const styles = {
     borderBottom: '1px solid #374151',
     cursor: 'pointer',
     transition: 'background 0.2s',
+    position: 'relative', // <-- ADD for edit button positioning
     ':hover': {
       background: '#374151'
     }
@@ -491,6 +607,10 @@ const styles = {
     color: '#9CA3AF',
     fontSize: '0.875rem'
   },
+  required: {
+    color: '#EF4444',
+    marginLeft: '0.25rem'
+  },
   input: {
     width: '100%',
     padding: '0.75rem',
@@ -535,6 +655,25 @@ const styles = {
     fontSize: '1rem',
     fontWeight: '600',
     cursor: 'pointer'
+  },
+  // <-- ADD: edit button style
+  editButton: {
+    position: 'absolute',
+    right: '1rem',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    background: 'none',
+    border: 'none',
+    color: '#9CA3AF',
+    fontSize: '1rem',
+    cursor: 'pointer',
+    padding: '0.25rem',
+    borderRadius: '0.25rem',
+    zIndex: 2,
+    ':hover': {
+      background: '#374151',
+      color: 'white'
+    }
   }
 };
 

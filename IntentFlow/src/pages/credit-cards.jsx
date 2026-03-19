@@ -37,27 +37,6 @@ export default function CreditCardsPage() {
     }
   };
 
-  const handleAddCard = async (cardData) => {
-    try {
-      // Ensure it's saved as a credit card type
-      const newCard = {
-        ...cardData,
-        type: 'credit'
-      };
-      
-      const result = await window.electronAPI.createAccount(newCard);
-      if (result.success) {
-        await loadData();
-        setShowAddForm(false);
-      } else {
-        alert('Failed to add credit card: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Error adding credit card:', error);
-      alert('Failed to add credit card');
-    }
-  };
-
   const handleUpdateCard = async (cardData) => {
     try {
       const result = await window.electronAPI.updateAccount(editingCard.id, cardData);
@@ -194,11 +173,13 @@ export default function CreditCardsPage() {
       <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
         {/* Pass the setShowAddForm to CreditCardManager so the "Add Credit Card" button inside it works */}
         <CreditCardManager
-          cards={cards}
+          cards={creditCards}
           transactions={transactions}
           onMakePayment={handleMakePayment}
-          onEditCard={setEditingCard}
-          onAddCard={() => setShowAddForm(true)}
+          onEditCard={handleEditCard}
+          onAddCard={handleAddCard} // This now comes from ViewContainer via props
+          onViewTransactions={handleViewTransactions}
+          onOpenPlanner={handleOpenPlanner}
         />
 
         {/* Add Credit Card Modal */}

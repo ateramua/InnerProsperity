@@ -9,6 +9,7 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
     apr: '',
     dueDate: '',
     cardNumber: '',
+    balance: '', // Added balance field
     notes: ''
   });
   const [errors, setErrors] = useState({});
@@ -29,6 +30,10 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
       newErrors.limit = 'Credit limit is required';
     } else if (parseFloat(formData.limit) <= 0) {
       newErrors.limit = 'Credit limit must be greater than 0';
+    }
+
+    if (formData.balance && parseFloat(formData.balance) < 0) {
+      newErrors.balance = 'Balance cannot be negative';
     }
 
     if (formData.apr && (parseFloat(formData.apr) < 0 || parseFloat(formData.apr) > 100)) {
@@ -54,19 +59,19 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
 
     try {
       // Format the data for submission
+      // In handleSubmit function, make sure type is always set
       const cardData = {
         name: formData.name,
         institution: formData.institution,
         limit: parseFloat(formData.limit),
-        apr: formData.apr ? parseFloat(formData.apr) : 18.99, // Default APR if not provided
+        apr: formData.apr ? parseFloat(formData.apr) : 18.99,
         dueDate: formData.dueDate,
         cardNumber: formData.cardNumber ? formData.cardNumber.replace(/\s/g, '') : undefined,
         notes: formData.notes,
-        // Default values for new card
-        balance: 0,
-        lastStatementBalance: 0,
+        balance: formData.balance ? parseFloat(formData.balance) : 0,
+        lastStatementBalance: formData.balance ? parseFloat(formData.balance) : 0,
         minimumPayment: 0,
-        type: 'credit',
+        type: 'credit', // Always set to credit
         status: 'active'
       };
 
@@ -91,10 +96,10 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
   const formatCardNumber = (value) => {
     // Remove all non-digits
     const digits = value.replace(/\D/g, '');
-    
+
     // Add space every 4 digits
     const formatted = digits.replace(/(\d{4})(?=\d)/g, '$1 ');
-    
+
     return formatted.slice(0, 19); // Limit to 16 digits + 3 spaces
   };
 
@@ -166,8 +171,35 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
           )}
         </div>
 
-        {/* Two Column Layout */}
+        {/* Three Column Layout */}
         <div style={styles.row}>
+          {/* Current Balance */}
+          <div style={styles.formGroup}>
+            <label style={styles.label}>
+              Current Balance
+            </label>
+            <div style={styles.inputWrapper}>
+              <span style={styles.currencySymbol}>$</span>
+              <input
+                type="number"
+                name="balance"
+                value={formData.balance}
+                onChange={handleChange}
+                placeholder="0.00"
+                min="0"
+                step="0.01"
+                style={{
+                  ...styles.inputWithSymbol,
+                  ...(errors.balance ? styles.inputError : {})
+                }}
+                disabled={isSubmitting}
+              />
+            </div>
+            {errors.balance && (
+              <div style={styles.fieldError}>{errors.balance}</div>
+            )}
+          </div>
+
           {/* Credit Limit */}
           <div style={styles.formGroup}>
             <label style={styles.label}>
@@ -284,9 +316,9 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
           <h4 style={styles.tipsTitle}>💡 Tips</h4>
           <ul style={styles.tipsList}>
             <li>You can always edit these details later</li>
+            <li>The current balance is what you owe on this card</li>
             <li>The due date helps track when payments are due</li>
             <li>APR is used to calculate potential interest charges</li>
-            <li>Transactions can be added after creating the card</li>
           </ul>
         </div>
 
@@ -323,7 +355,7 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
 const styles = {
   container: {
     padding: '2rem',
-    maxWidth: '800px',
+    maxWidth: '900px',
     margin: '0 auto',
     color: 'white'
   },

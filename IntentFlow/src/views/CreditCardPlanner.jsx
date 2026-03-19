@@ -1,13 +1,13 @@
 // src/views/CreditCardPlanner.jsx
 import React, { useState, useEffect } from 'react';
 
-export default function CreditCardPlanner({ 
+export default function CreditCardPlanner({
   categories = [],
   creditCards = [],
   onPaymentPlanned,
   onMoveMoney,
   onViewCard,
-  onViewDashboard 
+  onViewDashboard
 }) {
   const [selectedCard, setSelectedCard] = useState(null);
   const [paymentPlan, setPaymentPlan] = useState(null);
@@ -15,27 +15,52 @@ export default function CreditCardPlanner({
   const [showAllCards, setShowAllCards] = useState(true);
 
   // Calculate payment strategies for all cards
+  // Calculate payment strategies for all cards
   const calculatePaymentStrategy = (card) => {
     // Find the credit card payment category in budget
-    const paymentCategory = categories.find(c => 
-      c.name.toLowerCase().includes('credit card') || 
+    const paymentCategory = categories.find(c =>
+      c.name.toLowerCase().includes('credit card') ||
       c.category_type === 'debt' ||
       c.name.toLowerCase().includes('debt')
     );
 
     const reservedFunds = paymentCategory?.available || 0;
-    const daysUntilDue = Math.ceil((new Date(card.dueDate) - new Date()) / (1000 * 60 * 60 * 24));
+
+    // Safely handle due date
+    let daysUntilDue = 999; // Default large number if no due date
+    let isOverdue = false;
+    let isUrgent = false;
+    let optimalDate = null;
+    let optimalDateString = null;
+
+    if (card.dueDate) {
+      try {
+        const dueDate = new Date(card.dueDate);
+        const today = new Date();
+
+        // Check if date is valid
+        if (!isNaN(dueDate.getTime())) {
+          daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+          isOverdue = daysUntilDue < 0;
+          isUrgent = daysUntilDue <= 7 && daysUntilDue > 0;
+
+          // Calculate optimal payment date (3 days before due date to be safe)
+          optimalDate = new Date(dueDate);
+          optimalDate.setDate(optimalDate.getDate() - 3);
+          optimalDateString = optimalDate.toISOString().split('T')[0];
+        }
+      } catch (e) {
+        console.warn('Invalid due date for card:', card.name, card.dueDate);
+      }
+    }
+
     const canPayInFull = reservedFunds >= Math.abs(card.balance);
     const shortfall = Math.abs(card.balance) - reservedFunds;
-    
+
     // Calculate interest if not paid in full
     const monthlyInterestRate = (card.apr || 18.99) / 100 / 12;
     const estimatedInterest = canPayInFull ? 0 : (Math.abs(card.balance) * monthlyInterestRate);
 
-    // Calculate optimal payment date (3 days before due date to be safe)
-    const optimalDate = new Date(card.dueDate);
-    optimalDate.setDate(optimalDate.getDate() - 3);
-    
     // Calculate payoff timeline with minimum payments
     const minPayment = card.minimumPayment || Math.max(25, Math.abs(card.balance) * 0.02);
     const monthsToPayoff = Math.ceil(Math.abs(card.balance) / minPayment);
@@ -53,9 +78,9 @@ export default function CreditCardPlanner({
       canPayInFull,
       shortfall: canPayInFull ? 0 : shortfall,
       daysUntilDue,
-      isUrgent: daysUntilDue <= 7,
-      isOverdue: daysUntilDue < 0,
-      optimalPaymentDate: optimalDate.toISOString().split('T')[0],
+      isUrgent,
+      isOverdue,
+      optimalPaymentDate: optimalDateString,
       recommendedPayment: canPayInFull ? Math.abs(card.balance) : reservedFunds,
       estimatedInterest,
       minimumPayment: minPayment,
@@ -64,13 +89,13 @@ export default function CreditCardPlanner({
       apr: card.apr || 18.99,
       utilization: (Math.abs(card.balance) / (card.limit || 1000)) * 100,
       status: canPayInFull ? 'safe' : shortfall > 0 ? 'danger' : 'warning',
-      suggestions: canPayInFull 
+      suggestions: canPayInFull
         ? ['✅ You have enough reserved to pay in full!']
         : [
-            `⚠️ Need $${shortfall.toFixed(2)} more to pay in full`,
-            `💰 Pay at least $${minPayment.toFixed(2)} by ${optimalDate.toLocaleDateString()} to avoid late fees`,
-            ...getSuggestionsForCategories(categories, shortfall)
-          ]
+          `⚠️ Need $${shortfall.toFixed(2)} more to pay in full`,
+          `💰 Pay at least $${minPayment.toFixed(2)} by ${optimalDateString || 'the due date'} to avoid late fees`,
+          ...getSuggestionsForCategories(categories, shortfall)
+        ]
     };
   };
 
@@ -116,7 +141,7 @@ export default function CreditCardPlanner({
 
   const handleSchedulePayment = () => {
     if (!paymentPlan) return;
-    
+
     if (onPaymentPlanned) {
       onPaymentPlanned({
         ...paymentPlan,
@@ -128,7 +153,7 @@ export default function CreditCardPlanner({
 
   const handleMoveMoney = () => {
     if (!paymentPlan || paymentPlan.shortfall <= 0) return;
-    
+
     if (onMoveMoney) {
       onMoveMoney(paymentPlan.cardId, paymentPlan.shortfall);
     }
@@ -194,7 +219,7 @@ export default function CreditCardPlanner({
       {/* Priority List */}
       <div style={styles.prioritySection}>
         <h3 style={styles.sectionTitle}>
-          {optimizationStrategy === 'avalanche' 
+          {optimizationStrategy === 'avalanche'
             ? '🎯 Pay These First (Highest Interest)'
             : '🎯 Pay These First (Smallest Balance)'}
         </h3>
@@ -209,11 +234,10 @@ export default function CreditCardPlanner({
                 style={{
                   ...styles.cardItem,
                   ...(isSelected ? styles.selectedCard : {}),
-                  borderLeft: `4px solid ${
-                    strategy.isOverdue ? '#EF4444' :
-                    strategy.isUrgent ? '#F59E0B' :
-                    strategy.canPayInFull ? '#10B981' : '#3B82F6'
-                  }`
+                  borderLeft: `4px solid ${strategy.isOverdue ? '#EF4444' :
+                      strategy.isUrgent ? '#F59E0B' :
+                        strategy.canPayInFull ? '#10B981' : '#3B82F6'
+                    }`
                 }}
                 onClick={() => handleCardSelect(card)}
               >
@@ -233,12 +257,12 @@ export default function CreditCardPlanner({
                   <div style={styles.cardDue}>
                     <span>Due: </span>
                     <strong style={{
-                      color: strategy.isOverdue ? '#EF4444' : 
-                             strategy.isUrgent ? '#F59E0B' : 'white'
+                      color: strategy.isOverdue ? '#EF4444' :
+                        strategy.isUrgent ? '#F59E0B' : 'white'
                     }}>
-                      {new Date(card.dueDate).toLocaleDateString()} 
-                      {strategy.isOverdue ? ' (OVERDUE)' : 
-                       strategy.isUrgent ? ` (${strategy.daysUntilDue} days)` : ''}
+                      {new Date(card.dueDate).toLocaleDateString()}
+                      {strategy.isOverdue ? ' (OVERDUE)' :
+                        strategy.isUrgent ? ` (${strategy.daysUntilDue} days)` : ''}
                     </strong>
                   </div>
                 </div>
@@ -253,7 +277,7 @@ export default function CreditCardPlanner({
                     <div style={{
                       ...styles.progressFill,
                       width: `${Math.min(100, (strategy.reservedFunds / strategy.balance) * 100)}%`,
-                      background: strategy.canPayInFull 
+                      background: strategy.canPayInFull
                         ? 'linear-gradient(90deg, #10B981, #34D399)'
                         : 'linear-gradient(90deg, #F59E0B, #FBBF24)'
                     }} />
@@ -267,7 +291,7 @@ export default function CreditCardPlanner({
                     <strong>${strategy.minimumPayment.toFixed(2)}</strong>
                   </div>
                   <div style={styles.stat}>
-                        <span>Payoff Time</span>
+                    <span>Payoff Time</span>
                     <strong>{strategy.monthsToPayoff} months</strong>
                   </div>
                   <div style={styles.stat}>
@@ -325,26 +349,25 @@ export default function CreditCardPlanner({
           {/* Status Message */}
           <div style={{
             ...styles.statusMessage,
-            background: paymentPlan.canPayInFull 
-              ? 'rgba(16, 185, 129, 0.1)' 
-              : paymentPlan.shortfall > 0 
+            background: paymentPlan.canPayInFull
+              ? 'rgba(16, 185, 129, 0.1)'
+              : paymentPlan.shortfall > 0
                 ? 'rgba(239, 68, 68, 0.1)'
                 : 'rgba(245, 158, 11, 0.1)',
-            borderLeft: `4px solid ${
-              paymentPlan.canPayInFull 
-                ? '#10B981' 
-                : paymentPlan.shortfall > 0 
+            borderLeft: `4px solid ${paymentPlan.canPayInFull
+                ? '#10B981'
+                : paymentPlan.shortfall > 0
                   ? '#EF4444'
                   : '#F59E0B'
-            }`
+              }`
           }}>
             <div style={styles.statusIcon}>
               {paymentPlan.canPayInFull ? '✅' : paymentPlan.shortfall > 0 ? '⚠️' : '💡'}
             </div>
             <div>
               <div style={styles.statusTitle}>
-                {paymentPlan.canPayInFull 
-                  ? 'You can pay in full!' 
+                {paymentPlan.canPayInFull
+                  ? 'You can pay in full!'
                   : paymentPlan.shortfall > 0
                     ? `Shortfall: $${paymentPlan.shortfall.toFixed(2)}`
                     : 'Partial payment recommended'}
@@ -413,7 +436,7 @@ export default function CreditCardPlanner({
           {/* Interest Warning */}
           {!paymentPlan.canPayInFull && paymentPlan.estimatedInterest > 0 && (
             <div style={styles.interestWarning}>
-              ⚠️ If you only pay the minimum, you'll pay approximately 
+              ⚠️ If you only pay the minimum, you'll pay approximately
               <strong> ${paymentPlan.totalInterestIfMinimum.toFixed(2)}</strong> in total interest
               over {paymentPlan.monthsToPayoff} months
             </div>
@@ -429,7 +452,7 @@ export default function CreditCardPlanner({
           <p style={styles.emptyText}>
             Add a credit card to start planning interest-free payments
           </p>
-          <button 
+          <button
             onClick={() => onViewDashboard && onViewDashboard()}
             style={styles.addButton}
           >

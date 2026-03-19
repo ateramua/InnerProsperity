@@ -112,54 +112,75 @@ export default function AccountsDashboard() {
         setIsLoading(false);
     };
 
-    const handleCreateAccount = async () => {
-        console.log('🔵 [handleCreateAccount] Called');
-        try {
-            // First get the current user to get their ID
-            const userResult = await window.electronAPI.getCurrentUser();
-            console.log('👤 [handleCreateAccount] Current user result:', userResult);
+const handleCreateAccount = async () => {
+  try {
+    // Validate required fields
+    if (!newAccountData.name.trim()) {
+      alert('Please enter an account name');
+      return;
+    }
 
-            if (!userResult?.success || !userResult?.data) {
-                console.error('❌ No authenticated user found');
-                alert('You must be logged in to create an account');
-                return;
-            }
+    // Validate account type is selected
+    if (!newAccountData.type) {
+      alert('Please select an account type');
+      return;
+    }
 
-            const userId = userResult.data.id;
-            console.log('👤 [handleCreateAccount] Creating account for user ID:', userId);
+    // Get current user
+    const userResult = await window.electronAPI.getCurrentUser();
+    if (!userResult?.success || !userResult?.data) {
+      alert('You must be logged in to create an account');
+      return;
+    }
 
-            // Prepare account data with userId
-            const accountData = {
-                ...newAccountData,
-                userId: userId
-            };
-
-            console.log('📝 [handleCreateAccount] Creating account with data:', accountData);
-            const result = await window.electronAPI.createAccount(accountData);
-            console.log('📝 [handleCreateAccount] Create account result:', result);
-
-            if (result.success) {
-                console.log('✅ [handleCreateAccount] Account created successfully');
-                setShowNewAccountModal(false);
-                loadAccounts(); // Refresh the account list
-                // Reset form
-                setNewAccountData({
-                    name: '',
-                    type: 'checking',
-                    account_type_category: 'budget',
-                    balance: 0,
-                    currency: 'USD',
-                    institution: ''
-                });
-            } else {
-                console.error('❌ Failed to create account:', result.error);
-                alert(`Failed to create account: ${result.error}`);
-            }
-        } catch (error) {
-            console.error('❌ Failed to create account:', error);
-            alert(`Error: ${error.message}`);
-        }
+    const userId = userResult.data.id;
+    
+    // Prepare account data with proper structure
+    const accountData = {
+      name: newAccountData.name.trim(),
+      type: newAccountData.type,
+      account_type_category: 'budget',
+      balance: parseFloat(newAccountData.balance) || 0,
+      currency: 'USD',
+      institution: newAccountData.institution.trim() || null,
+      user_id: userId
     };
+
+    console.log('📝 Creating account with data:', accountData);
+
+    // Call the unified create-account handler
+    const result = await window.electronAPI.createAccount(accountData);
+    
+    if (result.success) {
+      console.log('✅ Account created successfully:', result.data);
+      setShowNewAccountModal(false);
+      
+      // Reset form
+      setNewAccountData({
+        name: '',
+        type: 'checking',
+        account_type_category: 'budget',
+        balance: 0,
+        currency: 'USD',
+        institution: ''
+      });
+      
+      // Reload accounts
+      await loadAccounts();
+      
+      // Dispatch event for other components
+      window.dispatchEvent(new Event('accounts-changed'));
+      
+      alert('✅ Account created successfully!');
+    } else {
+      console.error('❌ Failed to create account:', result.error);
+      alert(`Failed to create account: ${result.error}`);
+    }
+  } catch (error) {
+    console.error('❌ Error creating account:', error);
+    alert(`Error: ${error.message}`);
+  }
+};
 
     const getAccountIcon = (type) => {
         const icons = {

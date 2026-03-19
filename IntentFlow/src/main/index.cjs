@@ -6,7 +6,7 @@ const os = require('os'); // Added for network status
 
 // ==================== CONSTANTS ====================
 const PRELOAD_PATH = path.join(__dirname, '../preload/preload.cjs');
-const isDev = process.env.NODE_ENV === 'development';
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 // ==================== HELPER FUNCTIONS FOR PACKAGED APP ====================
 function getAppPath() {
@@ -15,6 +15,7 @@ function getAppPath() {
     }
     return path.resolve(__dirname, '../..');
 }
+
 function requireModule(modulePath) {
     try {
         if (app.isPackaged) {
@@ -154,9 +155,8 @@ const TransactionService = requireModule('../services/transactions/transactionSe
 };
 
 // ========== DEBUG CODE - MOVED HERE AFTER ALL SERVICES ==========
-console.log('\n\x1b[36m%s\x1b[0m', '📦📦📦 SERVICE LOADING STATUS 📦📦📦');
-console.log('\x1b[36m%s\x1b[0m', '=====================================');
-console.log('   - accountService loaded:', !!accountService);
+
+console.log('   - accountService loaded:', !!accountService, '📦📦📦 SERVICE LOADING STATUS 📦📦📦');
 console.log('   - accountService.getAccountsSummary exists:', !!(accountService && typeof accountService.getAccountsSummary === 'function'));
 console.log('   - userService loaded:', !!userService);
 console.log('   - settingsService loaded:', !!settingsService);
@@ -168,7 +168,7 @@ console.log('   - ProsperityOptimizer loaded:', !!ProsperityOptimizer);
 console.log('   - ValidationService loaded:', !!ValidationService);
 console.log('   - updateService loaded:', !!updateService);
 console.log('   - splashModule loaded:', !!splashModule);
-console.log('\x1b[36m%s\x1b[0m', '=====================================\n');
+console.log('=====================================\n');
 
 let mainWindow;
 let splashWindow;
@@ -178,15 +178,15 @@ let ipcHandlersRegistered = false;
 
 // ==================== DATABASE PATH HELPER ====================
 function getDatabasePath() {
-    // In packaged app, use the userData directory
-    if (app.isPackaged) {
+    // Production: use userData directory (~/Library/Application Support/intentflow/money-manager.db)
+    if (app.isPackaged || !isDev) {
         const userDataPath = app.getPath('userData');
         const dbPath = path.join(userDataPath, 'money-manager.db');
-        console.log('📦 Packaged app - using userData path:', dbPath);
+        console.log('📦 Production - using userData path:', dbPath);
         return dbPath;
     }
 
-    // In development, use the project database
+    // Development: use project database (./src/db/data/app.db)
     const projectRoot = path.resolve(__dirname, '../..');
     const devDbPath = path.join(projectRoot, 'src/db/data/app.db');
     console.log('🛠️ Development - using project path:', devDbPath);
@@ -215,6 +215,7 @@ async function getDatabase() {
         const sqlite3 = require('sqlite3');
         const { open } = require('sqlite');
 
+        // Ensure the directory exists (especially for production)
         const dbDir = path.dirname(dbPath);
         if (!fs.existsSync(dbDir)) {
             fs.mkdirSync(dbDir, { recursive: true });
@@ -254,8 +255,8 @@ async function initDatabase() {
     console.log('📂 Database exists:', dbExists);
 
     // For packaged apps on first run, create the database with schema
-    if (app.isPackaged && !dbExists) {
-        console.log('📦 First run in packaged app - creating new database...');
+    if ((app.isPackaged || !isDev) && !dbExists) {
+        console.log('📦 First run in production - creating new database...');
 
         try {
             const sqlite3 = require('sqlite3');
@@ -452,18 +453,19 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
-            webSecurity: !isDev
+            webSecurity: !isDev,  // Keep disabled in dev, enable in prod
+            allowRunningInsecureContent: isDev, // Only in dev
         },
         icon: path.join(__dirname, '../renderer/public/favicon.ico'),
         backgroundColor: '#111827'
     });
-    win.webContents.openDevTools({ mode: 'detach' });
+
     mainWindow = win;
 
     if (isDev) {
         console.log('🔍 Loading dev URL: http://localhost:3000');
         win.loadURL('http://localhost:3000');
-        win.webContents.openDevTools();
+        win.webContents.openDevTools({ mode: 'detach' });
     } else {
         const indexPath = path.join(__dirname, '../../out/index.html');
         console.log('📄 Loading production file:', indexPath);
@@ -474,7 +476,20 @@ function createWindow() {
             });
         } else {
             console.error('❌ Production file not found at:', indexPath);
-            console.log('📂 Directory contents:', fs.readdirSync(path.dirname(indexPath)));
+            console.log('📂 Directory contents:', fs.existsSync(path.dirname(indexPath)) ? fs.readdirSync(path.dirname(indexPath)) : 'Directory does not exist');
+
+            // Show error page
+            win.loadURL(`data:text/html;charset=utf-8,
+                <html>
+                    <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:system-ui;">
+                        <div style="text-align:center;">
+                            <h1>⚠️ Application Error</h1>
+                            <p>Production build not found. Please run <code>npm run build</code> first.</p>
+                            <p style="color:#666;">${indexPath}</p>
+                        </div>
+                    </body>
+                </html>
+            `);
         }
     }
 
@@ -587,81 +602,36 @@ function setupIpcHandlers() {
     console.log('🔍 Starting IPC handler registration...');
     console.log('🔍 Step 1: Inside setupIpcHandlers');
 
-    // Remove any existing handlers to be safe
-    try {
-        ipcMain.removeHandler('ping');
-        ipcMain.removeHandler('create-user');
-        ipcMain.removeHandler('login-user');
-        ipcMain.removeHandler('logout-user');
-        ipcMain.removeHandler('get-current-user');
-        ipcMain.removeHandler('list-users');
-        ipcMain.removeHandler('generateForecast');
-        ipcMain.removeHandler('getDailyForecast');
-        ipcMain.removeHandler('getWeeklyForecast');
-        ipcMain.removeHandler('getYearlyForecast');
-        ipcMain.removeHandler('getRecommendations');
-        ipcMain.removeHandler('forecast:generate');
-        ipcMain.removeHandler('forecast:daily');
-        ipcMain.removeHandler('forecast:weekly');
-        ipcMain.removeHandler('forecast:yearly');
-        ipcMain.removeHandler('forecast:recommendations');
-        ipcMain.removeHandler('buildMoneyMap');
-        ipcMain.removeHandler('refreshMoneyMap');
-        ipcMain.removeHandler('optimizeProsperityMap');
-        ipcMain.removeHandler('categoryGroups:getAll');
-        ipcMain.removeHandler('categoryGroups:getWithCategories');
-        ipcMain.removeHandler('categoryGroups:create');
-        ipcMain.removeHandler('categoryGroups:update');
-        ipcMain.removeHandler('categoryGroups:delete');
-        ipcMain.removeHandler('accounts:getAll');
-        ipcMain.removeHandler('accounts:getById');
-        ipcMain.removeHandler('accounts:create');
-        ipcMain.removeHandler('accounts:update');
-        ipcMain.removeHandler('accounts:delete');
-        ipcMain.removeHandler('accounts:getBalances');
-        ipcMain.removeHandler('accounts:getSummary');
-        ipcMain.removeHandler('accounts:getTotals');
-        ipcMain.removeHandler('accounts:startReconciliation');
-        ipcMain.removeHandler('accounts:getCreditCardDetails');
-        ipcMain.removeHandler('getTransactions');
-        ipcMain.removeHandler('addTransaction');
-        ipcMain.removeHandler('updateTransaction');
-        ipcMain.removeHandler('deleteTransaction');
-        ipcMain.removeHandler('getAccountTransactions');
-        ipcMain.removeHandler('toggleTransactionCleared');
-        ipcMain.removeHandler('reconcileAccount');
-        ipcMain.removeHandler('get-accounts');
-        ipcMain.removeHandler('getAccounts');
-        ipcMain.removeHandler('get-account');
-        ipcMain.removeHandler('update-account');
-        ipcMain.removeHandler('delete-account');
-        ipcMain.removeHandler('get-account-transactions');
-        ipcMain.removeHandler('get-accounts-dashboard');
-        ipcMain.removeHandler('get-account-details');
-        ipcMain.removeHandler('create-account');
-        ipcMain.removeHandler('getCategories');
-        ipcMain.removeHandler('get-categories');
-        ipcMain.removeHandler('create-category');
-        ipcMain.removeHandler('delete-category');
-        ipcMain.removeHandler('update-category');
-        ipcMain.removeHandler('updateCategory');
-        ipcMain.removeHandler('get-groups');
-        ipcMain.removeHandler('create-group');
-        ipcMain.removeHandler('update-group');
-        ipcMain.removeHandler('delete-group');
-        ipcMain.removeHandler('get-groups-with-categories');
-        ipcMain.removeHandler('save-settings');
-        ipcMain.removeHandler('get-network-status');
-        ipcMain.removeHandler('subscribe-to-event');
-        ipcMain.removeHandler('validation:trackAccuracy');
-        ipcMain.removeHandler('validation:getTrends');
-        ipcMain.removeHandler('validation:getCategoryAccuracy');
-        ipcMain.removeHandler('validation:getConfidence');
-        ipcMain.removeHandler('debug-db-path');
-        ipcMain.removeHandler('debug-category-schema');
-    } catch (e) {
-        console.log('Some handlers didn\'t exist, that\'s fine');
-    }
+    // First, remove any existing handlers to be safe
+    const handlersToRemove = [
+        'ping', 'create-user', 'login-user', 'logout-user', 'get-current-user', 'list-users',
+        'generateForecast', 'getDailyForecast', 'getWeeklyForecast', 'getYearlyForecast',
+        'getRecommendations', 'forecast:generate', 'forecast:daily', 'forecast:weekly',
+        'forecast:yearly', 'forecast:recommendations', 'buildMoneyMap', 'refreshMoneyMap',
+        'optimizeProsperityMap', 'categoryGroups:getAll', 'categoryGroups:getWithCategories',
+        'categoryGroups:create', 'categoryGroups:update', 'categoryGroups:delete',
+        'accounts:getAll', 'accounts:getById', 'accounts:create', 'accounts:update',
+        'accounts:delete', 'accounts:getBalances', 'accounts:getSummary', 'accounts:getTotals',
+        'accounts:startReconciliation', 'accounts:getCreditCardDetails', 'getTransactions',
+        'addTransaction', 'updateTransaction', 'deleteTransaction', 'getAccountTransactions',
+        'toggleTransactionCleared', 'reconcileAccount', 'get-accounts', 'getAccounts',
+        'get-account', 'update-account', 'delete-account', 'get-account-transactions',
+        'get-accounts-dashboard', 'get-account-details', 'create-account', 'getCategories',
+        'get-categories', 'create-category', 'delete-category', 'update-category',
+        'updateCategory', 'get-groups', 'create-group', 'update-group', 'delete-group',
+        'get-groups-with-categories', 'save-settings', 'get-network-status',
+        'subscribe-to-event', 'validation:trackAccuracy', 'validation:getTrends',
+        'validation:getCategoryAccuracy', 'validation:getConfidence', 'debug-db-path',
+        'debug-category-schema', 'deleteCategory', 'debug-account-creation'
+    ];
+
+    handlersToRemove.forEach(handler => {
+        try {
+            ipcMain.removeHandler(handler);
+        } catch (e) {
+            // Ignore errors if handler doesn't exist
+        }
+    });
 
     // ==================== PING HANDLER ====================
     ipcMain.handle('ping', () => {
@@ -699,6 +669,7 @@ function setupIpcHandlers() {
             success: true,
             data: {
                 isPackaged: app.isPackaged,
+                isDev: isDev,
                 dbPath: getDatabasePath(),
                 userData: app.getPath('userData'),
                 cwd: process.cwd(),
@@ -1068,7 +1039,7 @@ function setupIpcHandlers() {
         }
     });
 
-   ipcMain.handle('categoryGroups:delete', async (event, groupId, userId) => {
+    ipcMain.handle('categoryGroups:delete', async (event, groupId, userId) => {
         console.log('📞 IPC: categoryGroups:delete called', { groupId, userId });
         try {
             const db = await getDatabase();
@@ -1139,40 +1110,128 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('accounts:create', async (event, accountData) => {
-        console.log('\n\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷');
-        console.log('\x1b[36m%s\x1b[0m', '🔷 ACCOUNT CREATION DEBUG');
-        console.log('\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
+    // ==================== UNIFIED ACCOUNT CREATION HANDLER ====================
+    // This is the ONLY account creation handler - it handles ALL account types
+    ipcMain.handle('create-account', async (event, accountData) => {
+        console.log('🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷');
+        console.log('🔷 UNIFIED ACCOUNT CREATION');
+        console.log('🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
 
-        console.log('\x1b[33m%s\x1b[0m', '📞 IPC: accounts:create called');
+        console.log('\x1b[33m%s\x1b[0m', '📞 IPC: create-account called');
         console.log('\x1b[33m%s\x1b[0m', '📦 Account data received:');
         console.log('\x1b[32m%s\x1b[0m', JSON.stringify(accountData, null, 2));
 
         try {
-            // Check if user is logged in
-            const currentUser = userService.getCurrentUser();
-            console.log('\x1b[34m%s\x1b[0m', '👤 Current user:');
-            console.log('\x1b[34m%s\x1b[0m', JSON.stringify(currentUser, null, 2));
+            const db = await getDatabase();
 
-            // Add user_id to account data if not present
-            if (!accountData.user_id && currentUser?.id) {
-                accountData.user_id = currentUser.id;
-                console.log('\x1b[36m%s\x1b[0m', `➕ Added user_id ${currentUser.id} to account data`);
+            // Get current user if not provided
+            let userId = accountData.user_id;
+            if (!userId) {
+                const currentUser = userService.getCurrentUser();
+                userId = currentUser?.id || 2; // Default to demo user
+                console.log(`👤 Using user_id: ${userId}`);
             }
 
-            console.log('\x1b[33m%s\x1b[0m', '⏳ Calling accountService.createAccount...');
+            // Generate a UUID for the account
+            const { v4: uuidv4 } = require('uuid');
+            const accountId = uuidv4();
+            const now = new Date().toISOString();
 
-            const result = await accountService.createAccount(accountData);
+            // Handle balance based on account type
+            let balance = accountData.balance || 0;
+            if (accountData.type === 'credit' || accountData.type === 'loan') {
+                // Credit cards and loans: negative balance means you owe money
+                balance = -Math.abs(balance);
+            } else {
+                // Checking, savings, etc.: positive balance is money you have
+                balance = Math.abs(balance);
+            }
+
+            // Map common fields to database columns
+            const accountToInsert = {
+                id: accountId,
+                user_id: userId,
+                name: accountData.name || 'New Account',
+                type: accountData.type || 'checking',
+                balance: balance,
+                cleared_balance: balance,
+                working_balance: balance,
+                account_type_category: accountData.account_type_category || 'budget',
+                currency: accountData.currency || 'USD',
+                institution: accountData.institution || null,
+                // Credit card specific fields
+                credit_limit: accountData.credit_limit || accountData.limit || null,
+                interest_rate: accountData.interest_rate || accountData.apr || null,
+                due_date: accountData.due_date || accountData.dueDate || null,
+                // Loan specific fields
+                original_balance: accountData.original_balance || null,
+                term_months: accountData.term_months || null,
+                payment_amount: accountData.payment_amount || null,
+                payment_frequency: accountData.payment_frequency || 'monthly',
+                // Common fields
+                minimum_payment: accountData.minimum_payment || null,
+                is_active: 1,
+                created_at: now
+            };
+
+            console.log('\x1b[34m%s\x1b[0m', '📝 Inserting account:');
+            console.log('\x1b[34m%s\x1b[0m', JSON.stringify(accountToInsert, null, 2));
+
+            // First check which columns exist in the accounts table
+            const tableInfo = await db.all("PRAGMA table_info(accounts)");
+            const existingColumns = tableInfo.map(col => col.name);
+
+            // Build the INSERT query dynamically based on existing columns
+            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance',
+                'working_balance', 'account_type_category', 'currency', 'institution',
+                'credit_limit', 'interest_rate', 'due_date', 'minimum_payment',
+                'is_active', 'created_at'];
+
+            const values = [
+                accountToInsert.id, accountToInsert.user_id, accountToInsert.name,
+                accountToInsert.type, accountToInsert.balance, accountToInsert.cleared_balance,
+                accountToInsert.working_balance, accountToInsert.account_type_category,
+                accountToInsert.currency, accountToInsert.institution, accountToInsert.credit_limit,
+                accountToInsert.interest_rate, accountToInsert.due_date, accountToInsert.minimum_payment,
+                accountToInsert.is_active, accountToInsert.created_at
+            ];
+
+            // Add loan columns only if they exist in the table
+            if (existingColumns.includes('original_balance')) {
+                columns.push('original_balance');
+                values.push(accountToInsert.original_balance);
+            }
+            if (existingColumns.includes('term_months')) {
+                columns.push('term_months');
+                values.push(accountToInsert.term_months);
+            }
+            if (existingColumns.includes('payment_amount')) {
+                columns.push('payment_amount');
+                values.push(accountToInsert.payment_amount);
+            }
+            if (existingColumns.includes('payment_frequency')) {
+                columns.push('payment_frequency');
+                values.push(accountToInsert.payment_frequency);
+            }
+
+            const placeholders = values.map(() => '?').join(', ');
+            const query = `INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`;
+
+            await db.run(query, values);
+
+            console.log('✅ Account created with ID:', accountId);
+
+            // Fetch and return the created account
+            const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
 
             console.log('\x1b[32m%s\x1b[0m', '✅ Create account result:');
-            console.log('\x1b[32m%s\x1b[0m', JSON.stringify(result, null, 2));
+            console.log('\x1b[32m%s\x1b[0m', JSON.stringify(newAccount, null, 2));
+            console.log('🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
 
-            console.log('\x1b[36m%s\x1b[0m', '🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
-
-            return { success: true, data: result };
+            return { success: true, data: newAccount };
         } catch (error) {
             console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌');
-            console.log('\x1b[31m%s\x1b[0m', '❌ ERROR in accounts:create:');
+            console.log('\x1b[31m%s\x1b[0m', '❌ ERROR in create-account:');
             console.log('\x1b[31m%s\x1b[0m', error);
             console.log('\x1b[31m%s\x1b[0m', error.stack);
             console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n');
@@ -1180,10 +1239,133 @@ function setupIpcHandlers() {
         }
     });
 
+    // Keep accounts:create for backward compatibility, but it just forwards to create-account
+    ipcMain.handle('accounts:create', async (event, accountData) => {
+        console.log('🔄 Forwarding accounts:create to unified create-account handler');
+
+        // Instead of using ipcMain._handlers, we'll duplicate the core logic
+        // This avoids the undefined _handlers issue
+        try {
+            const db = await getDatabase();
+
+            // Get current user if not provided
+            let userId = accountData.user_id;
+            if (!userId) {
+                const currentUser = userService.getCurrentUser();
+                userId = currentUser?.id || 2;
+                console.log(`👤 Using user_id: ${userId}`);
+            }
+
+            // Generate a UUID for the account
+            const { v4: uuidv4 } = require('uuid');
+            const accountId = uuidv4();
+            const now = new Date().toISOString();
+
+            // Handle balance based on account type
+            let balance = accountData.balance || 0;
+            if (accountData.type === 'credit' || accountData.type === 'loan') {
+                balance = -Math.abs(balance);
+            } else {
+                balance = Math.abs(balance);
+            }
+
+            // Map common fields to database columns
+            const accountToInsert = {
+                id: accountId,
+                user_id: userId,
+                name: accountData.name || 'New Account',
+                type: accountData.type || 'checking',
+                balance: balance,
+                cleared_balance: balance,
+                working_balance: balance,
+                account_type_category: accountData.account_type_category || 'budget',
+                currency: accountData.currency || 'USD',
+                institution: accountData.institution || null,
+                credit_limit: accountData.credit_limit || accountData.limit || null,
+                interest_rate: accountData.interest_rate || accountData.apr || null,
+                due_date: accountData.due_date || accountData.dueDate || null,
+                original_balance: accountData.original_balance || null,
+                term_months: accountData.term_months || null,
+                payment_amount: accountData.payment_amount || null,
+                payment_frequency: accountData.payment_frequency || 'monthly',
+                minimum_payment: accountData.minimum_payment || null,
+                is_active: 1,
+                created_at: now
+            };
+
+            // First check which columns exist in the accounts table
+            const tableInfo = await db.all("PRAGMA table_info(accounts)");
+            const existingColumns = tableInfo.map(col => col.name);
+
+            // Build the INSERT query dynamically based on existing columns
+            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance',
+                'working_balance', 'account_type_category', 'currency', 'institution',
+                'credit_limit', 'interest_rate', 'due_date', 'minimum_payment',
+                'is_active', 'created_at'];
+
+            const values = [
+                accountToInsert.id, accountToInsert.user_id, accountToInsert.name,
+                accountToInsert.type, accountToInsert.balance, accountToInsert.cleared_balance,
+                accountToInsert.working_balance, accountToInsert.account_type_category,
+                accountToInsert.currency, accountToInsert.institution, accountToInsert.credit_limit,
+                accountToInsert.interest_rate, accountToInsert.due_date, accountToInsert.minimum_payment,
+                accountToInsert.is_active, accountToInsert.created_at
+            ];
+
+            // Add loan columns only if they exist in the table
+            if (existingColumns.includes('original_balance')) {
+                columns.push('original_balance');
+                values.push(accountToInsert.original_balance);
+            }
+            if (existingColumns.includes('term_months')) {
+                columns.push('term_months');
+                values.push(accountToInsert.term_months);
+            }
+            if (existingColumns.includes('payment_amount')) {
+                columns.push('payment_amount');
+                values.push(accountToInsert.payment_amount);
+            }
+            if (existingColumns.includes('payment_frequency')) {
+                columns.push('payment_frequency');
+                values.push(accountToInsert.payment_frequency);
+            }
+
+            const placeholders = values.map(() => '?').join(', ');
+            const query = `INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`;
+
+            await db.run(query, values);
+
+            console.log('✅ Account created with ID:', accountId);
+
+            // Fetch and return the created account
+            const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
+
+            return { success: true, data: newAccount };
+        } catch (error) {
+            console.error('❌ ERROR in accounts:create forwarder:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('accounts:update', async (event, id, userId, updates) => {
         console.log('📞 IPC: accounts:update called');
+        console.log('📝 Account ID:', id);
+        console.log('👤 User ID:', userId);
+        console.log('📦 Updates:', JSON.stringify(updates, null, 2));
+
         try {
+            if (!id) {
+                return { success: false, error: 'Account ID is required' };
+            }
+            if (!userId) {
+                return { success: false, error: 'User ID is required' };
+            }
+            if (!updates || Object.keys(updates).length === 0) {
+                return { success: false, error: 'No updates provided' };
+            }
+
             const result = await accountService.updateAccount(id, userId, updates);
+            console.log('✅ Update successful:', result);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:update:', error);
@@ -1193,8 +1375,19 @@ function setupIpcHandlers() {
 
     ipcMain.handle('accounts:delete', async (event, id, userId) => {
         console.log('📞 IPC: accounts:delete called');
+        console.log('📝 Account ID:', id);
+        console.log('👤 User ID:', userId);
+
         try {
+            if (!id) {
+                return { success: false, error: 'Account ID is required' };
+            }
+            if (!userId) {
+                return { success: false, error: 'User ID is required' };
+            }
+
             const result = await accountService.deleteAccount(id, userId);
+            console.log('✅ Delete successful:', result);
             return { success: true, data: result };
         } catch (error) {
             console.error('❌ Error in accounts:delete:', error);
@@ -1222,7 +1415,7 @@ function setupIpcHandlers() {
 
         try {
             const effectiveUserId = userId || 2;
-            console.log('\x1b[36m%s\x1b[0m', `🔍 Effective user_id for query: ${effectiveUserId}`);
+            console.log(`🔍 Effective user_id for query: ${effectiveUserId}`);
 
             // Try the service first
             console.log('\x1b[33m%s\x1b[0m', '⏳ Calling accountService.getAccountsSummary...');
@@ -1479,6 +1672,20 @@ function setupIpcHandlers() {
         }
     });
 
+    ipcMain.handle('debug-account-creation', async (event, accountData) => {
+        console.log('🔍 DEBUG: Testing account creation with data:');
+        console.log(JSON.stringify(accountData, null, 2));
+
+        return {
+            success: true,
+            data: {
+                message: 'Debug handler - no actual account created',
+                receivedData: accountData,
+                timestamp: new Date().toISOString()
+            }
+        };
+    });
+
     // ==================== CATEGORY HANDLERS ====================
     ipcMain.handle('createCategory', async (event, categoryData) => {
         console.log('📞 IPC: createCategory called with:', JSON.stringify(categoryData, null, 2));
@@ -1608,9 +1815,9 @@ function setupIpcHandlers() {
 
     // ==================== LEGACY ACCOUNT HANDLERS ====================
     ipcMain.handle('get-accounts', async () => {
-        console.log('\x1b[36m%s\x1b[0m', '🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀');
-        console.log('\x1b[36m%s\x1b[0m', '🌀 get-accounts CALLED (legacy)');
-        console.log('\x1b[36m%s\x1b[0m', '🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀\n');
+        console.log('🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀');
+        console.log('🌀 get-accounts CALLED (legacy)');
+        console.log('🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀\n');
 
         try {
             const accounts = await accountService.getAccounts();
@@ -1659,29 +1866,30 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+
     ipcMain.handle('deleteCategory', async (event, categoryId) => {
-  console.log('🗑️ deleteCategory called with ID:', categoryId);
-  try {
-    const db = await getDatabase();
-    
-    // Check if category has transactions
-    const transactions = await db.get(
-      'SELECT COUNT(*) as count FROM transactions WHERE category_id = ?', 
-      categoryId
-    );
-    
-    if (transactions.count > 0) {
-      // Option: delete transactions first or return error
-      await db.run('DELETE FROM transactions WHERE category_id = ?', categoryId);
-    }
-    
-    const result = await db.run('DELETE FROM categories WHERE id = ?', categoryId);
-    return { success: true, data: result };
-  } catch (error) {
-    console.error('❌ Error deleting category:', error);
-    return { success: false, error: error.message };
-  }
-});
+        console.log('🗑️ deleteCategory called with ID:', categoryId);
+        try {
+            const db = await getDatabase();
+
+            // Check if category has transactions
+            const transactions = await db.get(
+                'SELECT COUNT(*) as count FROM transactions WHERE category_id = ?',
+                categoryId
+            );
+
+            if (transactions.count > 0) {
+                // Option: delete transactions first or return error
+                await db.run('DELETE FROM transactions WHERE category_id = ?', categoryId);
+            }
+
+            const result = await db.run('DELETE FROM categories WHERE id = ?', categoryId);
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('❌ Error deleting category:', error);
+            return { success: false, error: error.message };
+        }
+    });
 
     ipcMain.handle('delete-account', async (event, accountId) => {
         try {
@@ -1725,21 +1933,6 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('Error getting account details:', error);
-            return { success: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle('create-account', async (event, accountData) => {
-        try {
-            const currentUser = userService.getCurrentUser();
-            if (!currentUser) {
-                return { success: false, error: 'No user logged in' };
-            }
-
-            const result = await accountService.createAccount(currentUser.id, accountData);
-            return { success: true, data: result };
-        } catch (error) {
-            console.error('Error creating account:', error);
             return { success: false, error: error.message };
         }
     });

@@ -81,11 +81,29 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
       style: 'currency',
       currency: 'USD',
       minimumFractionDigits: 2
-    }).format(amount);
+    }).format(amount || 0);
+  };
+
+  const formatAccountNumber = (number) => {
+    if (!number) return 'Not provided';
+    // Show only last 4 digits
+    const last4 = number.slice(-4);
+    return `•••• •••• •••• ${last4}`;
   };
 
   // Determine if this is a credit card
-  const isCreditCard = account.type === 'credit' || account.balance < 0;
+  const isCreditCard = account.type === 'credit';
+
+  // Get credit limit from either field name
+  const creditLimit = account.credit_limit || account.limit || 0;
+  
+  // Calculate available credit for credit cards
+  const availableCredit = isCreditCard && creditLimit 
+    ? creditLimit - Math.abs(account.balance || 0) 
+    : 0;
+
+  // Get interest rate from either field name
+  const interestRate = account.interest_rate || account.apr || null;
 
   return (
     <div style={styles.container}>
@@ -96,10 +114,11 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
         </button>
         <div style={styles.headerTitle}>
           <h2 style={styles.title}>
-            {account.institution ? `${account.name} - ${account.institution}` : account.name}
+            {account.name}
           </h2>
           <span style={styles.accountType}>
             {isCreditCard ? '💳 Credit Card' : account.type || 'Account'}
+            {account.institution && ` • ${account.institution}`}
           </span>
         </div>
         {isCreditCard && (
@@ -121,36 +140,76 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
               ...styles.summaryValue,
               color: account.balance < 0 ? '#EF4444' : '#10B981'
             }}>
-              {formatCurrency(account.balance || 0)}
+              {formatCurrency(Math.abs(account.balance || 0))}
+              {account.balance < 0 && <span style={styles.negativeIndicator}> (you owe)</span>}
             </div>
           </div>
+          
           {isCreditCard && (
             <>
               <div style={styles.summaryItem}>
                 <div style={styles.summaryLabel}>Credit Limit</div>
                 <div style={styles.summaryValue}>
-                  {formatCurrency(account.limit || 0)}
+                  {formatCurrency(creditLimit)}
                 </div>
               </div>
               <div style={styles.summaryItem}>
                 <div style={styles.summaryLabel}>Available Credit</div>
                 <div style={styles.summaryValue}>
-                  {formatCurrency((account.limit || 0) - Math.abs(account.balance || 0))}
+                  {formatCurrency(availableCredit)}
                 </div>
               </div>
             </>
           )}
         </div>
-        {isCreditCard && account.dueDate && (
+
+        {/* Credit Card Specific Details */}
+        {isCreditCard && (
+          <div style={styles.creditDetails}>
+            <div style={styles.creditDetailsGrid}>
+              {interestRate && (
+                <div style={styles.creditDetailItem}>
+                  <span style={styles.creditDetailLabel}>Interest Rate</span>
+                  <span style={styles.creditDetailValue}>{interestRate}% APR</span>
+                </div>
+              )}
+              {account.due_date && (
+                <div style={styles.creditDetailItem}>
+                  <span style={styles.creditDetailLabel}>Payment Due</span>
+                  <span style={styles.creditDetailValue}>
+                    {new Date(account.due_date).toLocaleDateString()}
+                  </span>
+                </div>
+              )}
+              {account.cardHolderName && (
+                <div style={styles.creditDetailItem}>
+                  <span style={styles.creditDetailLabel}>Card Holder</span>
+                  <span style={styles.creditDetailValue}>{account.cardHolderName}</span>
+                </div>
+              )}
+              {account.accountNumber && (
+                <div style={styles.creditDetailItem}>
+                  <span style={styles.creditDetailLabel}>Account Number</span>
+                  <span style={styles.creditDetailValue}>
+                    {formatAccountNumber(account.accountNumber)}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Due Date Badge for Credit Cards */}
+        {isCreditCard && account.due_date && (
           <div style={styles.dueDateBadge}>
-            Due: {new Date(account.dueDate).toLocaleDateString()}
+            💳 Payment due by {new Date(account.due_date).toLocaleDateString()}
           </div>
         )}
       </div>
 
       {/* Transactions Header */}
       <div style={styles.transactionsHeader}>
-        <h3 style={styles.transactionsTitle}>Transactions</h3>
+        <h3 style={styles.transactionsTitle}>Recent Transactions</h3>
         <button
           onClick={() => setShowAddTransaction(true)}
           style={styles.addButton}
@@ -298,7 +357,11 @@ const styles = {
     border: 'none',
     borderRadius: '0.5rem',
     cursor: 'pointer',
-    fontSize: '0.875rem'
+    fontSize: '0.875rem',
+    transition: 'background 0.2s',
+    ':hover': {
+      background: '#4B5563'
+    }
   },
   headerTitle: {
     flex: 1
@@ -321,7 +384,12 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     fontWeight: '600',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    ':hover': {
+      transform: 'translateY(-2px)',
+      boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
+    }
   },
   summaryCard: {
     background: '#1F2937',
@@ -342,20 +410,56 @@ const styles = {
     fontSize: '0.75rem',
     color: '#9CA3AF',
     marginBottom: '0.5rem',
-    textTransform: 'uppercase'
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em'
   },
   summaryValue: {
     fontSize: '1.5rem',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    lineHeight: '1.2'
+  },
+  negativeIndicator: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    display: 'block',
+    fontWeight: 'normal'
+  },
+  creditDetails: {
+    marginTop: '1.5rem',
+    paddingTop: '1.5rem',
+    borderTop: '1px solid #374151'
+  },
+  creditDetailsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gap: '1rem'
+  },
+  creditDetailItem: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem'
+  },
+  creditDetailLabel: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em'
+  },
+  creditDetailValue: {
+    fontSize: '1rem',
+    fontWeight: '500',
+    color: 'white'
   },
   dueDateBadge: {
     marginTop: '1rem',
-    padding: '0.5rem',
-    background: '#F59E0B20',
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #F59E0B20, #F59E0B10)',
     color: '#F59E0B',
     borderRadius: '0.5rem',
     textAlign: 'center',
-    fontSize: '0.875rem'
+    fontSize: '0.875rem',
+    fontWeight: '500',
+    border: '1px solid #F59E0B40'
   },
   transactionsHeader: {
     display: 'flex',
@@ -376,7 +480,12 @@ const styles = {
     border: 'none',
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    ':hover': {
+      transform: 'translateY(-2px)',
+      boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
+    }
   },
   transactionsList: {
     background: '#1F2937',
@@ -396,13 +505,21 @@ const styles = {
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    transition: 'background 0.2s',
+    ':hover': {
+      background: '#2563EB'
+    }
   },
   transactionItem: {
     display: 'flex',
     alignItems: 'center',
     padding: '1rem',
     borderBottom: '1px solid #374151',
+    transition: 'background 0.2s',
+    ':hover': {
+      background: '#2D3748'
+    },
     ':last-child': {
       borderBottom: 'none'
     }
@@ -444,7 +561,9 @@ const styles = {
     padding: '2rem',
     borderRadius: '1rem',
     maxWidth: '400px',
-    width: '90%'
+    width: '90%',
+    maxHeight: '90vh',
+    overflowY: 'auto'
   },
   modalTitle: {
     fontSize: '1.25rem',
@@ -468,7 +587,12 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem'
+    fontSize: '1rem',
+    transition: 'border-color 0.2s',
+    ':focus': {
+      outline: 'none',
+      borderColor: '#3B82F6'
+    }
   },
   inputWrapper: {
     position: 'relative'
@@ -487,7 +611,12 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem'
+    fontSize: '1rem',
+    transition: 'border-color 0.2s',
+    ':focus': {
+      outline: 'none',
+      borderColor: '#3B82F6'
+    }
   },
   amountHint: {
     fontSize: '0.75rem',
@@ -507,7 +636,13 @@ const styles = {
     border: 'none',
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
-    cursor: 'pointer'
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    ':hover': {
+      transform: 'translateY(-2px)',
+      boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
+    }
   },
   cancelButton: {
     flex: 1,
@@ -517,6 +652,10 @@ const styles = {
     border: 'none',
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    transition: 'background 0.2s',
+    ':hover': {
+      background: '#4B5563'
+    }
   }
 };
