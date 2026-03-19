@@ -4,18 +4,15 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import TransactionManager from '../../components/TransactionManager';
 
+import { useRouter } from 'next/router';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import TransactionManager from '../../components/TransactionManager';
+
 const AccountDetailPage = () => {
     const router = useRouter();
     const { id } = router.query;
 
-    // Add state for ID to handle static export
-    const [effectiveId, setEffectiveId] = useState(null);
-
-    console.log('🔵 AccountDetailPage mounted');
-    console.log('🔵 Router query:', router.query);
-    console.log('🔵 ID from query:', id);
-
-    // State declarations
     const [account, setAccount] = useState(null);
     const [transactions, setTransactions] = useState([]);
     const [categories, setCategories] = useState([]);
@@ -32,112 +29,58 @@ const AccountDetailPage = () => {
         cleared: false
     });
 
-    // For static exports, extract ID from URL if not in query
     useEffect(() => {
-        let extractedId = id;
-
         if (id) {
-            setEffectiveId(id);
-            extractedId = id;
-        } else if (typeof window !== 'undefined') {
-            // Try to extract from URL path
-            const pathParts = window.location.pathname.split('/');
-            const lastPart = pathParts[pathParts.length - 1].replace('.html', '');
-            console.log('🔵 Extracted from URL:', lastPart);
-            if (lastPart && lastPart !== '[id]' && lastPart !== 'accounts') {
-                setEffectiveId(lastPart);
-                extractedId = lastPart;
-            }
-        }
-
-        // Load account data if we have an ID
-        if (extractedId) {
-             loadAccountData(extractedId);
+            loadAccountData(id);
         }
     }, [id]);
 
     const loadAccountData = async (accountId) => {
-        // Use the passed accountId parameter, not the component's id
-        const targetId = accountId || id;
-        console.log('🔵 Loading account data for ID:', targetId);
-        console.log('🔵 ID type:', typeof targetId);
-        console.log('🔵 ID value:', targetId);
-        
+        console.log('🔵 Loading account data for ID:', accountId);
         setLoading(true);
         try {
-            // Get account details - try with user ID 2 first
-            console.log('🔵 Attempt 1: Calling getAccountById with:', targetId, 2);
-            let accountResult = await window.electronAPI.getAccountById(targetId, 2);
-            console.log('🔵 Attempt 1 result:', accountResult);
+            // Try with user ID 2 first
+            let accountResult = await window.electronAPI.getAccountById(accountId, 2);
+            console.log('🔵 getAccountById result:', accountResult);
 
-            // If not found with user ID 2, try without user ID
             if (!accountResult?.success || !accountResult?.data) {
-                console.log('🔵 Attempt 2: Trying getAccountById without user ID');
-                accountResult = await window.electronAPI.getAccountById(targetId);
-                console.log('🔵 Attempt 2 result:', accountResult);
+                console.log('🔵 Account not found, trying without user ID');
+                accountResult = await window.electronAPI.getAccountById(accountId);
+                console.log('🔵 Result without user ID:', accountResult);
             }
 
-            // If still not found, try getAccounts and filter
-            if (!accountResult?.success || !accountResult?.data) {
-                console.log('🔵 Attempt 3: Trying getAccounts and filtering');
-                const accountsResult = await window.electronAPI.getAccounts();
-                console.log('🔵 All accounts:', accountsResult);
-
-                if (accountsResult?.success && Array.isArray(accountsResult.data)) {
-                    console.log('🔵 Looking for account with ID:', targetId);
-                    console.log('🔵 Available account IDs:', accountsResult.data.map(a => a.id));
-
-                    const foundAccount = accountsResult.data.find(a => a.id === targetId);
-                    console.log('🔵 Found account by ID:', foundAccount);
-
-                    if (foundAccount) {
-                        accountResult = { success: true, data: foundAccount };
-                        console.log('🔵 Attempt 3 successful!');
-                    } else {
-                        console.log('🔵 No account found with ID:', targetId);
-                    }
-                }
-            }
-
-            // Set account if found
             if (accountResult?.success && accountResult?.data) {
-                console.log('✅ Account found and set:', accountResult.data);
                 setAccount(accountResult.data);
             } else {
                 console.log('❌ Account not found after all attempts');
+                setAccount(null);
             }
 
-            // Get transactions for this account
-            console.log('🔵 Getting transactions for account:', targetId);
-            const transactionsResult = await window.electronAPI.getAccountTransactions(targetId);
-            console.log('🔵 Transactions result:', transactionsResult);
+            // Get transactions
+            const transactionsResult = await window.electronAPI.getAccountTransactions(accountId);
             if (transactionsResult?.success) {
                 setTransactions(transactionsResult.data || []);
             }
 
-            // Get categories
-            console.log('🔵 Getting categories for user 1');
+            // Get categories (using user ID 1 as in original)
             const categoriesResult = await window.electronAPI.getCategories(1);
-            console.log('🔵 Categories result:', categoriesResult);
             if (categoriesResult?.success) {
                 setCategories(categoriesResult.data || []);
             }
 
             // Get all accounts for transfer options
-            console.log('🔵 Getting all accounts');
             const accountsResult = await window.electronAPI.getAccounts();
-            console.log('🔵 All accounts result:', accountsResult);
             if (accountsResult?.success) {
                 setAccounts(accountsResult.data || []);
             }
         } catch (error) {
             console.error('❌ Error loading account data:', error);
-            console.error('❌ Error stack:', error.stack);
         } finally {
             setLoading(false);
-            console.log('🔵 loadAccountData completed');
         }
     };
+
+    // ... rest of the component unchanged
 
     const resetForm = () => {
         setTransactionForm({

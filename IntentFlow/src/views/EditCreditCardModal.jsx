@@ -18,6 +18,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
 
   // Load card data when modal opens
   useEffect(() => {
+    console.log('EditCreditCardModal useEffect - card:', card);
     if (card && isOpen) {
       setFormData({
         name: card.name || '',
@@ -63,6 +64,12 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    if (!card) {
+      console.error('❌ handleSubmit: card is undefined');
+      alert('Error: Card data is missing. Please try again.');
+      return;
+    }
+
     if (!validateForm()) {
       return;
     }
@@ -70,16 +77,15 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
     setIsSubmitting(true);
 
     try {
-      // Prepare data for saving
       const updatedData = {
         name: formData.name,
         institution: formData.institution,
         credit_limit: parseFloat(formData.limit),
-        limit: parseFloat(formData.limit), // For compatibility
+        limit: parseFloat(formData.limit),
         interest_rate: formData.apr ? parseFloat(formData.apr) : null,
-        apr: formData.apr ? parseFloat(formData.apr) : null, // For compatibility
+        apr: formData.apr ? parseFloat(formData.apr) : null,
         due_date: formData.dueDate || null,
-        dueDate: formData.dueDate || null, // For compatibility
+        dueDate: formData.dueDate || null,
         balance: formData.balance ? -Math.abs(parseFloat(formData.balance)) : card.balance,
         cardHolderName: formData.cardHolderName,
         accountNumber: formData.accountNumber,
@@ -89,7 +95,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
       await onSave(card.id, updatedData);
       onClose();
     } catch (error) {
-      console.error('Error updating credit card:', error);
+      console.error('❌ Error updating credit card:', error);
       alert('Failed to update credit card');
     } finally {
       setIsSubmitting(false);
@@ -97,7 +103,12 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
   };
 
   const handleDelete = () => {
-    if (window.confirm('Are you sure you want to delete this credit card? This action cannot be undone.')) {
+    if (!card) {
+      console.error('❌ handleDelete: card is undefined');
+      alert('Error: Card data is missing. Cannot delete.');
+      return;
+    }
+    if (window.confirm(`Are you sure you want to delete "${card.name}"?`)) {
       onDelete(card.id);
       onClose();
     }

@@ -54,6 +54,7 @@ export default function CreditCardsPage() {
 
   const handleDeleteCard = async (cardId) => {
     try {
+      console.log('Deleting card:', cardId, 'with userId:', userId);
       const result = await window.electronAPI.deleteAccount(cardId);
       if (result.success) {
         await loadData();
@@ -176,8 +177,9 @@ export default function CreditCardsPage() {
           cards={creditCards}
           transactions={transactions}
           onMakePayment={handleMakePayment}
-          onEditCard={handleEditCard}
-          onAddCard={handleAddCard} // This now comes from ViewContainer via props
+          onUpdateCard={handleEditCard}     // <-- renamed
+          onDeleteCard={handleDeleteCard}
+          onAddCard={() => onNavigate('credit-add')}
           onViewTransactions={handleViewTransactions}
           onOpenPlanner={handleOpenPlanner}
         />

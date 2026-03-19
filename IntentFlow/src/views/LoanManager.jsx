@@ -1,18 +1,23 @@
 // src/views/LoanManager.jsx
 import React, { useState } from 'react';
+import EditLoanModal from './EditLoanModal'; // You'll need to create this component
 
-export default function LoanManager({ 
+function LoanManager({ 
   loans = [], 
   onMakePayment,
   onEditLoan,
   onAddLoan,
   onViewDetails,
-  onOpenStrategist
+  onOpenStrategist,
+  onDeleteLoan // optional, for delete functionality
 }) {
   const [selectedLoan, setSelectedLoan] = useState(null);
   const [filter, setFilter] = useState('all'); // 'all', 'auto', 'student', 'personal'
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingLoan, setEditingLoan] = useState(null);
 
   const getFilteredLoans = () => {
+    // REMOVED the stray console.log that referenced onDeleteCard
     if (filter === 'all') return loans;
     return loans.filter(loan => loan.type?.toLowerCase().includes(filter));
   };
@@ -32,6 +37,23 @@ export default function LoanManager({
     };
   };
 
+  const handleEditClick = (e, loan) => {
+    e.stopPropagation();
+    setEditingLoan(loan);
+    setShowEditModal(true);
+  };
+
+  const handleSaveEdit = async (loanId, updatedData) => {
+    if (onEditLoan) {
+      const result = await onEditLoan(loanId, updatedData);
+      if (result?.success) {
+        setShowEditModal(false);
+        setEditingLoan(null);
+      }
+      return result;
+    }
+  };
+
   const filteredLoans = getFilteredLoans();
   const totalBalance = loans.reduce((sum, l) => sum + Math.abs(l.balance || 0), 0);
   const totalMonthlyPayment = loans.reduce((sum, l) => sum + (l.monthlyPayment || 0), 0);
@@ -46,7 +68,7 @@ export default function LoanManager({
         </div>
         <div style={styles.headerActions}>
           <button onClick={onOpenStrategist} style={styles.strategistButton}>
-            🎯 Open Debt Strategist
+            🎯 Open Loan Strategist
           </button>
           <button onClick={onAddLoan} style={styles.addButton}>
             ➕ Add Loan
@@ -220,6 +242,16 @@ export default function LoanManager({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      handleEditClick(e, loan);
+                    }}
+                    style={styles.editButton}
+                    title="Edit Loan"
+                  >
+                    ✏️ Edit
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
                       onViewDetails(loan.id);
                     }}
                     style={styles.detailsButton}
@@ -250,7 +282,7 @@ export default function LoanManager({
                       onClick={() => onOpenStrategist && onOpenStrategist()}
                       style={styles.strategistLink}
                     >
-                      View in Debt Strategist →
+                      View in Loan Strategist →
                     </button>
                   </div>
                 )}
@@ -259,11 +291,23 @@ export default function LoanManager({
           })}
         </div>
       )}
+
+      {/* Edit Loan Modal */}
+      <EditLoanModal
+        isOpen={showEditModal}
+        onClose={() => {
+          setShowEditModal(false);
+          setEditingLoan(null);
+        }}
+        onSave={handleSaveEdit}
+        onDelete={onDeleteLoan}
+        loan={editingLoan}
+      />
     </div>
   );
 }
 
-// Styles object (similar to CreditCardManager but with loan-specific styling)
+// Styles object (unchanged)
 const styles = {
   container: {
     padding: '2rem',
@@ -379,7 +423,11 @@ const styles = {
     padding: '1.5rem',
     border: '1px solid #374151',
     cursor: 'pointer',
-    transition: 'all 0.2s'
+    transition: 'all 0.2s',
+    ':hover': {
+      transform: 'translateY(-2px)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+    }
   },
   selectedLoan: {
     border: '2px solid #3B82F6'
@@ -393,7 +441,8 @@ const styles = {
   loanName: {
     fontSize: '1.125rem',
     fontWeight: '600',
-    margin: '0 0 0.25rem 0'
+    margin: '0 0 0.25rem 0',
+    color: 'white'
   },
   loanLender: {
     fontSize: '0.75rem',
@@ -414,7 +463,8 @@ const styles = {
   },
   balanceAmount: {
     fontSize: '1.5rem',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    color: 'white'
   },
   progressSection: {
     marginBottom: '1rem'
@@ -461,6 +511,17 @@ const styles = {
     border: 'none',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
+    fontWeight: '600',
+    cursor: 'pointer'
+  },
+  editButton: {
+    flex: 1,
+    padding: '0.5rem',
+    background: '#4B5563',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
     cursor: 'pointer'
   },
   detailsButton: {
@@ -481,7 +542,8 @@ const styles = {
   expandedTitle: {
     fontSize: '0.875rem',
     fontWeight: '600',
-    margin: '0 0 0.75rem 0'
+    margin: '0 0 0.75rem 0',
+    color: 'white'
   },
   amortizationGrid: {
     display: 'grid',
@@ -518,6 +580,7 @@ const styles = {
   emptyTitle: {
     fontSize: '1.25rem',
     fontWeight: '600',
+    color: 'white',
     marginBottom: '0.5rem'
   },
   emptyText: {
@@ -533,3 +596,5 @@ const styles = {
     cursor: 'pointer'
   }
 };
+
+export default LoanManager;

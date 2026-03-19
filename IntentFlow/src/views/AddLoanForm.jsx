@@ -2,13 +2,14 @@
 import React, { useState } from 'react';
 
 export default function AddLoanForm({ onComplete, onCancel }) {
+  // At the top of the component function
+console.log('AddLoanForm rendering');
   const [formData, setFormData] = useState({
     name: '',
-    type: 'auto',
     lender: '',
-    originalBalance: '',
-    currentBalance: '',
+    balance: '',
     interestRate: '',
+    originalBalance: '',
     term: '',
     monthlyPayment: '',
     nextPaymentDate: '',
@@ -17,26 +18,15 @@ export default function AddLoanForm({ onComplete, onCancel }) {
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const loanTypes = [
-    { value: 'auto', label: 'Auto Loan', icon: '🚗' },
-    { value: 'student', label: 'Student Loan', icon: '🎓' },
-    { value: 'personal', label: 'Personal Loan', icon: '💰' },
-    { value: 'mortgage', label: 'Mortgage', icon: '🏠' },
-    { value: 'business', label: 'Business Loan', icon: '💼' },
-    { value: 'other', label: 'Other Loan', icon: '📝' }
-  ];
-
   const validateForm = () => {
     const newErrors = {};
-
     if (!formData.name.trim()) newErrors.name = 'Loan name is required';
-    if (!formData.lender.trim()) newErrors.lender = 'Lender name is required';
-    if (!formData.originalBalance) newErrors.originalBalance = 'Original balance is required';
-    if (!formData.currentBalance) newErrors.currentBalance = 'Current balance is required';
+    if (!formData.lender.trim()) newErrors.lender = 'Lender is required';
+    if (!formData.balance) newErrors.balance = 'Current balance is required';
     if (!formData.interestRate) newErrors.interestRate = 'Interest rate is required';
+    if (!formData.originalBalance) newErrors.originalBalance = 'Original balance is required';
     if (!formData.term) newErrors.term = 'Loan term is required';
     if (!formData.monthlyPayment) newErrors.monthlyPayment = 'Monthly payment is required';
-
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -44,213 +34,172 @@ export default function AddLoanForm({ onComplete, onCancel }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validateForm()) return;
-
     setIsSubmitting(true);
     try {
       const loanData = {
-        name: formData.name,
-        type: formData.type,
-        lender: formData.lender,
-        originalBalance: parseFloat(formData.originalBalance),
-        balance: -Math.abs(parseFloat(formData.currentBalance)), // Store as negative for consistency
+        name: formData.name.trim(),
+        lender: formData.lender.trim(),
+        balance: parseFloat(formData.balance),
         interestRate: parseFloat(formData.interestRate),
-        term: parseInt(formData.term),
+        originalBalance: parseFloat(formData.originalBalance),
+        term: parseInt(formData.term, 10),
         monthlyPayment: parseFloat(formData.monthlyPayment),
-        nextPaymentDate: formData.nextPaymentDate,
-        remainingPayments: Math.ceil(parseFloat(formData.currentBalance) / parseFloat(formData.monthlyPayment)),
-        notes: formData.notes
+        nextPaymentDate: formData.nextPaymentDate || null,
+        notes: formData.notes.trim() || null
       };
-
       await onComplete(loanData);
     } catch (error) {
       console.error('Error adding loan:', error);
-      setErrors({ form: 'Failed to add loan. Please try again.' });
+      alert('Failed to add loan');
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    if (errors[name]) setErrors(prev => ({ ...prev, [name]: undefined }));
   };
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <button onClick={onCancel} style={styles.backButton}>← Back</button>
-        <h2 style={styles.title}>➕ Add New Loan</h2>
+        <h2 style={styles.title}>➕ Add Loan</h2>
       </div>
 
       <form onSubmit={handleSubmit} style={styles.form}>
         {errors.form && <div style={styles.errorMessage}>{errors.form}</div>}
 
-        {/* Loan Name */}
         <div style={styles.formGroup}>
-          <label style={styles.label}>Loan Name <span style={styles.required}>*</span></label>
+          <label style={styles.label}>Loan Name *</label>
           <input
             type="text"
             name="name"
             value={formData.name}
-            onChange={(e) => setFormData({...formData, name: e.target.value})}
-            placeholder="e.g., Toyota Auto Loan"
-            style={{...styles.input, ...(errors.name ? styles.inputError : {})}}
+            onChange={handleChange}
+            style={{ ...styles.input, ...(errors.name && styles.inputError) }}
           />
           {errors.name && <div style={styles.fieldError}>{errors.name}</div>}
         </div>
 
-        {/* Loan Type and Lender */}
+        <div style={styles.formGroup}>
+          <label style={styles.label}>Lender *</label>
+          <input
+            type="text"
+            name="lender"
+            value={formData.lender}
+            onChange={handleChange}
+            style={{ ...styles.input, ...(errors.lender && styles.inputError) }}
+          />
+          {errors.lender && <div style={styles.fieldError}>{errors.lender}</div>}
+        </div>
+
         <div style={styles.row}>
           <div style={styles.formGroup}>
-            <label style={styles.label}>Loan Type</label>
-            <select
-              value={formData.type}
-              onChange={(e) => setFormData({...formData, type: e.target.value})}
-              style={styles.select}
-            >
-              {loanTypes.map(type => (
-                <option key={type.value} value={type.value}>
-                  {type.icon} {type.label}
-                </option>
-              ))}
-            </select>
+            <label style={styles.label}>Current Balance *</label>
+            <div style={styles.inputWrapper}>
+              <span style={styles.currencySymbol}>$</span>
+              <input
+                type="number"
+                name="balance"
+                value={formData.balance}
+                onChange={handleChange}
+                step="0.01"
+                style={{ ...styles.inputWithSymbol, ...(errors.balance && styles.inputError) }}
+              />
+            </div>
+            {errors.balance && <div style={styles.fieldError}>{errors.balance}</div>}
           </div>
 
           <div style={styles.formGroup}>
-            <label style={styles.label}>Lender <span style={styles.required}>*</span></label>
+            <label style={styles.label}>Interest Rate (%) *</label>
             <input
-              type="text"
-              name="lender"
-              value={formData.lender}
-              onChange={(e) => setFormData({...formData, lender: e.target.value})}
-              placeholder="e.g., Chase, Navient"
-              style={{...styles.input, ...(errors.lender ? styles.inputError : {})}}
+              type="number"
+              name="interestRate"
+              value={formData.interestRate}
+              onChange={handleChange}
+              step="0.01"
+              min="0"
+              style={{ ...styles.input, ...(errors.interestRate && styles.inputError) }}
             />
-            {errors.lender && <div style={styles.fieldError}>{errors.lender}</div>}
+            {errors.interestRate && <div style={styles.fieldError}>{errors.interestRate}</div>}
           </div>
         </div>
 
-        {/* Balances */}
         <div style={styles.row}>
           <div style={styles.formGroup}>
-            <label style={styles.label}>Original Balance <span style={styles.required}>*</span></label>
+            <label style={styles.label}>Original Balance *</label>
             <div style={styles.inputWrapper}>
               <span style={styles.currencySymbol}>$</span>
               <input
                 type="number"
                 name="originalBalance"
                 value={formData.originalBalance}
-                onChange={(e) => setFormData({...formData, originalBalance: e.target.value})}
-                placeholder="25000"
-                style={{...styles.inputWithSymbol, ...(errors.originalBalance ? styles.inputError : {})}}
+                onChange={handleChange}
+                step="0.01"
+                style={{ ...styles.inputWithSymbol, ...(errors.originalBalance && styles.inputError) }}
               />
             </div>
             {errors.originalBalance && <div style={styles.fieldError}>{errors.originalBalance}</div>}
           </div>
 
           <div style={styles.formGroup}>
-            <label style={styles.label}>Current Balance <span style={styles.required}>*</span></label>
-            <div style={styles.inputWrapper}>
-              <span style={styles.currencySymbol}>$</span>
-              <input
-                type="number"
-                name="currentBalance"
-                value={formData.currentBalance}
-                onChange={(e) => setFormData({...formData, currentBalance: e.target.value})}
-                placeholder="15250.75"
-                style={{...styles.inputWithSymbol, ...(errors.currentBalance ? styles.inputError : {})}}
-              />
-            </div>
-            {errors.currentBalance && <div style={styles.fieldError}>{errors.currentBalance}</div>}
-          </div>
-        </div>
-
-        {/* Interest Rate and Term */}
-        <div style={styles.row}>
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Interest Rate (%) <span style={styles.required}>*</span></label>
-            <input
-              type="number"
-              name="interestRate"
-              value={formData.interestRate}
-              onChange={(e) => setFormData({...formData, interestRate: e.target.value})}
-              placeholder="4.5"
-              step="0.1"
-              min="0"
-              max="30"
-              style={{...styles.input, ...(errors.interestRate ? styles.inputError : {})}}
-            />
-            {errors.interestRate && <div style={styles.fieldError}>{errors.interestRate}</div>}
-          </div>
-
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Term (months) <span style={styles.required}>*</span></label>
+            <label style={styles.label}>Term (months) *</label>
             <input
               type="number"
               name="term"
               value={formData.term}
-              onChange={(e) => setFormData({...formData, term: e.target.value})}
-              placeholder="60"
+              onChange={handleChange}
               min="1"
-              style={{...styles.input, ...(errors.term ? styles.inputError : {})}}
+              style={{ ...styles.input, ...(errors.term && styles.inputError) }}
             />
             {errors.term && <div style={styles.fieldError}>{errors.term}</div>}
           </div>
         </div>
 
-        {/* Monthly Payment and Next Payment Date */}
-        <div style={styles.row}>
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Monthly Payment <span style={styles.required}>*</span></label>
-            <div style={styles.inputWrapper}>
-              <span style={styles.currencySymbol}>$</span>
-              <input
-                type="number"
-                name="monthlyPayment"
-                value={formData.monthlyPayment}
-                onChange={(e) => setFormData({...formData, monthlyPayment: e.target.value})}
-                placeholder="345.67"
-                style={{...styles.inputWithSymbol, ...(errors.monthlyPayment ? styles.inputError : {})}}
-              />
-            </div>
-            {errors.monthlyPayment && <div style={styles.fieldError}>{errors.monthlyPayment}</div>}
-          </div>
-
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Next Payment Date</label>
+        <div style={styles.formGroup}>
+          <label style={styles.label}>Monthly Payment *</label>
+          <div style={styles.inputWrapper}>
+            <span style={styles.currencySymbol}>$</span>
             <input
-              type="date"
-              name="nextPaymentDate"
-              value={formData.nextPaymentDate}
-              onChange={(e) => setFormData({...formData, nextPaymentDate: e.target.value})}
-              min={new Date().toISOString().split('T')[0]}
-              style={styles.input}
+              type="number"
+              name="monthlyPayment"
+              value={formData.monthlyPayment}
+              onChange={handleChange}
+              step="0.01"
+              min="0"
+              style={{ ...styles.inputWithSymbol, ...(errors.monthlyPayment && styles.inputError) }}
             />
           </div>
+          {errors.monthlyPayment && <div style={styles.fieldError}>{errors.monthlyPayment}</div>}
         </div>
 
-        {/* Notes */}
+        <div style={styles.formGroup}>
+          <label style={styles.label}>Next Payment Date (Optional)</label>
+          <input
+            type="date"
+            name="nextPaymentDate"
+            value={formData.nextPaymentDate}
+            onChange={handleChange}
+            style={styles.input}
+          />
+        </div>
+
         <div style={styles.formGroup}>
           <label style={styles.label}>Notes (Optional)</label>
           <textarea
             name="notes"
             value={formData.notes}
-            onChange={(e) => setFormData({...formData, notes: e.target.value})}
-            placeholder="Any additional information about this loan..."
+            onChange={handleChange}
             rows="3"
             style={styles.textarea}
           />
         </div>
 
-        {/* Tips */}
-        <div style={styles.tipsContainer}>
-          <h4 style={styles.tipsTitle}>💡 Loan Management Tips</h4>
-          <ul style={styles.tipsList}>
-            <li>Track all your loans to see your complete debt picture</li>
-            <li>The Debt Strategist will help you optimize payments</li>
-            <li>Extra payments go directly to principal and save interest</li>
-            <li>Consider refinancing if rates drop significantly</li>
-          </ul>
-        </div>
-
-        {/* Action Buttons */}
         <div style={styles.actionButtons}>
-          <button type="button" onClick={onCancel} style={styles.cancelButton}>
+          <button type="button" onClick={onCancel} style={styles.cancelButton} disabled={isSubmitting}>
             Cancel
           </button>
           <button type="submit" style={styles.submitButton} disabled={isSubmitting}>
@@ -262,7 +211,6 @@ export default function AddLoanForm({ onComplete, onCancel }) {
   );
 }
 
-// Styles (similar to AddCreditCardForm but with loan-specific styling)
 const styles = {
   container: {
     padding: '2rem',
@@ -289,7 +237,7 @@ const styles = {
     fontSize: '1.75rem',
     fontWeight: 'bold',
     margin: 0,
-    background: 'linear-gradient(135deg, #10B981, #3B82F6)',
+    background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent'
   },
@@ -312,10 +260,8 @@ const styles = {
     display: 'block',
     marginBottom: '0.5rem',
     color: '#9CA3AF',
-    fontSize: '0.875rem'
-  },
-  required: {
-    color: '#EF4444'
+    fontSize: '0.875rem',
+    fontWeight: '500'
   },
   input: {
     width: '100%',
@@ -326,14 +272,8 @@ const styles = {
     color: 'white',
     fontSize: '1rem'
   },
-  select: {
-    width: '100%',
-    padding: '0.75rem',
-    background: '#111827',
-    border: '1px solid #374151',
-    borderRadius: '0.5rem',
-    color: 'white',
-    fontSize: '1rem'
+  inputError: {
+    borderColor: '#EF4444'
   },
   inputWrapper: {
     position: 'relative'
@@ -362,10 +302,8 @@ const styles = {
     borderRadius: '0.5rem',
     color: 'white',
     fontSize: '1rem',
-    fontFamily: 'inherit'
-  },
-  inputError: {
-    borderColor: '#EF4444'
+    fontFamily: 'inherit',
+    resize: 'vertical'
   },
   fieldError: {
     color: '#EF4444',
@@ -380,26 +318,21 @@ const styles = {
     borderRadius: '0.5rem',
     marginBottom: '1.5rem'
   },
-  tipsContainer: {
-    background: '#0A2472',
-    padding: '1.5rem',
-    borderRadius: '0.5rem',
-    marginBottom: '2rem'
-  },
-  tipsTitle: {
-    fontSize: '1rem',
-    fontWeight: '600',
-    margin: '0 0 0.75rem 0',
-    color: 'white'
-  },
-  tipsList: {
-    margin: 0,
-    paddingLeft: '1.5rem',
-    color: '#9CA3AF'
-  },
   actionButtons: {
     display: 'flex',
-    gap: '1rem'
+    gap: '1rem',
+    marginTop: '2rem'
+  },
+  submitButton: {
+    flex: 2,
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer'
   },
   cancelButton: {
     flex: 1,
@@ -409,17 +342,6 @@ const styles = {
     border: 'none',
     borderRadius: '0.5rem',
     fontSize: '1rem',
-    cursor: 'pointer'
-  },
-  submitButton: {
-    flex: 2,
-    padding: '0.75rem',
-    background: 'linear-gradient(135deg, #10B981, #059669)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '1rem',
-    fontWeight: '600',
     cursor: 'pointer'
   }
 };

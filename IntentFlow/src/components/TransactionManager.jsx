@@ -19,38 +19,21 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
     };
 
     // FIXED: This should update transactions, not accounts
-    const handleSaveEdit = async () => {
-        if (!editingId) return;
-        
-        try {
-            const amount = editForm.type === 'outflow' 
-                ? -Math.abs(parseFloat(editForm.amount) || 0)
-                : Math.abs(parseFloat(editForm.amount) || 0);
-
-            const updates = {
-                date: editForm.date,
-                payee: editForm.payee,
-                description: editForm.payee,
-                amount: amount,
-                category_id: editForm.categoryId || null,
-                memo: editForm.memo,
-                is_cleared: editForm.cleared ? 1 : 0
-            };
-
-            const result = await onUpdateTransaction(editingId, updates);
-            
-            if (result && result.success) {
-                setEditingId(null);
-                setEditForm({});
-            } else {
-                alert('Error updating transaction: ' + (result?.error || 'Unknown error'));
+    const handleSaveEdit = async (cardId, updatedData) => {
+        console.log('handleSaveEdit called with:', cardId, updatedData);
+        if (!updatedData) {
+            console.error('❌ updatedData is undefined in handleSaveEdit');
+            return;
+        }
+       if (onUpdateCard) {
+  const result = await onUpdateCard(cardId, updatedData);
+            if (result?.success) {
+                setShowEditModal(false);
+                setEditingCard(null);
             }
-        } catch (error) {
-            console.error('Error updating transaction:', error);
-            alert('Error updating transaction: ' + error.message);
+            return result;
         }
     };
-
     const handleDelete = async (id) => {
         if (confirm('Are you sure you want to delete this transaction?')) {
             const result = await onDeleteTransaction(id);

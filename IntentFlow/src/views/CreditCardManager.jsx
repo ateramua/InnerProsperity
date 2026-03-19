@@ -7,11 +7,14 @@ function CreditCardManager({
   cards = [],
   transactions = [],
   onMakePayment,
-  onEditCard,
+  onUpdateCard,        // renamed prop
   onAddCard,
   onViewTransactions,
-  onOpenPlanner
+  onOpenPlanner,
+  onDeleteCard
 }) {
+  console.log('CreditCardManager props - onUpdateCard type:', typeof onUpdateCard);
+
   const [selectedCard, setSelectedCard] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState({});
@@ -30,14 +33,20 @@ function CreditCardManager({
     }
   };
 
-
-  const handleEditCard = (card) => {
+  const handleOpenEditModal = (card) => {
+    console.log('Opening edit modal for card:', card);
     setEditingCard(card);
     setShowEditModal(true);
   };
+
   const handleSaveEdit = async (cardId, updatedData) => {
-    if (onEditCard) {
-      const result = await onEditCard(cardId, updatedData);
+    console.log('📥 CreditCardManager handleSaveEdit received:', cardId, updatedData);
+    if (!updatedData) {
+      console.error('❌ updatedData is undefined in handleSaveEdit');
+      return;
+    }
+    if (onUpdateCard) {                     // ✅ use onUpdateCard, not onEditCard
+      const result = await onUpdateCard(cardId, updatedData);
       if (result?.success) {
         setShowEditModal(false);
         setEditingCard(null);
@@ -46,30 +55,19 @@ function CreditCardManager({
     }
   };
 
-  // Calculate card statistics
+  // Calculate card statistics (unchanged)
   const calculateCardStats = (card) => {
     const cardTransactions = transactions.filter(t => t.account_id === card.id);
-
-    // Current statement balance (transactions this month)
     const now = new Date();
     const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-
     const statementBalance = cardTransactions
       .filter(t => t.date >= firstOfMonth)
       .reduce((sum, t) => sum + t.amount, 0);
-
-    // Minimum payment (typically 1-3% of balance)
     const minPayment = card.minimumPayment || Math.max(25, Math.abs(card.balance) * 0.02);
-
-    // Days until due date
     const dueDate = new Date(card.dueDate);
     const today = new Date();
     const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
-
-    // Utilization percentage
     const utilization = (Math.abs(card.balance) / (card.limit || 1000)) * 100;
-
-    // Interest calculation (if not paid in full)
     const monthlyRate = (card.apr || 18.99) / 100 / 12;
     const interestIfNotPaid = Math.abs(card.balance) * monthlyRate;
 
@@ -128,9 +126,7 @@ function CreditCardManager({
 
   const handleEditClick = (e, card) => {
     e.stopPropagation();
-    if (onEditCard) {
-      onEditCard(card);
-    }
+    handleOpenEditModal(card);
   };
 
   const formatCurrency = (amount) => {
@@ -170,18 +166,8 @@ function CreditCardManager({
           <p style={styles.subtitle}>Manage all your credit cards in one place</p>
         </div>
         <div style={styles.headerActions}>
-          <button
-            onClick={onOpenPlanner}
-            style={styles.plannerButton}
-          >
-            📈 Open Planner
-          </button>
-          <button
-            onClick={() => setShowAddModal(true)}
-            style={styles.addButton}
-          >
-            ➕ Add Credit Card
-          </button>
+          <button onClick={onOpenPlanner} style={styles.plannerButton}>📈 Open Planner</button>
+          <button onClick={() => setShowAddModal(true)} style={styles.addButton}>➕ Add Credit Card</button>
         </div>
       </div>
 
@@ -221,36 +207,21 @@ function CreditCardManager({
       <div style={styles.filterTabs}>
         <button
           onClick={() => setFilter('all')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'all' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'all' ? styles.activeFilter : {}) }}
         >
           All Cards ({cards.length})
         </button>
         <button
           onClick={() => setFilter('due-soon')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'due-soon' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'due-soon' ? styles.activeFilter : {}) }}
         >
-          Due Soon ({cards.filter(c => {
-            const stats = calculateCardStats(c);
-            return stats.isDueSoon && !stats.isOverdue;
-          }).length})
+          Due Soon ({cards.filter(c => { const s = calculateCardStats(c); return s.isDueSoon && !s.isOverdue; }).length})
         </button>
         <button
           onClick={() => setFilter('urgent')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'urgent' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'urgent' ? styles.activeFilter : {}) }}
         >
-          Overdue ({cards.filter(c => {
-            const stats = calculateCardStats(c);
-            return stats.isOverdue;
-          }).length})
+          Overdue ({cards.filter(c => { const s = calculateCardStats(c); return s.isOverdue; }).length})
         </button>
       </div>
 
@@ -260,9 +231,7 @@ function CreditCardManager({
           <div style={styles.emptyIcon}>💳</div>
           <h3 style={styles.emptyTitle}>No credit cards found</h3>
           <p style={styles.emptyText}>
-            {filter === 'all'
-              ? 'Get started by adding your first credit card'
-              : 'No cards match the selected filter'}
+            {filter === 'all' ? 'Get started by adding your first credit card' : 'No cards match the selected filter'}
           </p>
           {filter === 'all' && (
             <button onClick={() => setShowAddModal(true)} style={styles.emptyAddButton}>
@@ -282,16 +251,16 @@ function CreditCardManager({
                 style={{
                   ...styles.cardItem,
                   ...(isSelected ? styles.selectedCard : {}),
-                  borderLeft: `4px solid ${stats.isOverdue ? '#EF4444' :
-                    stats.isDueSoon ? '#F59E0B' :
-                      stats.utilizationColor
-                    }`
+                  borderLeft: `4px solid ${stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : stats.utilizationColor}`
                 }}
                 onClick={() => setSelectedCard(isSelected ? null : card.id)}
               >
-                {/* Edit Button */}
+                {/* Edit Button (opens modal) */}
                 <button
-                  onClick={(e) => handleEditClick(e, card)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenEditModal(card);
+                  }}
                   style={styles.editButton}
                   title="Edit Card"
                 >
@@ -304,11 +273,7 @@ function CreditCardManager({
                     <h3 style={styles.cardName}>{card.name}</h3>
                     <div style={styles.cardInstitution}>{card.institution || 'Credit Card'}</div>
                   </div>
-                  <div style={{
-                    ...styles.utilizationBadge,
-                    background: stats.utilizationColor + '20',
-                    color: stats.utilizationColor
-                  }}>
+                  <div style={{ ...styles.utilizationBadge, background: stats.utilizationColor + '20', color: stats.utilizationColor }}>
                     {stats.utilization.toFixed(1)}% utilized
                   </div>
                 </div>
@@ -316,77 +281,36 @@ function CreditCardManager({
                 {/* Balance */}
                 <div style={styles.balanceSection}>
                   <div style={styles.balanceLabel}>Current Balance</div>
-                  <div style={{
-                    ...styles.balanceAmount,
-                    color: card.balance < 0 ? '#EF4444' : '#10B981'
-                  }}>
+                  <div style={{ ...styles.balanceAmount, color: card.balance < 0 ? '#EF4444' : '#10B981' }}>
                     {formatCurrency(card.balance)}
                   </div>
-                  <div style={styles.limitText}>
-                    of {formatCurrency(card.limit || 0)} limit
-                  </div>
+                  <div style={styles.limitText}>of {formatCurrency(card.limit || 0)} limit</div>
                 </div>
 
                 {/* Progress Bar */}
                 <div style={styles.progressBar}>
-                  <div style={{
-                    ...styles.progressFill,
-                    width: `${Math.min(stats.utilization, 100)}%`,
-                    background: stats.utilizationColor
-                  }} />
+                  <div style={{ ...styles.progressFill, width: `${Math.min(stats.utilization, 100)}%`, background: stats.utilizationColor }} />
                 </div>
 
                 {/* Due Date */}
-                <div style={{
-                  ...styles.dueDateSection,
-                  background: stats.isOverdue ? '#EF444420' :
-                    stats.isDueSoon ? '#F59E0B20' : 'transparent'
-                }}>
+                <div style={{ ...styles.dueDateSection, background: stats.isOverdue ? '#EF444420' : stats.isDueSoon ? '#F59E0B20' : 'transparent' }}>
                   <span>Due: {card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'Not set'}</span>
-                  <span style={{
-                    color: stats.isOverdue ? '#EF4444' :
-                      stats.isDueSoon ? '#F59E0B' : '#9CA3AF',
-                    fontWeight: 'bold'
-                  }}>
-                    {stats.isOverdue ? 'OVERDUE' :
-                      stats.daysUntilDue > 0 && stats.daysUntilDue < 999 ? `${stats.daysUntilDue} days left` :
-                        stats.daysUntilDue === 999 ? 'No due date' :
-                          'Due today'}
+                  <span style={{ color: stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : '#9CA3AF', fontWeight: 'bold' }}>
+                    {stats.isOverdue ? 'OVERDUE' : stats.daysUntilDue > 0 && stats.daysUntilDue < 999 ? `${stats.daysUntilDue} days left` : stats.daysUntilDue === 999 ? 'No due date' : 'Due today'}
                   </span>
                 </div>
 
                 {/* Quick Stats */}
                 <div style={styles.quickStats}>
-                  <div style={styles.stat}>
-                    <span>Min Payment</span>
-                    <strong>{formatCurrency(stats.minPayment)}</strong>
-                  </div>
-                  <div style={styles.stat}>
-                    <span>APR</span>
-                    <strong>{card.apr || 18.99}%</strong>
-                  </div>
-                  <div style={styles.stat}>
-                    <span>Interest</span>
-                    <strong style={{ color: '#F59E0B' }}>
-                      {formatCurrency(stats.interestIfNotPaid)}/mo
-                    </strong>
-                  </div>
+                  <div style={styles.stat}><span>Min Payment</span><strong>{formatCurrency(stats.minPayment)}</strong></div>
+                  <div style={styles.stat}><span>APR</span><strong>{card.apr || 18.99}%</strong></div>
+                  <div style={styles.stat}><span>Interest</span><strong style={{ color: '#F59E0B' }}>{formatCurrency(stats.interestIfNotPaid)}/mo</strong></div>
                 </div>
 
-                {/* Action Buttons */}
+                {/* Action Buttons (no modals inside) */}
                 <div style={styles.cardActions}>
-                  <EditCreditCardModal
-                    isOpen={showEditModal}
-                    onClose={() => { setShowEditModal(false); setEditingCard(null); }}
-                    onSave={handleSaveEdit}
-                    onDelete={handleDeleteCard}   // <-- add this
-                    card={editingCard}
-                  />
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePayment(card.id);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); handlePayment(card.id); }}
                     style={styles.paymentButton}
                   >
                     💰 Make Payment
@@ -394,28 +318,15 @@ function CreditCardManager({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleEditCard(card);
+                      handleOpenEditModal(card);
                     }}
                     style={styles.editButton}
                     title="Edit Card"
                   >
                     ✏️
                   </button>
-                  {/* Edit Credit Card Modal */}
-                  <EditCreditCardModal
-                    isOpen={showEditModal}
-                    onClose={() => {
-                      setShowEditModal(false);
-                      setEditingCard(null);
-                    }}
-                    onSave={handleSaveEdit}
-                    card={editingCard}
-                  />
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onViewTransactions(card.id);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); onViewTransactions(card.id); }}
                     style={styles.transactionsButton}
                   >
                     📋 Transactions
@@ -451,18 +362,13 @@ function CreditCardManager({
                     {transactions.filter(t => t.account_id === card.id).length > 0 && (
                       <div style={styles.recentTransactions}>
                         <h4 style={styles.expandedTitle}>Recent Transactions</h4>
-                        {transactions
-                          .filter(t => t.account_id === card.id)
-                          .slice(0, 3)
-                          .map(t => (
-                            <div key={t.id} style={styles.transactionItem}>
-                              <span>{new Date(t.date).toLocaleDateString()}</span>
-                              <span>{t.description || 'Transaction'}</span>
-                              <span style={{ color: t.amount < 0 ? '#EF4444' : '#10B981' }}>
-                                {formatCurrency(t.amount)}
-                              </span>
-                            </div>
-                          ))}
+                        {transactions.filter(t => t.account_id === card.id).slice(0, 3).map(t => (
+                          <div key={t.id} style={styles.transactionItem}>
+                            <span>{new Date(t.date).toLocaleDateString()}</span>
+                            <span>{t.description || 'Transaction'}</span>
+                            <span style={{ color: t.amount < 0 ? '#EF4444' : '#10B981' }}>{formatCurrency(t.amount)}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -515,22 +421,21 @@ function CreditCardManager({
             </div>
 
             <div style={styles.modalActions}>
-              <button
-                onClick={submitPayment}
-                style={styles.submitButton}
-              >
-                Submit Payment
-              </button>
-              <button
-                onClick={() => setShowPaymentModal(false)}
-                style={styles.cancelButton}
-              >
-                Cancel
-              </button>
+              <button onClick={submitPayment} style={styles.submitButton}>Submit Payment</button>
+              <button onClick={() => setShowPaymentModal(false)} style={styles.cancelButton}>Cancel</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Single Edit Credit Card Modal */}
+      <EditCreditCardModal
+        isOpen={showEditModal}
+        onClose={() => { setShowEditModal(false); setEditingCard(null); }}
+        onSave={handleSaveEdit}
+        onDelete={onDeleteCard}
+        card={editingCard}
+      />
 
       {/* Add Credit Card Modal */}
       <AddCreditCardModal
@@ -542,6 +447,7 @@ function CreditCardManager({
   );
 }
 
+// Full styles object – includes all dashboard and modal styles
 const styles = {
   container: {
     padding: '2rem',

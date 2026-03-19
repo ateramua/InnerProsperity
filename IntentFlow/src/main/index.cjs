@@ -1113,130 +1113,68 @@ function setupIpcHandlers() {
     // ==================== UNIFIED ACCOUNT CREATION HANDLER ====================
     // This is the ONLY account creation handler - it handles ALL account types
     ipcMain.handle('create-account', async (event, accountData) => {
-        console.log('🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷');
-        console.log('🔷 UNIFIED ACCOUNT CREATION');
-        console.log('🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
+        const db = getDb(); // your DB connection function
+        const id = uuidv4(); // your ID generator
 
-        console.log('\x1b[33m%s\x1b[0m', '📞 IPC: create-account called');
-        console.log('\x1b[33m%s\x1b[0m', '📦 Account data received:');
-        console.log('\x1b[32m%s\x1b[0m', JSON.stringify(accountData, null, 2));
+        // Destructure with defaults – undefined becomes null, safe for SQLite
+        const {
+            userId,
+            name,
+            type,
+            balance = 0,
+            // Credit card fields (will be undefined for non‑credit)
+            creditLimit,
+            interestRate,
+            dueDate,
+            minimumPayment,
+            // Loan fields (will be undefined for non‑loan)
+            originalBalance,
+            termMonths,
+            paymentAmount,
+            nextPaymentDate,
+            // Common optional
+            institution,
+        } = accountData;
 
-        try {
-            const db = await getDatabase();
+        // Prepare INSERT statement – includes ALL columns (old + new)
+        const stmt = db.prepare(`
+    INSERT INTO accounts (
+      id, user_id, name, type, balance,
+      credit_limit, interest_rate, due_date, minimum_payment,
+      original_balance, term_months, payment_amount, next_payment_date,
+      cleared_balance, working_balance, account_type_category, currency,
+      institution, is_active, created_at
+    ) VALUES (
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      0, 0, 'budget', 'USD',
+      ?, 1, datetime('now')
+    )
+  `);
 
-            // Get current user if not provided
-            let userId = accountData.user_id;
-            if (!userId) {
-                const currentUser = userService.getCurrentUser();
-                userId = currentUser?.id || 2; // Default to demo user
-                console.log(`👤 Using user_id: ${userId}`);
-            }
+        // Run with conditional values – only pass real data for matching type
+        stmt.run(
+            id,
+            userId,
+            name,
+            type,
+            balance,
+            // Credit fields: if type is 'credit', use the value; otherwise null
+            type === 'credit' ? creditLimit : null,
+            type === 'credit' ? interestRate : null,
+            type === 'credit' ? dueDate : null,
+            type === 'credit' ? minimumPayment : null,
+            // Loan fields: if type is 'loan', use the value; otherwise null
+            type === 'loan' ? originalBalance : null,
+            type === 'loan' ? termMonths : null,
+            type === 'loan' ? paymentAmount : null,
+            type === 'loan' ? nextPaymentDate : null,
+            // Institution (optional for all types)
+            institution || null
+        );
 
-            // Generate a UUID for the account
-            const { v4: uuidv4 } = require('uuid');
-            const accountId = uuidv4();
-            const now = new Date().toISOString();
-
-            // Handle balance based on account type
-            let balance = accountData.balance || 0;
-            if (accountData.type === 'credit' || accountData.type === 'loan') {
-                // Credit cards and loans: negative balance means you owe money
-                balance = -Math.abs(balance);
-            } else {
-                // Checking, savings, etc.: positive balance is money you have
-                balance = Math.abs(balance);
-            }
-
-            // Map common fields to database columns
-            const accountToInsert = {
-                id: accountId,
-                user_id: userId,
-                name: accountData.name || 'New Account',
-                type: accountData.type || 'checking',
-                balance: balance,
-                cleared_balance: balance,
-                working_balance: balance,
-                account_type_category: accountData.account_type_category || 'budget',
-                currency: accountData.currency || 'USD',
-                institution: accountData.institution || null,
-                // Credit card specific fields
-                credit_limit: accountData.credit_limit || accountData.limit || null,
-                interest_rate: accountData.interest_rate || accountData.apr || null,
-                due_date: accountData.due_date || accountData.dueDate || null,
-                // Loan specific fields
-                original_balance: accountData.original_balance || null,
-                term_months: accountData.term_months || null,
-                payment_amount: accountData.payment_amount || null,
-                payment_frequency: accountData.payment_frequency || 'monthly',
-                // Common fields
-                minimum_payment: accountData.minimum_payment || null,
-                is_active: 1,
-                created_at: now
-            };
-
-            console.log('\x1b[34m%s\x1b[0m', '📝 Inserting account:');
-            console.log('\x1b[34m%s\x1b[0m', JSON.stringify(accountToInsert, null, 2));
-
-            // First check which columns exist in the accounts table
-            const tableInfo = await db.all("PRAGMA table_info(accounts)");
-            const existingColumns = tableInfo.map(col => col.name);
-
-            // Build the INSERT query dynamically based on existing columns
-            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance',
-                'working_balance', 'account_type_category', 'currency', 'institution',
-                'credit_limit', 'interest_rate', 'due_date', 'minimum_payment',
-                'is_active', 'created_at'];
-
-            const values = [
-                accountToInsert.id, accountToInsert.user_id, accountToInsert.name,
-                accountToInsert.type, accountToInsert.balance, accountToInsert.cleared_balance,
-                accountToInsert.working_balance, accountToInsert.account_type_category,
-                accountToInsert.currency, accountToInsert.institution, accountToInsert.credit_limit,
-                accountToInsert.interest_rate, accountToInsert.due_date, accountToInsert.minimum_payment,
-                accountToInsert.is_active, accountToInsert.created_at
-            ];
-
-            // Add loan columns only if they exist in the table
-            if (existingColumns.includes('original_balance')) {
-                columns.push('original_balance');
-                values.push(accountToInsert.original_balance);
-            }
-            if (existingColumns.includes('term_months')) {
-                columns.push('term_months');
-                values.push(accountToInsert.term_months);
-            }
-            if (existingColumns.includes('payment_amount')) {
-                columns.push('payment_amount');
-                values.push(accountToInsert.payment_amount);
-            }
-            if (existingColumns.includes('payment_frequency')) {
-                columns.push('payment_frequency');
-                values.push(accountToInsert.payment_frequency);
-            }
-
-            const placeholders = values.map(() => '?').join(', ');
-            const query = `INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`;
-
-            await db.run(query, values);
-
-            console.log('✅ Account created with ID:', accountId);
-
-            // Fetch and return the created account
-            const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
-
-            console.log('\x1b[32m%s\x1b[0m', '✅ Create account result:');
-            console.log('\x1b[32m%s\x1b[0m', JSON.stringify(newAccount, null, 2));
-            console.log('🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷\n');
-
-            return { success: true, data: newAccount };
-        } catch (error) {
-            console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌');
-            console.log('\x1b[31m%s\x1b[0m', '❌ ERROR in create-account:');
-            console.log('\x1b[31m%s\x1b[0m', error);
-            console.log('\x1b[31m%s\x1b[0m', error.stack);
-            console.log('\x1b[31m%s\x1b[0m', '❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n');
-            return { success: false, error: error.message };
-        }
+        return { success: true, id };
     });
 
     // Keep accounts:create for backward compatibility, but it just forwards to create-account
@@ -1372,25 +1310,22 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
-
     ipcMain.handle('accounts:delete', async (event, id, userId) => {
-        console.log('📞 IPC: accounts:delete called');
-        console.log('📝 Account ID:', id);
-        console.log('👤 User ID:', userId);
-
+        console.log('📞 IPC: accounts:delete called', id, userId);
         try {
-            if (!id) {
-                return { success: false, error: 'Account ID is required' };
+            if (!id || !userId) {
+                return { success: false, error: 'ID and userId required' };
             }
-            if (!userId) {
-                return { success: false, error: 'User ID is required' };
+            const db = await getDatabase(); // if getDatabase returns a promise
+            const result = await db.run('DELETE FROM accounts WHERE id = ? AND user_id = ?', id, userId);
+            // Check if any row was actually deleted
+            if (result && result.changes > 0) {
+                return { success: true };
+            } else {
+                return { success: false, error: 'Account not found or already deleted' };
             }
-
-            const result = await accountService.deleteAccount(id, userId);
-            console.log('✅ Delete successful:', result);
-            return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:delete:', error);
+            console.error('❌ Delete error:', error);
             return { success: false, error: error.message };
         }
     });
