@@ -1,15 +1,24 @@
-// src/services/accountService.cjs
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 class AccountService {
-    constructor(dbPath) {
+    /**
+     * @param {Function} dbProvider - async function that returns a database connection (from main process)
+     * @param {string} dbPath - fallback path (only used if no provider given)
+     */
+    constructor(dbProvider = null, dbPath = null) {
+        this.dbProvider = dbProvider;
         this.dbPath = dbPath || path.join(__dirname, '..', '..', 'db', 'data', 'app.db');
     }
 
     async getDb() {
+        // If a provider is given (e.g., from main process), use it
+        if (this.dbProvider) {
+            return await this.dbProvider();
+        }
+        // Fallback: open a direct connection (used in dev or standalone)
         return open({
             filename: this.dbPath,
             driver: sqlite3.Database
@@ -17,59 +26,53 @@ class AccountService {
     }
 
     // ==================== BASIC CRUD OPERATIONS ====================
-// ==================== BASIC CRUD OPERATIONS ====================
 
-async getAllAccounts(userId) {
-    console.log('🟢🟢🟢 accountService.getAllAccounts CALLED for userId:', userId);
+    async getAllAccounts(userId) {
+        console.log('🟢🟢🟢 accountService.getAllAccounts CALLED for userId:', userId);
+        const db = await this.getDb();
+        try {
+            const accounts = await db.all(`
+                SELECT * FROM accounts 
+                WHERE user_id = ? 
+                ORDER BY type, name
+            `, [userId]);
 
-    let db;
-    try {
-        db = await this.getDb();
-        const accounts = await db.all(`
-            SELECT * FROM accounts 
-            WHERE user_id = ? 
-            ORDER BY type, name
-        `, [userId]);
-
-        console.log(`🟢 Found ${accounts.length} accounts`);
-        
-        // Format accounts consistently
-        const formattedAccounts = accounts.map(account => ({
-            id: account.id,
-            name: account.name,
-            type: account.type,
-            balance: account.balance || 0,
-            institution: account.institution || '',
-            account_type_category: account.account_type_category || 'budget',
-            cleared_balance: account.cleared_balance || account.balance || 0,
-            working_balance: account.working_balance || account.balance || 0,
-            currency: account.currency || 'USD',
-            is_active: account.is_active !== 0
-        }));
-        
-        return formattedAccounts;
-    } catch (error) {
-        console.error('🔴 Error in getAllAccounts:', error);
-        return [];
-    } finally {
-        if (db) await db.close();
+            console.log(`🟢 Found ${accounts.length} accounts`);
+            
+            // Format accounts consistently
+            const formattedAccounts = accounts.map(account => ({
+                id: account.id,
+                name: account.name,
+                type: account.type,
+                balance: account.balance || 0,
+                institution: account.institution || '',
+                account_type_category: account.account_type_category || 'budget',
+                cleared_balance: account.cleared_balance || account.balance || 0,
+                working_balance: account.working_balance || account.balance || 0,
+                currency: account.currency || 'USD',
+                is_active: account.is_active !== 0
+            }));
+            
+            return formattedAccounts;
+        } catch (error) {
+            console.error('🔴 Error in getAllAccounts:', error);
+            return [];
+        }
+        // No db.close() – connection is managed by the provider or left open (caller may close)
     }
-}
 
-// Legacy method for backward compatibility
-async getAccounts() {
-    console.log('🟡🟡🟡 accountService.getAccounts CALLED (legacy)');
-    
-    try {
-        // This might need a default user ID
-        const userId = 2; // Default to demo user
-        return await this.getAllAccounts(userId);
-    } catch (error) {
-        console.error('🔴 Error in getAccounts:', error);
-        return [];
+    // Legacy method for backward compatibility
+    async getAccounts() {
+        console.log('🟡🟡🟡 accountService.getAccounts CALLED (legacy)');
+        try {
+            // This might need a default user ID
+            const userId = 2; // Default to demo user
+            return await this.getAllAccounts(userId);
+        } catch (error) {
+            console.error('🔴 Error in getAccounts:', error);
+            return [];
+        }
     }
-}
-   
 
     async getAccountById(id, userId) {
         const db = await this.getDb();
@@ -77,10 +80,13 @@ async getAccounts() {
             const account = await db.get(`
                 SELECT * FROM accounts 
                 WHERE id = ? AND user_id = ?
-            `, id, userId);
+            `, [id, userId]);
             return account;
         } finally {
-            await db.close();
+            // If we opened a direct connection (fallback), close it
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -102,7 +108,6 @@ async getAccounts() {
                 minimumPayment = null
             } = accountData;
 
-            // REMOVED: account_number and routing_number - they don't exist in your schema
             await db.run(`
             INSERT INTO accounts (
                 id, user_id, name, type, account_type_category,
@@ -120,7 +125,9 @@ async getAccounts() {
 
             return this.getAccountById(id, userId);
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -156,7 +163,9 @@ async getAccounts() {
 
             return this.getAccountById(id, userId);
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -168,10 +177,12 @@ async getAccounts() {
                 UPDATE accounts 
                 SET is_active = 0, updated_at = datetime('now')
                 WHERE id = ? AND user_id = ?
-            `, id, userId);
+            `, [id, userId]);
             return true;
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -187,10 +198,12 @@ async getAccounts() {
                     working_balance
                 FROM accounts 
                 WHERE id = ? AND user_id = ?
-            `, accountId, userId);
+            `, [accountId, userId]);
             return account;
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -206,7 +219,7 @@ async getAccounts() {
                     WHERE account_id = ?
                 )
                 WHERE id = ?
-            `, accountId, accountId);
+            `, [accountId, accountId]);
 
             // Calculate cleared balance (sum of cleared transactions)
             await db.run(`
@@ -217,47 +230,49 @@ async getAccounts() {
                     WHERE account_id = ? AND is_cleared IN (1, 2)
                 )
                 WHERE id = ?
-            `, accountId, accountId);
+            `, [accountId, accountId]);
 
             return this.getAccountBalances(accountId);
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
     // ==================== SUMMARY OPERATIONS ====================
 
-async getAccountsSummary(userId) {
-    console.log('🔵🔵🔵 accountService.getAccountsSummary CALLED for userId:', userId);
-    
-    let db;
-    try {
-        db = await this.getDb(); // Define db first, then use it
-        const accounts = await db.all(`SELECT * FROM accounts WHERE user_id = ?`, [userId]);
-        console.log(`🔵 Found ${accounts.length} accounts`);
-        
-        // Format accounts for the frontend
-        const formattedAccounts = accounts.map(account => ({
-            id: account.id,
-            name: account.name,
-            type: account.type,
-            balance: account.balance || 0,
-            institution: account.institution || '',
-            account_type_category: account.account_type_category || 'budget',
-            cleared_balance: account.cleared_balance || account.balance || 0,
-            working_balance: account.working_balance || account.balance || 0,
-            currency: account.currency || 'USD',
-            is_active: account.is_active !== 0
-        }));
-        
-        return formattedAccounts;
-    } catch (error) {
-        console.error('🔴 Error in getAccountsSummary:', error);
-        return [];
-    } finally {
-        if (db) await db.close();
+    async getAccountsSummary(userId) {
+        console.log('🔵🔵🔵 accountService.getAccountsSummary CALLED for userId:', userId);
+        const db = await this.getDb();
+        try {
+            const accounts = await db.all(`SELECT * FROM accounts WHERE user_id = ?`, [userId]);
+            console.log(`🔵 Found ${accounts.length} accounts`);
+            
+            // Format accounts for the frontend
+            const formattedAccounts = accounts.map(account => ({
+                id: account.id,
+                name: account.name,
+                type: account.type,
+                balance: account.balance || 0,
+                institution: account.institution || '',
+                account_type_category: account.account_type_category || 'budget',
+                cleared_balance: account.cleared_balance || account.balance || 0,
+                working_balance: account.working_balance || account.balance || 0,
+                currency: account.currency || 'USD',
+                is_active: account.is_active !== 0
+            }));
+            
+            return formattedAccounts;
+        } catch (error) {
+            console.error('🔴 Error in getAccountsSummary:', error);
+            return [];
+        } finally {
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
+        }
     }
-}
 
     async getTotalsByType(userId) {
         const db = await this.getDb();
@@ -272,7 +287,7 @@ async getAccountsSummary(userId) {
                 FROM accounts 
                 WHERE user_id = ? AND is_active = 1
                 GROUP BY account_type_category
-            `, userId);
+            `, [userId]);
 
             // Calculate grand total
             const grandTotal = totals.reduce((sum, cat) => sum + (cat.total_balance || 0), 0);
@@ -280,10 +295,12 @@ async getAccountsSummary(userId) {
             return {
                 byCategory: totals,
                 grandTotal,
-                netWorth: grandTotal // This will be refined later with tracking accounts
+                netWorth: grandTotal
             };
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -309,18 +326,20 @@ async getAccountsSummary(userId) {
 
             return this.getReconciliation(id);
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
     async getReconciliation(id) {
         const db = await this.getDb();
         try {
-            return await db.get(`
-                SELECT * FROM reconciliations WHERE id = ?
-            `, id);
+            return await db.get(`SELECT * FROM reconciliations WHERE id = ?`, [id]);
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -335,7 +354,7 @@ async getAccountsSummary(userId) {
                     credit_limit, interest_rate, due_date, minimum_payment
                 FROM accounts 
                 WHERE id = ? AND user_id = ? AND type = 'credit'
-            `, accountId, userId);
+            `, [accountId, userId]);
 
             if (!account) return null;
 
@@ -348,15 +367,18 @@ async getAccountsSummary(userId) {
                 WHERE credit_card_account_id = ? 
                 AND is_paid = 0
                 ORDER BY payment_date
-            `, accountId);
+            `, [accountId]);
 
             account.upcoming_payments = upcomingPayments;
 
             return account;
         } finally {
-            await db.close();
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 }
 
-module.exports = new AccountService();
+// Export the class so main process can instantiate it with dbProvider
+module.exports = AccountService;

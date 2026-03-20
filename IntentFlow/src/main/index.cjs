@@ -3,10 +3,13 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const path = require('path');
 const fs = require('fs');
 const os = require('os'); // Added for network status
+const { v4: uuidv4 } = require('uuid'); // Added for generating IDs
 
 // ==================== CONSTANTS ====================
 const PRELOAD_PATH = path.join(__dirname, '../preload/preload.cjs');
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+
+
 
 // ==================== HELPER FUNCTIONS FOR PACKAGED APP ====================
 function getAppPath() {
@@ -114,23 +117,31 @@ const splashModule = requireModule('./splash.cjs') || {
 const { createSplashWindow, closeSplashWindow } = splashModule;
 
 // Services - NOTE: These are OBJECTS, not CLASSES
-const accountService = requireModule('../services/accounts/accountService.cjs') || {
-    getAllAccounts: async (userId) => [],
-    getAccountById: async (id, userId) => null,
-    createAccount: async (accountData) => ({ id: Date.now() }),
-    updateAccount: async (id, userId, updates) => ({}),
-    deleteAccount: async (id, userId) => ({}),
-    getAccountBalances: async (accountId, userId) => ({}),
-    getAccountsSummary: async (userId) => [],
-    getTotalsByType: async (userId) => ({}),
-    startReconciliation: async (accountId, userId, statementBalance, statementDate) => ({}),
-    getCreditCardDetails: async (accountId, userId) => ({}),
-    getAccounts: async () => [],
-    getAccount: async (accountId) => null,
-    getAccountTransactions: async (accountId, limit) => [],
-    getAccountsWithSummary: async (userId) => ({}),
-    getAccountDetails: async (accountId) => null
-};
+// Services
+const AccountService = requireModule('../services/accounts/accountService.cjs');
+let accountService = null;
+if (AccountService) {
+    accountService = new AccountService(getDatabase);
+} else {
+    // fallback dummy object
+    accountService = {
+        getAllAccounts: async (userId) => [],
+        getAccountById: async (id, userId) => null,
+        createAccount: async (accountData) => ({ id: Date.now() }),
+        updateAccount: async (id, userId, updates) => ({}),
+        deleteAccount: async (id, userId) => ({}),
+        getAccountBalances: async (accountId, userId) => ({}),
+        getAccountsSummary: async (userId) => [],
+        getTotalsByType: async (userId) => ({}),
+        startReconciliation: async (accountId, userId, statementBalance, statementDate) => ({}),
+        getCreditCardDetails: async (accountId, userId) => ({}),
+        getAccounts: async () => [],
+        getAccount: async (accountId) => null,
+        getAccountTransactions: async (accountId, limit) => [],
+        getAccountsWithSummary: async (userId) => ({}),
+        getAccountDetails: async (accountId) => null
+    };
+}
 
 const userService = requireModule('../services/userService.cjs') || {
     createUser: async (username, password, fullName, email) => ({ id: Date.now() }),
@@ -143,9 +154,11 @@ const userService = requireModule('../services/userService.cjs') || {
 const settingsService = requireModule('../services/settingsService.cjs') || {
     getGroupsWithCategories: async (budgetId) => []
 };
-
 // TransactionService might be a CLASS
 const TransactionService = requireModule('../services/transactions/transactionService.cjs') || class TransactionService {
+    constructor(dbPath) {
+        this.dbPath = dbPath;
+    }
     async getAllTransactions(userId) { return []; }
     async createTransaction(transactionData) { return { id: Date.now() }; }
     async updateTransaction(id, userId, updates) { return {}; }
@@ -172,7 +185,7 @@ console.log('=====================================\n');
 
 let mainWindow;
 let splashWindow;
-let db;
+let db; // single persistent database connection
 let nativeServer = null;
 let ipcHandlersRegistered = false;
 
@@ -455,6 +468,7 @@ function createWindow() {
             sandbox: false,
             webSecurity: !isDev,  // Keep disabled in dev, enable in prod
             allowRunningInsecureContent: isDev, // Only in dev
+            devTools: true, // Explicitly enable DevTools (they are enabled by default, but just in case)
         },
         icon: path.join(__dirname, '../renderer/public/favicon.ico'),
         backgroundColor: '#111827'
@@ -474,6 +488,8 @@ function createWindow() {
             win.loadFile(indexPath).catch(err => {
                 console.error('❌ Failed to load index.html:', err);
             });
+            // Force DevTools immediately after load
+            win.webContents.openDevTools({ mode: 'right' }); // use 'right' instead of 'detach' to ensure it's attached and visible
         } else {
             console.error('❌ Production file not found at:', indexPath);
             console.log('📂 Directory contents:', fs.existsSync(path.dirname(indexPath)) ? fs.readdirSync(path.dirname(indexPath)) : 'Directory does not exist');
@@ -539,6 +555,27 @@ function createWindow() {
             splashWindow = null;
         }
 
+        // Aggressive DevTools opening
+        const openDevTools = () => {
+            try {
+                win.webContents.openDevTools({ mode: 'right' });
+                // Also try toggle as backup
+                setTimeout(() => {
+                    win.webContents.toggleDevTools();
+                }, 200);
+                // Focus the window to bring DevTools to front
+                win.focus();
+            } catch (e) {
+                console.error('Failed to open DevTools:', e);
+            }
+        };
+
+        openDevTools();
+        // Try again after a second
+        setTimeout(openDevTools, 1000);
+        // And after 2 seconds
+        setTimeout(openDevTools, 2000);
+
         if (!isDev) {
             win.webContents.executeJavaScript(`
                 const originalPushState = history.pushState;
@@ -587,6 +624,9 @@ function createWindow() {
     win.once('ready-to-show', () => {
         win.show();
         console.log('🔵 Main window ready-to-show');
+        // Open DevTools again when window shows
+        win.webContents.openDevTools({ mode: 'right' });
+        win.focus();
     });
 
     return win;
@@ -1008,7 +1048,6 @@ function setupIpcHandlers() {
             }
 
             // Generate a UUID for the group
-            const { v4: uuidv4 } = require('uuid');
             const id = uuidv4();
 
             await db.run(`
@@ -1113,68 +1152,94 @@ function setupIpcHandlers() {
     // ==================== UNIFIED ACCOUNT CREATION HANDLER ====================
     // This is the ONLY account creation handler - it handles ALL account types
     ipcMain.handle('create-account', async (event, accountData) => {
-        const db = getDb(); // your DB connection function
-        const id = uuidv4(); // your ID generator
+        try {
+            const db = await getDatabase(); // use shared connection
+            const id = uuidv4();
 
-        // Destructure with defaults – undefined becomes null, safe for SQLite
-        const {
-            userId,
-            name,
-            type,
-            balance = 0,
-            // Credit card fields (will be undefined for non‑credit)
-            creditLimit,
-            interestRate,
-            dueDate,
-            minimumPayment,
-            // Loan fields (will be undefined for non‑loan)
-            originalBalance,
-            termMonths,
-            paymentAmount,
-            nextPaymentDate,
-            // Common optional
-            institution,
-        } = accountData;
+            const {
+                userId,
+                name,
+                type,
+                balance = 0,
+                creditLimit,
+                interestRate,
+                dueDate,
+                minimumPayment,
+                originalBalance,
+                termMonths,
+                paymentAmount,
+                nextPaymentDate,
+                institution,
+            } = accountData;
 
-        // Prepare INSERT statement – includes ALL columns (old + new)
-        const stmt = db.prepare(`
-    INSERT INTO accounts (
-      id, user_id, name, type, balance,
-      credit_limit, interest_rate, due_date, minimum_payment,
-      original_balance, term_months, payment_amount, next_payment_date,
-      cleared_balance, working_balance, account_type_category, currency,
-      institution, is_active, created_at
-    ) VALUES (
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      0, 0, 'budget', 'USD',
-      ?, 1, datetime('now')
-    )
-  `);
+            // Build insert statement dynamically based on available fields
+            const columns = [
+                'id', 'user_id', 'name', 'type', 'balance',
+                'cleared_balance', 'working_balance', 'account_type_category', 'currency',
+                'institution', 'is_active', 'created_at'
+            ];
+            const values = [
+                id,
+                userId,
+                name,
+                type,
+                balance,
+                0, // cleared_balance
+                0, // working_balance
+                'budget',
+                'USD',
+                institution || null,
+                1,
+                new Date().toISOString()
+            ];
 
-        // Run with conditional values – only pass real data for matching type
-        stmt.run(
-            id,
-            userId,
-            name,
-            type,
-            balance,
-            // Credit fields: if type is 'credit', use the value; otherwise null
-            type === 'credit' ? creditLimit : null,
-            type === 'credit' ? interestRate : null,
-            type === 'credit' ? dueDate : null,
-            type === 'credit' ? minimumPayment : null,
-            // Loan fields: if type is 'loan', use the value; otherwise null
-            type === 'loan' ? originalBalance : null,
-            type === 'loan' ? termMonths : null,
-            type === 'loan' ? paymentAmount : null,
-            type === 'loan' ? nextPaymentDate : null,
-            // Institution (optional for all types)
-            institution || null
-        );
+            // Add credit-specific columns if present
+            if (creditLimit !== undefined) {
+                columns.push('credit_limit');
+                values.push(type === 'credit' ? creditLimit : null);
+            }
+            if (interestRate !== undefined) {
+                columns.push('interest_rate');
+                values.push(type === 'credit' ? interestRate : null);
+            }
+            if (dueDate !== undefined) {
+                columns.push('due_date');
+                values.push(type === 'credit' ? dueDate : null);
+            }
+            if (minimumPayment !== undefined) {
+                columns.push('minimum_payment');
+                values.push(type === 'credit' ? minimumPayment : null);
+            }
 
-        return { success: true, id };
+            // Add loan-specific columns if present
+            if (originalBalance !== undefined) {
+                columns.push('original_balance');
+                values.push(type === 'loan' ? originalBalance : null);
+            }
+            if (termMonths !== undefined) {
+                columns.push('term_months');
+                values.push(type === 'loan' ? termMonths : null);
+            }
+            if (paymentAmount !== undefined) {
+                columns.push('payment_amount');
+                values.push(type === 'loan' ? paymentAmount : null);
+            }
+            if (nextPaymentDate !== undefined) {
+                columns.push('next_payment_date');
+                values.push(type === 'loan' ? nextPaymentDate : null);
+            }
+
+            const placeholders = values.map(() => '?').join(', ');
+            const query = `INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`;
+
+            await db.run(query, values);
+
+            console.log('✅ Account created with ID:', id);
+            return { success: true, id };
+        } catch (error) {
+            console.error('❌ Error in create-account:', error);
+            return { success: false, error: error.message };
+        }
     });
 
     // Keep accounts:create for backward compatibility, but it just forwards to create-account
@@ -1195,7 +1260,6 @@ function setupIpcHandlers() {
             }
 
             // Generate a UUID for the account
-            const { v4: uuidv4 } = require('uuid');
             const accountId = uuidv4();
             const now = new Date().toISOString();
 
@@ -1443,34 +1507,42 @@ function setupIpcHandlers() {
     });
 
     // ==================== TRANSACTION HANDLERS ====================
-    ipcMain.handle('getTransactions', async (event) => {
-        console.log('📞 IPC: getTransactions called');
-        try {
-            const currentUser = userService.getCurrentUser();
-            if (!currentUser) {
-                return { success: false, error: 'No user logged in', data: [] };
+    // Only register if not already registered
+    if (!ipcMain.listeners('getAccountTransactions').length) {
+        ipcMain.handle('getAccountTransactions', async (event, accountId) => {
+            console.log('📞 IPC: getAccountTransactions called for account:', accountId);
+            try {
+                const currentUser = userService.getCurrentUser();
+                if (!currentUser) {
+                    console.log('❌ getAccountTransactions: no user logged in');
+                    return { success: false, error: 'No user logged in', data: [] };
+                }
+                const dbPath = getDatabasePath();
+                const service = new TransactionService(dbPath);
+                const transactions = await service.getAccountTransactions(accountId, currentUser.id);
+                console.log(`📊 getAccountTransactions found ${transactions.length} transactions`);
+                return { success: true, data: transactions };
+            } catch (error) {
+                console.error('❌ Error in getAccountTransactions:', error);
+                return { success: false, error: error.message, data: [] };
             }
-
-            const service = new TransactionService();
-            const transactions = await service.getAllTransactions(currentUser.id);
-            return { success: true, data: transactions };
-        } catch (error) {
-            console.error('❌ Error in getTransactions:', error);
-            return { success: false, error: error.message, data: [] };
-        }
-    });
+        });
+    }
 
     ipcMain.handle('addTransaction', async (event, transaction) => {
-        console.log('📞 IPC: addTransaction called with:', transaction);
+        console.log('📞 IPC: addTransaction called with:', JSON.stringify(transaction, null, 2));
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
+                console.log('❌ addTransaction: no user logged in');
                 return { success: false, error: 'No user logged in' };
             }
 
+            // Ensure amount is a number
             const amount = parseFloat(transaction.amount);
             if (isNaN(amount)) {
-                return { success: false, error: 'Invalid amount - must be a number' };
+                console.log('❌ addTransaction: invalid amount', transaction.amount);
+                return { success: false, error: 'Invalid amount' };
             }
 
             const transactionData = {
@@ -1485,8 +1557,11 @@ function setupIpcHandlers() {
                 isCleared: transaction.cleared ? 1 : 0
             };
 
-            const service = new TransactionService();
+            // Use the correct database path
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
             const result = await service.createTransaction(transactionData);
+            console.log('✅ addTransaction result from service:', result);
 
             if (updateService) {
                 updateService.publish('transaction:added', result);
@@ -1507,7 +1582,8 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
-            const service = new TransactionService();
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
             const result = await service.updateTransaction(id, currentUser.id, updates);
 
             if (updateService) {
@@ -1529,7 +1605,8 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
-            const service = new TransactionService();
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
             const result = await service.deleteTransaction(id, currentUser.id);
 
             if (updateService) {
@@ -1543,23 +1620,6 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('getAccountTransactions', async (event, accountId) => {
-        console.log('📞 IPC: getAccountTransactions called for account:', accountId);
-        try {
-            const currentUser = userService.getCurrentUser();
-            if (!currentUser) {
-                return { success: false, error: 'No user logged in', data: [] };
-            }
-
-            const service = new TransactionService();
-            const transactions = await service.getAccountTransactions(accountId, currentUser.id);
-            return { success: true, data: transactions };
-        } catch (error) {
-            console.error('❌ Error in getAccountTransactions:', error);
-            return { success: false, error: error.message, data: [] };
-        }
-    });
-
     ipcMain.handle('toggleTransactionCleared', async (event, id, clearedStatus) => {
         console.log('📞 IPC: toggleTransactionCleared called for id:', id, 'status:', clearedStatus);
         try {
@@ -1568,7 +1628,8 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
-            const service = new TransactionService();
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
             const result = await service.updateTransaction(id, currentUser.id, { is_cleared: clearedStatus ? 1 : 0 });
             return { success: true, data: result };
         } catch (error) {
@@ -1585,7 +1646,8 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
-            const service = new TransactionService();
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
             const result = await service.reconcileAccount(accountId, currentUser.id, statementBalance, transactionsToClear);
             console.log('✅ Reconciliation successful:', result);
             return { success: true, data: result };

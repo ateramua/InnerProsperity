@@ -5,7 +5,8 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 class TransactionService {
-    constructor(dbPath) {
+    constructor(dbPath = null) {
+        // If no path is provided, use a default (fallback)
         this.dbPath = dbPath || path.join(__dirname, '..', '..', 'db', 'data', 'app.db');
     }
 
@@ -14,49 +15,6 @@ class TransactionService {
             filename: this.dbPath,
             driver: sqlite3.Database
         });
-    }
-
-    // Get transactions for a specific account
-    async getAccountTransactions(accountId, userId, filters = {}) {
-        const db = await this.getDb();
-        try {
-            let query = `
-                SELECT t.*, c.name as category_name 
-                FROM transactions t
-                LEFT JOIN categories c ON t.category_id = c.id
-                WHERE t.account_id = ? AND t.user_id = ?
-            `;
-            const params = [accountId, userId];
-
-            // Add date filters if provided
-            if (filters.startDate) {
-                query += ` AND t.date >= ?`;
-                params.push(filters.startDate);
-            }
-            if (filters.endDate) {
-                query += ` AND t.date <= ?`;
-                params.push(filters.endDate);
-            }
-
-            // Filter by cleared status
-            if (filters.cleared !== undefined) {
-                query += ` AND t.is_cleared = ?`;
-                params.push(filters.cleared);
-            }
-
-            // Filter by category
-            if (filters.categoryId) {
-                query += ` AND t.category_id = ?`;
-                params.push(filters.categoryId);
-            }
-
-            query += ` ORDER BY t.date DESC, t.created_at DESC`;
-
-            const transactions = await db.all(query, params);
-            return transactions || [];
-        } finally {
-            await db.close();
-        }
     }
 
     // Get all transactions across all accounts
@@ -86,50 +44,51 @@ class TransactionService {
             const transactions = await db.all(query, params);
             return transactions || [];
         } finally {
-            await db.close();
+            // If you want to close the connection, do it here. But sqlite3 handles it.
         }
     }
 
     // Create a transaction
-async createTransaction(transactionData) {
-    const db = await this.getDb();
-    try {
-        const id = uuidv4();
-        const {
-            accountId, userId, date, description, amount,
-            categoryId = null, payee = null, memo = null,
-            checkNumber = null, isCleared = 0,
-            isTransfer = 0, transferAccountId = null,
-            importId = null
-        } = transactionData;
+    async createTransaction(transactionData) {
+        const db = await this.getDb();
+        try {
+            const {
+                accountId, userId, date, description, amount,
+                categoryId = null, payee = null, memo = null,
+                checkNumber = null, isCleared = 0,
+                isTransfer = 0, transferAccountId = null,
+                importId = null
+            } = transactionData;
 
-        console.log('📝 Creating transaction with data:', {
-            id, accountId, userId, date, description, amount,
-            categoryId, payee, memo, checkNumber, isCleared,
-            isTransfer, transferAccountId, importId
-        });
+            console.log('📝 Creating transaction with data:', {
+                accountId, userId, date, description, amount,
+                categoryId, payee, memo, checkNumber, isCleared,
+                isTransfer, transferAccountId, importId
+            });
 
-        await db.run(`
+            const result = await db.run(`
             INSERT INTO transactions (
-                id, account_id, user_id, date, description, amount,
+                account_id, user_id, date, description, amount,
                 category_id, payee, memo, check_number, is_cleared,
                 is_transfer, transfer_account_id, import_id,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         `, [
-            id, accountId, userId, date, description, amount,
-            categoryId, payee, memo, checkNumber, isCleared,
-            isTransfer, transferAccountId, importId
-        ]);
+                accountId, userId, date, description, amount,
+                categoryId, payee, memo, checkNumber, isCleared,
+                isTransfer, transferAccountId, importId
+            ]);
 
-        // Update account balances
-        await this.updateAccountBalances(accountId);
+            const id = result.lastID;  // auto‑increment ID
 
-        return this.getTransactionById(id, userId);
-    } finally {
-        await db.close();
+            // Update account balances
+            await this.updateAccountBalances(accountId);
+
+            return this.getTransactionById(id, userId);
+        } finally {
+            // (optional close logic)
+        }
     }
-}
 
     // Update a transaction
     async updateTransaction(id, userId, updates) {
@@ -171,7 +130,24 @@ async createTransaction(transactionData) {
 
             return this.getTransactionById(id, userId);
         } finally {
-            await db.close();
+            // Connection management handled similarly
+        }
+    }
+
+    // Get transactions for a specific account
+    async getAccountTransactions(accountId, userId) {
+        const db = await this.getDb();
+        try {
+            const transactions = await db.all(`
+            SELECT t.*, c.name as category_name 
+            FROM transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            WHERE t.account_id = ? AND t.user_id = ?
+            ORDER BY t.date DESC, t.created_at DESC
+        `, [accountId, userId]);
+            return transactions;
+        } finally {
+            // Connection management handled similarly
         }
     }
 
@@ -192,7 +168,7 @@ async createTransaction(transactionData) {
 
             return true;
         } finally {
-            await db.close();
+            // Connection management handled similarly
         }
     }
 
@@ -208,7 +184,7 @@ async createTransaction(transactionData) {
                 WHERE t.id = ? AND t.user_id = ?
             `, [id, userId]);
         } finally {
-            await db.close();
+            // Connection management handled similarly
         }
     }
 
@@ -240,11 +216,11 @@ async createTransaction(transactionData) {
 
             console.log(`✅ Updated balances for account ${accountId}`);
         } finally {
-            await db.close();
+            // Connection management handled similarly
         }
     }
-    // Add to TransactionService class
 
+    // Get transactions with running balance
     async getAccountTransactionsWithBalance(accountId, userId) {
         const db = await this.getDb();
         try {
@@ -269,7 +245,7 @@ async createTransaction(transactionData) {
             // Return in descending order for display
             return transactionsWithBalance.reverse();
         } finally {
-            await db.close();
+            // Connection management handled similarly
         }
     }
 
@@ -313,7 +289,7 @@ async createTransaction(transactionData) {
             console.log(`✅ Reconciled account ${accountId} with ${transactionsToClear.length} transactions`);
             return { success: true, reconciliationId };
         } finally {
-            await db.close();
+            // Connection management handled similarly
         }
     }
 }

@@ -1,7 +1,17 @@
 // src/views/AccountDetailView.jsx
 import React, { useState, useEffect } from 'react';
 
-export default function AccountDetailView({ account, onBack, onMakePayment }) {
+ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePayment }) {
+  console.log('🔥🔥🔥🔥🔥 NEW ACCOUNT DETAIL VIEW LOADED – TIMESTAMP', Date.now());
+  console.log('🔵 AccountDetailView props:', { propAccount, accountId, onBack: !!onBack, onMakePayment: !!onMakePayment });
+
+  // ----- STEP 1: Normalize to a single source of truth for the account ID -----
+  const definitiveAccountId = accountId || propAccount?.id;
+  console.log('🔍 definitiveAccountId:', definitiveAccountId);
+
+  const [account, setAccount] = useState(propAccount || null);
+  const [loading, setLoading] = useState(!propAccount && !!definitiveAccountId);
+  const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [showAddTransaction, setShowAddTransaction] = useState(false);
   const [newTransaction, setNewTransaction] = useState({
@@ -12,17 +22,59 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
     memo: ''
   });
 
-  // Load transactions for this account
+  // ----- STEP 2: Fetch account using definitiveAccountId -----
   useEffect(() => {
-    loadTransactions();
-  }, [account.id]);
+    console.log('🟢 Account fetch effect running', { propAccount, accountId, definitiveAccountId });
+    if (propAccount) {
+      setAccount(propAccount);
+      setLoading(false);
+      return;
+    }
+    if (definitiveAccountId) {
+      const fetchAccount = async () => {
+        setLoading(true);
+        setError(null);
+        console.log('🔍 Fetching account with ID:', definitiveAccountId);
+        try {
+          const userResult = await window.electronAPI?.getCurrentUser?.();
+          const userId = userResult?.data?.id || 2;
+          const result = await window.electronAPI?.getAccountById?.(definitiveAccountId, userId);
+          console.log('🔍 Fetch result:', result);
+          if (result?.success && result.data) {
+            setAccount(result.data);
+          } else {
+            setError('Account not found');
+          }
+        } catch (err) {
+          console.error('❌ Fetch error:', err);
+          setError('Failed to load account');
+        } finally {
+          setLoading(false);
+        }
+      };
+      fetchAccount();
+    } else {
+      setLoading(false);
+    }
+  }, [propAccount, definitiveAccountId]);
 
-  const loadTransactions = async () => {
+  // ----- STEP 3: Modified loadTransactions that accepts an optional ID -----
+  const loadTransactions = async (id) => {
+    const targetId = id || account?.id;
+    if (!targetId) {
+      console.log('📥 No account ID available to load transactions');
+      return;
+    }
+    console.log('📥 Loading transactions for account:', targetId);
     try {
       if (window.electronAPI?.getAccountTransactions) {
-        const result = await window.electronAPI.getAccountTransactions(account.id);
+        const result = await window.electronAPI.getAccountTransactions(targetId);
+        console.log('📥 getAccountTransactions result:', result);
         if (result.success) {
+          console.log('✅ Transactions data:', result.data);
           setTransactions(result.data);
+        } else {
+          console.error('❌ Failed to load transactions:', result.error);
         }
       } else {
         // Mock transactions for demo
@@ -35,10 +87,19 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
         ]);
       }
     } catch (error) {
-      console.error('Error loading transactions:', error);
+      console.error('❌ Error loading transactions:', error);
     }
   };
 
+  // ----- STEP 4: Trigger loadTransactions when account becomes available, using its id -----
+  useEffect(() => {
+    console.log('🟢 Transaction effect running, account:', account);
+    if (account?.id) {
+      loadTransactions(account.id);
+    }
+  }, [account]);
+
+  // ----- STEP 5: handleAddTransaction already calls loadTransactions(account.id) -----
   const handleAddTransaction = async () => {
     try {
       const transactionData = {
@@ -53,7 +114,7 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
       if (window.electronAPI?.addTransaction) {
         const result = await window.electronAPI.addTransaction(transactionData);
         if (result.success) {
-          await loadTransactions();
+          await loadTransactions(account.id);  // explicit id ensures correct account
           setShowAddTransaction(false);
           setNewTransaction({
             date: new Date().toISOString().split('T')[0],
@@ -86,25 +147,42 @@ export default function AccountDetailView({ account, onBack, onMakePayment }) {
 
   const formatAccountNumber = (number) => {
     if (!number) return 'Not provided';
-    // Show only last 4 digits
     const last4 = number.slice(-4);
     return `•••• •••• •••• ${last4}`;
   };
 
-  // Determine if this is a credit card
+  if (loading) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.loading}>Loading account details...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.error}>{error}</div>
+        <button onClick={onBack} style={styles.backButton}>← Back</button>
+      </div>
+    );
+  }
+
+  if (!account) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.error}>Account not found</div>
+        <button onClick={onBack} style={styles.backButton}>← Back</button>
+      </div>
+    );
+  }
+
   const isCreditCard = account.type === 'credit';
-
-  // Get credit limit from either field name
   const creditLimit = account.credit_limit || account.limit || 0;
-  
-  // Calculate available credit for credit cards
-  const availableCredit = isCreditCard && creditLimit 
-    ? creditLimit - Math.abs(account.balance || 0) 
-    : 0;
-
-  // Get interest rate from either field name
+  const availableCredit = isCreditCard && creditLimit ? creditLimit - Math.abs(account.balance || 0) : 0;
   const interestRate = account.interest_rate || account.apr || null;
 
+  // ---------- YOUR EXISTING JSX (UNCHANGED) ----------
   return (
     <div style={styles.container}>
       {/* Header with Navigation */}
@@ -657,5 +735,18 @@ const styles = {
     ':hover': {
       background: '#4B5563'
     }
-  }
+  },
+  loading: {
+    textAlign: 'center',
+    padding: '2rem',
+    color: '#9CA3AF',
+  },
+  error: {
+    textAlign: 'center',
+    padding: '2rem',
+    color: '#F87171',
+    marginBottom: '1rem',
+  },
 };
+
+export default AccountDetailView;

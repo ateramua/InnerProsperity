@@ -73,54 +73,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   };
 
   // Load loans
-  const loadLoans = async () => {
-    console.log('📥 loadLoans started');
-    setIsLoadingLoans(true);
-    try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        console.log('❌ No user logged in');
-        setLoans([]);
-        return;
-      }
 
-      const userId = userResult.data.id;
-      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-
-      if (accountsResult?.success) {
-        const allAccounts = accountsResult.data || [];
-        const loanAccounts = allAccounts.filter(acc => acc.type === 'loan');
-        console.log(`💰 Found ${loanAccounts.length} loans`);
-
-        // Map database fields to the structure expected by LoanStrategist
-        const mappedLoans = loanAccounts.map(acc => ({
-          id: acc.id,
-          name: acc.name,
-          type: acc.loan_type || 'personal',
-          lender: acc.institution || 'Unknown',
-          originalBalance: acc.original_balance || Math.abs(acc.balance),
-          balance: Math.abs(acc.balance || 0),
-          interestRate: acc.interest_rate || 5.0,
-          term: acc.term_months || 60,
-          remainingPayments: acc.remaining_payments || acc.term_months || 60,
-          monthlyPayment: acc.payment_amount || Math.max(25, Math.abs(acc.balance) * 0.02),
-          nextPaymentDate: acc.next_payment_date || acc.due_date || null,
-          userId: acc.user_id
-        }));
-
-        setLoans(mappedLoans);
-      } else {
-        console.error('❌ Failed to load accounts:', accountsResult?.error);
-        setLoans([]);
-      }
-    } catch (error) {
-      console.error('❌ Error loading loans:', error);
-      setLoans([]);
-    } finally {
-      console.log('🏁 loadLoans finished');
-      setIsLoadingLoans(false);
-    }
-  };
 
   // Load cards when entering credit-related views
   useEffect(() => {
@@ -238,55 +191,247 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   };
 
   // Add loan (used by AddLoanForm)
+  // Add loan (used by AddLoanForm) – robust version
+  // Add loan (used by AddLoanForm) – robust version
   const handleAddLoan = async (loanData) => {
     console.log('📝 Adding new loan:', loanData);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in to add a loan');
-        return { success: false, error: 'Not logged in' };
+      // 1. Ensure we have a valid user
+      const userResult = await window.electronAPI?.getCurrentUser?.();
+      if (!userResult?.success || !userResult?.data?.id) {
+        const errorMsg = 'You must be logged in to add a loan';
+        console.error('❌ handleAddLoan: no user', userResult);
+        alert(errorMsg);
+        return { success: false, error: errorMsg };
       }
-
       const userId = userResult.data.id;
 
+      // 2. Safely parse and validate loan data
+      const name = loanData?.name?.trim();
+      if (!name) {
+        alert('Loan name is required');
+        return { success: false, error: 'Loan name missing' };
+      }
+
+      const balanceRaw = loanData?.balance;
+      const balance = balanceRaw ? -Math.abs(parseFloat(balanceRaw)) : 0;
+      if (balanceRaw && isNaN(balance)) {
+        alert('Invalid balance amount');
+        return { success: false, error: 'Invalid balance' };
+      }
+
+      const interestRateRaw = loanData?.interestRate;
+      const interestRate = interestRateRaw ? parseFloat(interestRateRaw) : null;
+      if (interestRateRaw && isNaN(interestRate)) {
+        alert('Invalid interest rate');
+        return { success: false, error: 'Invalid interest rate' };
+      }
+
+      const originalBalanceRaw = loanData?.originalBalance;
+      const originalBalance = originalBalanceRaw ? parseFloat(originalBalanceRaw) : null;
+      if (originalBalanceRaw && isNaN(originalBalance)) {
+        alert('Invalid original balance');
+        return { success: false, error: 'Invalid original balance' };
+      }
+
+      const termRaw = loanData?.term;
+      const term = termRaw ? parseInt(termRaw, 10) : null;
+      if (termRaw && isNaN(term)) {
+        alert('Invalid term (months)');
+        return { success: false, error: 'Invalid term' };
+      }
+
+      const monthlyPaymentRaw = loanData?.monthlyPayment;
+      const monthlyPayment = monthlyPaymentRaw ? parseFloat(monthlyPaymentRaw) : null;
+      if (monthlyPaymentRaw && isNaN(monthlyPayment)) {
+        alert('Invalid monthly payment');
+        return { success: false, error: 'Invalid monthly payment' };
+      }
+
+      // 3. Build account data object with safe defaults
       const accountData = {
-        name: loanData.name,
+        name,
         type: 'loan',
         account_type_category: 'loan',
-        balance: loanData.balance ? -Math.abs(parseFloat(loanData.balance)) : 0,
-        institution: loanData.lender || '',
-        interest_rate: loanData.interestRate ? parseFloat(loanData.interestRate) : null,
-        original_balance: loanData.originalBalance ? parseFloat(loanData.originalBalance) : null,
-        term_months: loanData.term ? parseInt(loanData.term) : null,
-        payment_amount: loanData.monthlyPayment ? parseFloat(loanData.monthlyPayment) : null,
-        due_date: loanData.nextPaymentDate || null,
+        balance,
+        institution: loanData?.lender?.trim() || '',
+        interest_rate: interestRate,
+        original_balance: originalBalance,
+        term_months: term,
+        payment_amount: monthlyPayment,
+        due_date: loanData?.nextPaymentDate || null,
         currency: 'USD',
         user_id: userId
       };
 
+      // 4. Ensure createAccount is available
+      if (!window.electronAPI?.createAccount) {
+        throw new Error('createAccount IPC handler not available');
+      }
+
+      // 5. Call IPC
       const result = await window.electronAPI.createAccount(accountData);
 
-      if (result.success) {
-        console.log('✅ Loan added successfully:', result.data);
-        alert('✅ Loan added successfully!');
-
-        await loadLoans();
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-
-        if (onNavigate && result.data?.id) {
-          onNavigate(`account-${result.data.id}`);
-        }
-
-        return { success: true, data: result.data };
-      } else {
-        console.error('❌ Failed to add loan:', result.error);
-        alert('Failed to add loan: ' + (result.error || 'Unknown error'));
-        return { success: false, error: result.error };
+      // 6. Handle IPC response
+      if (!result || !result.success) {
+        const errorMsg = result?.error || 'Unknown error from server';
+        console.error('❌ Failed to add loan:', errorMsg);
+        alert('Failed to add loan: ' + errorMsg);
+        return { success: false, error: errorMsg };
       }
+
+      // 7. Success path
+      console.log('✅ Loan added successfully:', result.data);
+      alert('✅ Loan added successfully!');
+
+      // 8. Refresh loans if function exists
+      if (typeof loadLoans === 'function') {
+        try {
+          await loadLoans();
+        } catch (loadError) {
+          console.error('❌ Error refreshing loans:', loadError);
+          // Don't block the user, just log the error
+        }
+      } else {
+        console.warn('loadLoans function not available, cannot refresh list');
+      }
+
+      // 9. Dispatch custom event for any listeners
+      try {
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+      } catch (dispatchError) {
+        console.error('❌ Error dispatching accounts-updated event:', dispatchError);
+      }
+
+      // 10. Navigate to new loan if possible
+      if (typeof onNavigate === 'function' && result.data?.id) {
+        try {
+          onNavigate(`account-${result.data.id}`);
+        } catch (navError) {
+          console.error('❌ Error navigating to new loan:', navError);
+        }
+      } else {
+        console.warn('onNavigate not available or missing account ID, skipping navigation');
+      }
+
+      return { success: true, data: result.data };
+
     } catch (error) {
-      console.error('❌ Error adding loan:', error);
-      alert('Error adding loan: ' + error.message);
-      return { success: false, error: error.message };
+      // 11. Catch any unexpected errors
+      console.error('❌ Unexpected error in handleAddLoan:', error);
+      const errorMessage = error?.message || 'Unknown error';
+      alert('Error adding loan: ' + errorMessage);
+      return { success: false, error: errorMessage };
+    }
+  };
+
+  const loadLoans = async () => {
+    console.log('🔥 ROBUST loadLoans EXECUTED');
+    console.log('🔥 ROBUST loadLoans EXECUTED');
+    console.log('🔥 ROBUST loadLoans EXECUTED');
+    console.log('🔥 ROBUST loadLoans EXECUTED');
+    console.log('🔥 ROBUST loadLoans EXECUTED');
+    console.log('🔥 ROBUST loadLoans EXECUTED');
+    console.log('📥 loadLoans started');
+
+    // Ensure state setters exist (they should, but guard anyway)
+    if (typeof setIsLoadingLoans !== 'function') {
+      console.error('❌ setIsLoadingLoans is not a function – cannot proceed');
+      return;
+    }
+
+    setIsLoadingLoans(true);
+
+    try {
+      // 1. Check that the required IPC methods are available
+      if (!window.electronAPI?.getCurrentUser) {
+        throw new Error('electronAPI.getCurrentUser is not available');
+      }
+      if (!window.electronAPI?.getAccountsSummary) {
+        throw new Error('electronAPI.getAccountsSummary is not available');
+      }
+
+      // 2. Get current user
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data?.id) {
+        console.log('❌ No user logged in or invalid user data');
+        if (typeof setLoans === 'function') setLoans([]);
+        return;
+      }
+
+      const userId = userResult.data.id;
+
+      // 3. Fetch accounts summary
+      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+
+      // 4. Extract and validate loan accounts
+      let loanAccounts = [];
+      if (accountsResult?.success && Array.isArray(accountsResult.data)) {
+        loanAccounts = accountsResult.data.filter(acc => acc && acc.type === 'loan');
+        console.log(`💰 Found ${loanAccounts.length} loans`);
+      } else {
+        console.error('❌ Failed to load accounts or invalid response:', accountsResult?.error);
+        // If the response contains a data array despite error, try to use it
+        if (Array.isArray(accountsResult?.data)) {
+          loanAccounts = accountsResult.data.filter(acc => acc && acc.type === 'loan');
+          console.log(`💰 Found ${loanAccounts.length} loans from fallback data`);
+        } else {
+          if (typeof setLoans === 'function') setLoans([]);
+          return;
+        }
+      }
+
+      // 5. Map loan accounts with safe defaults (no assumptions about field existence)
+      const mappedLoans = loanAccounts.map(acc => {
+        // Guard against malformed objects
+        if (!acc || typeof acc !== 'object') return null;
+
+        // Parse numeric fields safely
+        const balance = Math.abs(parseFloat(acc.balance) || 0);
+        const originalBalance = acc.original_balance !== undefined && acc.original_balance !== null
+          ? Math.abs(parseFloat(acc.original_balance))
+          : balance;
+        const interestRate = parseFloat(acc.interest_rate) || 5.0;
+        const term = parseInt(acc.term_months, 10) || 60;
+        const remainingPayments = parseInt(acc.remaining_payments, 10) || term;
+        const monthlyPayment = parseFloat(acc.payment_amount) || Math.max(25, balance * 0.02);
+        const nextPaymentDate = acc.next_payment_date || acc.due_date || null;
+
+        return {
+          id: acc.id || `temp-${Date.now()}-${Math.random()}`,
+          name: acc.name || 'Unnamed Loan',
+          type: acc.loan_type || 'personal',
+          lender: acc.institution || 'Unknown',
+          originalBalance,
+          balance,
+          interestRate,
+          term,
+          remainingPayments,
+          monthlyPayment,
+          nextPaymentDate,
+          userId: acc.user_id || null
+        };
+      }).filter(loan => loan !== null); // Remove any entries that failed mapping
+
+      // 6. Update state if setter exists
+      if (typeof setLoans === 'function') {
+        setLoans(mappedLoans);
+      } else {
+        console.error('❌ setLoans is not a function');
+      }
+
+    } catch (error) {
+      console.error('❌ Unexpected error in loadLoans:', error);
+      // On error, reset loans to empty array (if setter exists)
+      if (typeof setLoans === 'function') {
+        setLoans([]);
+      }
+    } finally {
+      // Always turn off loading state
+      if (typeof setIsLoadingLoans === 'function') {
+        setIsLoadingLoans(false);
+      }
+      console.log('🏁 loadLoans finished');
     }
   };
 
@@ -406,7 +551,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       }
       const userId = userResult.data.id;
 
-     const result = await window.electronAPI.deleteAccount(cardId, userId);
+      const result = await window.electronAPI.deleteAccount(cardId, userId);
 
       if (result.success) {
         await loadCreditCards();
@@ -468,7 +613,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       const userId = userResult.data.id;
 
       // Use the same accounts:delete handler as credit cards
-    const result = await window.electronAPI.deleteAccount(loanId, userId);
+      const result = await window.electronAPI.deleteAccount(loanId, userId);
 
       if (result.success) {
         await loadLoans();
@@ -488,23 +633,17 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
 
   // Render the appropriate view based on currentView
   const renderView = () => {
-    // Account-specific views
     if (currentView.startsWith('account-')) {
       const accountId = currentView.replace('account-', '');
 
-      // Check if it's a credit card account (special case with existing handlers)
+      // Credit cards still use the pre‑fetched list (they are already updated)
       const creditCard = creditCards.find(c => c.id === accountId);
       if (creditCard) {
         return (
           <AccountDetailView
             account={creditCard}
             onBack={handleOpenDashboard}
-            onMakePayment={(amount) => handleMakePayment({
-              cardId: creditCard.id,
-              amount,
-              date: new Date().toISOString().split('T')[0],
-              accountId: creditCard.id
-            })}
+            onMakePayment={(amount) => handleMakePayment({ amount })}
           />
         );
       }
@@ -514,7 +653,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         <AccountDetailView
           accountId={accountId}
           onBack={() => onNavigate('loan-dashboard')} // Default back to loan dashboard
-          onMakePayment={handleMakePayment} // Will work for loans if payment handler exists
+          onMakePayment={handleMakePayment}
         />
       );
     }
