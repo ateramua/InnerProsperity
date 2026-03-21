@@ -130,44 +130,51 @@ class AccountService {
             }
         }
     }
+async updateAccount(id, userId, updates) {
+    const db = await this.getDb();
+    try {
+        const allowedUpdates = [
+            'name', 'type', 'account_type_category', 'institution',
+            'account_number', 'routing_number', 'credit_limit',
+            'interest_rate', 'due_date', 'minimum_payment', 'is_active',
+            'balance'   // <-- ADD THIS
+        ];
 
-    async updateAccount(id, userId, updates) {
-        const db = await this.getDb();
-        try {
-            const allowedUpdates = [
-                'name', 'type', 'account_type_category', 'institution',
-                'account_number', 'routing_number', 'credit_limit',
-                'interest_rate', 'due_date', 'minimum_payment', 'is_active'
-            ];
+        const setClauses = [];
+        const values = [];
 
-            const setClauses = [];
-            const values = [];
-
-            for (const [key, value] of Object.entries(updates)) {
-                if (allowedUpdates.includes(key)) {
-                    setClauses.push(`${key} = ?`);
-                    values.push(value);
-                }
-            }
-
-            if (setClauses.length === 0) return null;
-
-            setClauses.push('updated_at = datetime("now")');
-            values.push(id, userId);
-
-            await db.run(`
-                UPDATE accounts 
-                SET ${setClauses.join(', ')}
-                WHERE id = ? AND user_id = ?
-            `, values);
-
-            return this.getAccountById(id, userId);
-        } finally {
-            if (!this.dbProvider && db && typeof db.close === 'function') {
-                await db.close();
+        for (const [key, value] of Object.entries(updates)) {
+            if (allowedUpdates.includes(key)) {
+                setClauses.push(`${key} = ?`);
+                values.push(value);
             }
         }
+
+        // If balance is being updated, also set cleared_balance and working_balance
+        if (updates.balance !== undefined) {
+            setClauses.push('cleared_balance = ?');
+            setClauses.push('working_balance = ?');
+            values.push(updates.balance, updates.balance);
+        }
+
+        if (setClauses.length === 0) return null;
+
+        setClauses.push('updated_at = datetime("now")');
+        values.push(id, userId);
+
+        await db.run(`
+            UPDATE accounts 
+            SET ${setClauses.join(', ')}
+            WHERE id = ? AND user_id = ?
+        `, values);
+
+        return this.getAccountById(id, userId);
+    } finally {
+        if (!this.dbProvider && db && typeof db.close === 'function') {
+            await db.close();
+        }
     }
+}
 
     async deleteAccount(id, userId) {
         const db = await this.getDb();

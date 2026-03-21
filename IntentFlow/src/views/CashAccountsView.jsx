@@ -43,67 +43,49 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     loadAccounts();
   }, [propAccounts]);
 
-  const loadAccounts = async () => {
-    console.log('💰 CashAccountsView - Loading accounts...');
-    setLoading(true);
+const loadAccounts = async (force = false) => {
+  console.log('💰 CashAccountsView - Loading accounts...');
+  setLoading(true);
 
-    try {
-      if (propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
-        console.log('💰 Using propAccounts:', propAccounts.length);
-        const cashAccounts = propAccounts.filter(a =>
-          a.type === 'checking' || a.type === 'savings'
-        );
-        setAccounts(cashAccounts);
-        setLoading(false);
-        return;
-      }
-
-      console.log('💰 No propAccounts, fetching directly...');
-
-      if (!window.electronAPI) {
-        console.error('❌ electronAPI not available');
-        setError('Application API not available');
-        setLoading(false);
-        return;
-      }
-
-      const userResult = await window.electronAPI.getCurrentUser();
-      console.log('💰 User result:', userResult);
-
-      if (!userResult?.success || !userResult?.data) {
-        console.error('❌ No user logged in');
-        setError('Please log in to view accounts');
-        setLoading(false);
-        return;
-      }
-
-      const userId = userResult.data.id;
-      console.log('💰 User ID:', userId);
-
-      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-      console.log('💰 Accounts result:', accountsResult);
-
-      if (accountsResult?.success) {
-        const allAccounts = accountsResult.data || [];
-        console.log('💰 All accounts count:', allAccounts.length);
-
-        const cashAccounts = allAccounts.filter(a =>
-          a.type === 'checking' || a.type === 'savings'
-        );
-        console.log('💰 Cash accounts count:', cashAccounts.length);
-
-        setAccounts(cashAccounts);
-      } else {
-        console.error('❌ Failed to load accounts:', accountsResult?.error);
-        setError(accountsResult?.error || 'Failed to load accounts');
-      }
-    } catch (error) {
-      console.error('❌ Error loading accounts:', error);
-      setError(error.message);
-    } finally {
+  try {
+    // If we have propAccounts, and not forcing a refresh, use them.
+    if (!force && propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
+      console.log('💰 Using propAccounts:', propAccounts.length);
+      const cashAccounts = propAccounts.filter(a =>
+        a.type === 'checking' || a.type === 'savings'
+      );
+      setAccounts(cashAccounts);
       setLoading(false);
+      return;
     }
-  };
+
+    console.log('💰 No propAccounts or forced refresh, fetching directly...');
+    // ... rest of the direct fetch logic ...
+    const userResult = await window.electronAPI.getCurrentUser();
+    if (!userResult?.success || !userResult?.data) {
+      console.error('❌ No user logged in');
+      setError('Please log in to view accounts');
+      setLoading(false);
+      return;
+    }
+    const userId = userResult.data.id;
+    const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+    if (accountsResult?.success) {
+      const allAccounts = accountsResult.data || [];
+      const cashAccounts = allAccounts.filter(a =>
+        a.type === 'checking' || a.type === 'savings'
+      );
+      setAccounts(cashAccounts);
+    } else {
+      setError(accountsResult?.error || 'Failed to load accounts');
+    }
+  } catch (error) {
+    console.error('❌ Error loading accounts:', error);
+    setError(error.message);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleCreateAccount = async () => {
     try {
@@ -169,9 +151,9 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     setEditingAccount(account);
     setShowEditModal(true);
   };
-
   const handleSaveEdit = async (accountId, updatedData) => {
     try {
+      // Get current user
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         alert('You must be logged in');
@@ -179,19 +161,27 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       }
       const userId = userResult.data.id;
 
-      const result = await window.electronAPI.updateAccount(accountId, userId, updatedData);
+      const updates = {
+        name: updatedData.name,
+        balance: parseFloat(updatedData.balance),
+        institution: updatedData.institution || null
+      };
+
+      const result = await window.electronAPI.updateAccount(accountId, userId, updates);
       if (result.success) {
-        await loadAccounts();
-        window.dispatchEvent(new Event('accounts-changed'));
         alert('✅ Account updated successfully');
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        // Refresh the list
+        loadAccounts();
       } else {
-        alert('Failed to update account: ' + result.error);
+        alert('❌ Error updating account: ' + result.error);
       }
     } catch (error) {
       console.error('Error updating account:', error);
-      alert('Error: ' + error.message);
+      alert('❌ Error updating account: ' + error.message);
     }
   };
+
 
   const handleDeleteAccount = async (accountId) => {
     if (!window.confirm('Are you sure you want to delete this account? This action cannot be undone.')) {

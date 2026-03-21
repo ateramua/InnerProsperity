@@ -18,7 +18,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
 
     const navigationItems = [
         // In your navigation items array, add/check this:
-          {
+        {
             id: 'propertyMap',
             label: 'PropertyMap',
             icon: '📊',
@@ -62,7 +62,17 @@ const Sidebar = ({ onNavigate, currentView }) => {
             icon: '🥧',
             description: 'Pie chart visualization'
         },
-    
+        {
+            id: 'linked-banks',
+            label: 'Linked Banks',
+            icon: '🔗',
+            description: 'Manage connected bank accounts (Plaid)',
+            onClick: () => {
+                router.push('/?view=linked-banks');
+                if (onNavigate) onNavigate('linked-banks');
+            }
+        },
+
         {
             id: 'forecast',
             label: 'Forecast',
@@ -353,6 +363,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
                         {/* Account Sub-items for cash section */}
                         {item.id === 'cash' && item.accounts && expandedSection === item.id && (
                             <div style={styles.subItemsContainer}>
+                                <button onClick={() => onNavigate('linked-banks')}>🔗 Linked Banks</button>
                                 {item.accounts.map((accountItem) => (
                                     <div
                                         key={accountItem.id}
@@ -377,6 +388,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
                                         }}>
                                             {formatCurrency(accountItem.balance)}
                                         </span>
+
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();

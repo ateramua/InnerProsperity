@@ -1,7 +1,7 @@
 // src/views/AccountModal.jsx
 import React, { useState, useEffect } from 'react';
 
-const AccountModal = ({ isOpen, onClose, onSave, account, mode = 'add', defaultType = 'checking' }) => {
+const AccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = 'add', defaultType = 'checking' }) => {
   const [formData, setFormData] = useState({
     // Common fields
     name: '',
@@ -121,8 +121,8 @@ const AccountModal = ({ isOpen, onClose, onSave, account, mode = 'add', defaultT
       }
 
       await onSave(data, account?.id);
-        // 🔥 Notify other components that accounts have been updated
-    window.dispatchEvent(new CustomEvent('accounts-updated'));
+      // 🔥 Notify other components that accounts have been updated
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
       onClose();
     } catch (error) {
       console.error('Error saving account:', error);
@@ -382,13 +382,26 @@ const AccountModal = ({ isOpen, onClose, onSave, account, mode = 'add', defaultT
             />
           </div>
 
+          {/* Modal Actions with Delete Button */}
           <div style={styles.modalActions}>
-            <button type="button" onClick={onClose} style={styles.cancelButton} disabled={isSubmitting}>
-              Cancel
-            </button>
-            <button type="submit" style={styles.saveButton} disabled={isSubmitting}>
-              {isSubmitting ? 'Saving...' : mode === 'add' ? 'Add Account' : 'Save Changes'}
-            </button>
+            {mode === 'edit' && onDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(account)}
+                style={styles.deleteButton}
+                disabled={isSubmitting}
+              >
+                🗑️ Delete Account
+              </button>
+            )}
+            <div style={styles.actionButtonsGroup}>
+              <button type="button" onClick={onClose} style={styles.cancelButton} disabled={isSubmitting}>
+                Cancel
+              </button>
+              <button type="submit" style={styles.saveButton} disabled={isSubmitting}>
+                {isSubmitting ? 'Saving...' : mode === 'add' ? 'Add Account' : 'Save Changes'}
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -498,12 +511,27 @@ const styles = {
   },
   modalActions: {
     display: 'flex',
-    gap: '1rem',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginTop: '2rem'
   },
+  actionButtonsGroup: {
+    display: 'flex',
+    gap: '1rem'
+  },
+  deleteButton: {
+    padding: '0.75rem 1rem',
+    background: '#EF4444',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.875rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'background 0.2s'
+  },
   saveButton: {
-    flex: 2,
-    padding: '0.75rem',
+    padding: '0.75rem 1.5rem',
     background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
     color: 'white',
     border: 'none',
@@ -513,8 +541,7 @@ const styles = {
     cursor: 'pointer'
   },
   cancelButton: {
-    flex: 1,
-    padding: '0.75rem',
+    padding: '0.75rem 1.5rem',
     background: '#4B5563',
     color: 'white',
     border: 'none',

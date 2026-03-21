@@ -58,7 +58,7 @@ export default function HomePage() {
   // Function to load accounts
   const loadAccounts = async () => {
     if (!window.electronAPI) return;
-    
+
     setLoadingAccounts(true);
     try {
       const userResult = await window.electronAPI.getCurrentUser();
@@ -76,13 +76,24 @@ export default function HomePage() {
     }
   };
 
-  // Load accounts on mount
+  // Load accounts on mount if authenticated
   useEffect(() => {
     if (isAuthenticated) {
       loadAccounts();
     }
   }, [isAuthenticated]);
 
+  // ✅ Listen for "accounts-updated" events and refresh accounts
+  useEffect(() => {
+    const handleAccountsUpdated = () => {
+      loadAccounts();
+    };
+
+    window.addEventListener('accounts-updated', handleAccountsUpdated);
+    return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
+  }, []);
+
+  // Redirect to login if not authenticated
   useEffect(() => {
     if (!loading && !isAuthenticated) {
       router.replace('/login');
@@ -110,7 +121,6 @@ export default function HomePage() {
       />
 
       <main style={styles.main}>
-        
         <div style={styles.mainGlass}>
           <ViewContainers
             currentView={currentView}
@@ -127,7 +137,6 @@ export default function HomePage() {
         onRefresh={refresh}
       />
     </div>
-    
   );
 }
 
@@ -138,7 +147,6 @@ const styles = {
     background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 40%, #0f2e1c 100%)',
     fontFamily: 'Inter, system-ui, sans-serif'
   },
-
   main: {
     flex: 1,
     marginLeft: '280px',
@@ -146,7 +154,6 @@ const styles = {
     minHeight: '100vh',
     color: 'white'
   },
-
   mainGlass: {
     backdropFilter: 'blur(16px)',
     background: '#0047AB',
@@ -156,7 +163,6 @@ const styles = {
     boxShadow: '0 10px 40px rgba(0,0,0,0.4), 0 0 40px rgba(99,102,241,0.15)',
     minHeight: '85vh'
   },
-
   loadingContainer: {
     minHeight: '100vh',
     background: 'linear-gradient(135deg, #0047AB, #0047AB, #0047AB)',
@@ -166,7 +172,6 @@ const styles = {
     justifyContent: 'center',
     color: 'white'
   },
-
   loadingSpinner: {
     width: '56px',
     height: '56px',

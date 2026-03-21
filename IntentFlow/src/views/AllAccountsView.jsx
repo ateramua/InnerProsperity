@@ -117,33 +117,39 @@ const AllAccountsView = ({ accounts: propAccounts, onAccountUpdate, onAccountDel
     }
   };
 
-  const handleSaveEdit = async (accountId) => {
+const handleSaveEdit = async (accountId) => {
     try {
-      const updates = {
-        name: editForm.name,
-        balance: parseFloat(editForm.balance),
-        institution: editForm.institution || null
-      };
-
-      const result = await window.electronAPI.updateAccount(accountId, updates);
-      if (result.success) {
-        setEditingAccount(null);
-        alert('✅ Account updated successfully');
-        if (onAccountUpdate) {
-          onAccountUpdate(accountId, updates);
-        } else {
-          // Refresh the list if no callback provided
-          loadAccounts();
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (!userResult?.success || !userResult?.data) {
+            alert('You must be logged in');
+            return;
         }
-      } else {
-        alert('❌ Error updating account: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Error updating account:', error);
-      alert('❌ Error updating account: ' + error.message);
-    }
-  };
+        const userId = userResult.data.id;
 
+        const updates = {
+            name: editForm.name,
+            balance: parseFloat(editForm.balance),
+            institution: editForm.institution || null
+        };
+
+        const result = await window.electronAPI.updateAccount(accountId, userId, updates);
+        if (result.success) {
+            setEditingAccount(null);
+            alert('✅ Account updated successfully');
+            window.dispatchEvent(new CustomEvent('accounts-updated'));
+            if (onAccountUpdate) {
+                onAccountUpdate(accountId, updates);
+            } else {
+                loadAccounts();
+            }
+        } else {
+            alert('❌ Error updating account: ' + result.error);
+        }
+    } catch (error) {
+        console.error('Error updating account:', error);
+        alert('❌ Error updating account: ' + error.message);
+    }
+};
   const handleCancelEdit = (e) => {
     e.stopPropagation();
     setEditingAccount(null);
@@ -395,15 +401,15 @@ const styles = {
     borderBottom: '2px solid #374151'
   },
   tableRow: {
-    borderBottom: '1px solid #374151',
-    cursor: 'pointer',
-    transition: 'background 0.2s',
-    ':hover': {
-      background: '#374151'
-    },
-    ':last-child': {
-      borderBottom: 'none'
-    }
+    // borderBottom: '1px solid #374151',
+    // cursor: 'pointer',
+    // transition: 'background 0.2s',
+    // ':hover': {
+    //   background: '#374151'
+    // },
+    // ':last-child': {
+    //   borderBottom: 'none'
+    // }
   },
   tableCell: {
     padding: '1rem',

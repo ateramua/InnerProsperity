@@ -1,23 +1,22 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  background: #111827;
-  color: white;
-}
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-
+/* global.css or your Tailwind CSS file */
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
 
-/* Your existing styles can go here */
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+.table-row:last-child {
+  border-bottom: none;
+}
+
+.account-row {
+  border-bottom: 1px solid #374151;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.account-row:hover {
+  background: #374151;
+}

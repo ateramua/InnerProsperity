@@ -1,57 +1,35 @@
 // src/views/LoanManager.jsx
 import React, { useState } from 'react';
-import EditLoanModal from './EditLoanModal'; // You'll need to create this component
 
-function LoanManager({ 
-  loans = [], 
+function LoanManager({
+  loans = [],
   onMakePayment,
-  onEditLoan,
+  onEditLoan,           // used to open the unified account modal
   onAddLoan,
   onViewDetails,
   onOpenStrategist,
-  onDeleteLoan // optional, for delete functionality
+  onDeleteLoan,         // optional – not used in this component
 }) {
   const [selectedLoan, setSelectedLoan] = useState(null);
   const [filter, setFilter] = useState('all'); // 'all', 'auto', 'student', 'personal'
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [editingLoan, setEditingLoan] = useState(null);
 
   const getFilteredLoans = () => {
-    // REMOVED the stray console.log that referenced onDeleteCard
     if (filter === 'all') return loans;
     return loans.filter(loan => loan.type?.toLowerCase().includes(filter));
   };
 
   const calculateLoanStats = (loan) => {
-    const progress = ((loan.originalBalance || Math.abs(loan.balance)) - Math.abs(loan.balance)) / 
+    const progress = ((loan.originalBalance || Math.abs(loan.balance)) - Math.abs(loan.balance)) /
                      (loan.originalBalance || Math.abs(loan.balance)) * 100;
-    const remainingMonths = loan.remainingPayments || 
+    const remainingMonths = loan.remainingPayments ||
       Math.ceil(Math.abs(loan.balance) / loan.monthlyPayment);
     const totalInterest = (loan.monthlyPayment * remainingMonths) - Math.abs(loan.balance);
-    
     return {
       progress: Math.max(0, Math.min(100, progress)),
       remainingMonths,
       totalInterest,
       payoffDate: new Date(Date.now() + remainingMonths * 30 * 24 * 60 * 60 * 1000)
     };
-  };
-
-  const handleEditClick = (e, loan) => {
-    e.stopPropagation();
-    setEditingLoan(loan);
-    setShowEditModal(true);
-  };
-
-  const handleSaveEdit = async (loanId, updatedData) => {
-    if (onEditLoan) {
-      const result = await onEditLoan(loanId, updatedData);
-      if (result?.success) {
-        setShowEditModal(false);
-        setEditingLoan(null);
-      }
-      return result;
-    }
   };
 
   const filteredLoans = getFilteredLoans();
@@ -114,37 +92,25 @@ function LoanManager({
       <div style={styles.filterTabs}>
         <button
           onClick={() => setFilter('all')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'all' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'all' ? styles.activeFilter : {}) }}
         >
           All Loans ({loans.length})
         </button>
         <button
           onClick={() => setFilter('auto')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'auto' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'auto' ? styles.activeFilter : {}) }}
         >
           Auto ({loans.filter(l => l.type?.toLowerCase().includes('auto')).length})
         </button>
         <button
           onClick={() => setFilter('student')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'student' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'student' ? styles.activeFilter : {}) }}
         >
           Student ({loans.filter(l => l.type?.toLowerCase().includes('student')).length})
         </button>
         <button
           onClick={() => setFilter('personal')}
-          style={{
-            ...styles.filterTab,
-            ...(filter === 'personal' ? styles.activeFilter : {})
-          }}
+          style={{ ...styles.filterTab, ...(filter === 'personal' ? styles.activeFilter : {}) }}
         >
           Personal ({loans.filter(l => l.type?.toLowerCase().includes('personal')).length})
         </button>
@@ -156,7 +122,7 @@ function LoanManager({
           <div style={styles.emptyIcon}>🏦</div>
           <h3 style={styles.emptyTitle}>No loans found</h3>
           <p style={styles.emptyText}>
-            {filter === 'all' 
+            {filter === 'all'
               ? 'Add your first loan to start tracking'
               : 'No loans match the selected filter'}
           </p>
@@ -205,10 +171,7 @@ function LoanManager({
                     <span>{stats.remainingMonths} months left</span>
                   </div>
                   <div style={styles.progressBar}>
-                    <div style={{
-                      ...styles.progressFill,
-                      width: `${stats.progress}%`
-                    }} />
+                    <div style={{ ...styles.progressFill, width: `${stats.progress}%` }} />
                   </div>
                 </div>
 
@@ -242,7 +205,7 @@ function LoanManager({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleEditClick(e, loan);
+                      onEditLoan && onEditLoan(loan);   // opens the unified modal
                     }}
                     style={styles.editButton}
                     title="Edit Loan"
@@ -252,7 +215,7 @@ function LoanManager({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onViewDetails(loan.id);
+                      onViewDetails && onViewDetails(loan.id);
                     }}
                     style={styles.detailsButton}
                   >
@@ -291,23 +254,11 @@ function LoanManager({
           })}
         </div>
       )}
-
-      {/* Edit Loan Modal */}
-      <EditLoanModal
-        isOpen={showEditModal}
-        onClose={() => {
-          setShowEditModal(false);
-          setEditingLoan(null);
-        }}
-        onSave={handleSaveEdit}
-        onDelete={onDeleteLoan}
-        loan={editingLoan}
-      />
     </div>
   );
 }
 
-// Styles object (unchanged)
+// Styles (unchanged from original)
 const styles = {
   container: {
     padding: '2rem',
