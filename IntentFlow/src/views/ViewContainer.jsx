@@ -26,6 +26,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   console.log('🔍 ViewContainer received currentView:', currentView);
   console.log('🔍 Available views: "accounts", "allAccounts", "creditCards", etc.');
   console.log('🔍 accounts length:', accounts?.length);
+  console.log('🔥 PRODUCTION: handleSaveAccount called with data:', data);
 
   // Modal state
   const [showAccountModal, setShowAccountModal] = useState(false);
@@ -207,6 +208,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Unified account save handler (for modal)
   const handleSaveAccount = async (data, accountId) => {
     try {
+console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data);
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         alert('You must be logged in');

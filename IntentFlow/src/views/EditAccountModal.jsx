@@ -1,5 +1,6 @@
 // src/views/EditAccountModal.jsx
 import React, { useState, useEffect } from 'react';
+console.log('🔥🔥🔥 PRODUCTION: EditAccountModal loaded with account:', account);
 
 const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account }) => {
   const [formData, setFormData] = useState({

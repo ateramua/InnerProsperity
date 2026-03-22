@@ -137,7 +137,7 @@ async updateAccount(id, userId, updates) {
             'name', 'type', 'account_type_category', 'institution',
             'account_number', 'routing_number', 'credit_limit',
             'interest_rate', 'due_date', 'minimum_payment', 'is_active',
-            'balance'   // <-- ADD THIS
+            'balance'
         ];
 
         const setClauses = [];
@@ -150,7 +150,6 @@ async updateAccount(id, userId, updates) {
             }
         }
 
-        // If balance is being updated, also set cleared_balance and working_balance
         if (updates.balance !== undefined) {
             setClauses.push('cleared_balance = ?');
             setClauses.push('working_balance = ?');
@@ -159,14 +158,14 @@ async updateAccount(id, userId, updates) {
 
         if (setClauses.length === 0) return null;
 
-        setClauses.push('updated_at = datetime("now")');
+        setClauses.push('updated_at = datetime("now")'); // ← this is correct
         values.push(id, userId);
 
-        await db.run(`
-            UPDATE accounts 
-            SET ${setClauses.join(', ')}
-            WHERE id = ? AND user_id = ?
-        `, values);
+        const sql = `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`;
+        console.log('🔍 updateAccount SQL:', sql); // 👈 DEBUG
+        console.log('🔍 updateAccount values:', values); // 👈 DEBUG
+
+        await db.run(sql, values);
 
         return this.getAccountById(id, userId);
     } finally {

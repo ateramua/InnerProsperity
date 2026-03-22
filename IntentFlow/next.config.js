@@ -5,15 +5,14 @@ const nextConfig = {
     unoptimized: true,
   },
   trailingSlash: true,
-  reactStrictMode: true,
-  swcMinify: false,
+  reactStrictMode: false,
+  swcMinify: true,
   assetPrefix: './',
-  productionBrowserSourceMaps: true,
+  productionBrowserSourceMaps: false,
   compiler: {
-    removeConsole: false,
+    removeConsole: true,
     styledComponents: true,
   },
-  // Remove exportPathMap - it's causing the build errors
   webpack: (config, { isServer, dev }) => {
     if (!dev && !isServer) {
       config.optimization.splitChunks = false;

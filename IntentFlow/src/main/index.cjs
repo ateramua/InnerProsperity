@@ -765,7 +765,7 @@ function createWindow() {
     if (isDev) {
         console.log('🔍 Loading dev URL: http://localhost:3000');
         win.loadURL('http://localhost:3000');
-        // win.webContents.openDevTools({ mode: 'detach' });
+        win.webContents.openDevTools({ mode: 'detach' });
     } else {
         const indexPath = path.join(__dirname, '../../out/index.html');
         console.log('📄 Loading production file:', indexPath);
