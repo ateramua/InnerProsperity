@@ -1265,29 +1265,36 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('categoryGroups:create', async (event, userId, name, sortOrder) => {
-        console.log('📞 IPC: categoryGroups:create called', { userId, name, sortOrder });
-        try {
-            const db = await getDatabase();
-            const user = await db.get('SELECT id FROM users WHERE id = ?', [userId]);
-            if (!user) {
-                await db.run(`
-                    INSERT OR IGNORE INTO users (id, username, email, full_name) 
-                    VALUES (?, ?, ?, ?)
-                `, [userId, `user_${userId}`, `user${userId}@example.com`, `User ${userId}`]);
-            }
-            const id = uuidv4();
+ipcMain.handle('categoryGroups:create', async (event, userId, name, sortOrder) => {
+    console.log('📞 IPC: categoryGroups:create called', { userId, name, sortOrder });
+    try {
+        const db = await getDatabase();
+
+        // Ensure the user exists
+        const user = await db.get('SELECT id FROM users WHERE id = ?', [userId]);
+        if (!user) {
             await db.run(`
-                INSERT INTO category_groups (id, user_id, name, sort_order, created_at, updated_at)
-                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-            `, [id, userId, name, sortOrder || 0]);
-            const newGroup = await db.get('SELECT * FROM category_groups WHERE id = ?', [id]);
-            return { success: true, data: newGroup };
-        } catch (error) {
-            console.error('❌ Error in categoryGroups:create:', error);
-            return { success: false, error: error.message };
+                INSERT OR IGNORE INTO users (id, username, email, full_name) 
+                VALUES (?, ?, ?, ?)
+            `, [userId, `user_${userId}`, `user${userId}@example.com`, `User ${userId}`]);
         }
-    });
+
+        // Insert without specifying id (auto‑increment)
+        const result = await db.run(`
+            INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'))
+        `, [userId, name, sortOrder || 0]);
+
+        const id = result.lastID;  // auto‑generated integer ID
+        const newGroup = await db.get('SELECT * FROM category_groups WHERE id = ?', [id]);
+
+        console.log('✅ Group created successfully:', newGroup);
+        return { success: true, data: newGroup };
+    } catch (error) {
+        console.error('❌ Error in categoryGroups:create:', error);
+        return { success: false, error: error.message };
+    }
+});
 
     ipcMain.handle('categoryGroups:update', async (event, id, userId, updates) => {
         console.log('📞 IPC: categoryGroups:update called', { id, userId, updates });

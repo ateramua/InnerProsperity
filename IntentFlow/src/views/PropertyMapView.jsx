@@ -785,44 +785,44 @@ const PropertyMapView = () => {
     });
   };
 
- const handleDeleteCategory = async (categoryId) => {
-  if (!confirm('Are you sure you want to delete this category?')) return;
+  const handleDeleteCategory = async (categoryId) => {
+    if (!confirm('Are you sure you want to delete this category?')) return;
 
-  try {
-    console.log('🗑️ Attempting to delete category:', { 
-      categoryId, 
-      type: typeof categoryId,
-      categoryDetails: budgetData.categories.find(c => c.id === categoryId)
-    });
+    try {
+      console.log('🗑️ Attempting to delete category:', {
+        categoryId,
+        type: typeof categoryId,
+        categoryDetails: budgetData.categories.find(c => c.id === categoryId)
+      });
 
-    // Check if window.electronAPI exists and has deleteCategory
-    console.log('🔍 electronAPI.deleteCategory available:', !!window.electronAPI?.deleteCategory);
+      // Check if window.electronAPI exists and has deleteCategory
+      console.log('🔍 electronAPI.deleteCategory available:', !!window.electronAPI?.deleteCategory);
 
-    // Delete from database FIRST (don't update UI until we know it worked)
-    console.log('📤 Calling deleteCategory with:', categoryId);
-    const deleteResult = await window.electronAPI.deleteCategory(categoryId);
-    console.log('📥 Delete result:', deleteResult);
+      // Delete from database FIRST (don't update UI until we know it worked)
+      console.log('📤 Calling deleteCategory with:', categoryId);
+      const deleteResult = await window.electronAPI.deleteCategory(categoryId);
+      console.log('📥 Delete result:', deleteResult);
 
-    if (deleteResult && deleteResult.success) {
-      // Only update UI if database deletion succeeded
-      console.log('✅ Database deletion successful, updating UI...');
-      setBudgetData(prev => ({
-        ...prev,
-        categories: prev.categories.filter(cat => cat.id !== categoryId)
-      }));
-      alert('✅ Category deleted successfully');
-    } else {
-      console.error('❌ Database deletion failed:', deleteResult?.error || 'Unknown error');
-      
-      // Reload from DB to ensure UI is in sync
-      await loadCategoriesFromDB();
-      alert('❌ Failed to delete category: ' + (deleteResult?.error || 'Unknown error'));
+      if (deleteResult && deleteResult.success) {
+        // Only update UI if database deletion succeeded
+        console.log('✅ Database deletion successful, updating UI...');
+        setBudgetData(prev => ({
+          ...prev,
+          categories: prev.categories.filter(cat => cat.id !== categoryId)
+        }));
+        alert('✅ Category deleted successfully');
+      } else {
+        console.error('❌ Database deletion failed:', deleteResult?.error || 'Unknown error');
+
+        // Reload from DB to ensure UI is in sync
+        await loadCategoriesFromDB();
+        alert('❌ Failed to delete category: ' + (deleteResult?.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('❌ Error in delete category:', error);
+      alert('❌ Error deleting category: ' + error.message);
     }
-  } catch (error) {
-    console.error('❌ Error in delete category:', error);
-    alert('❌ Error deleting category: ' + error.message);
-  }
-};
+  };
 
   // ==================== DATABASE UPDATE FUNCTIONS ====================
   const updateCategoryAssigned = async (categoryId, newAssigned) => {
@@ -855,7 +855,9 @@ const PropertyMapView = () => {
       let groupId = newCategoryData.groupId;
 
       // Check if this is a temporary ID (starts with 'temp-')
-      if (groupId && groupId.startsWith('temp-')) {
+      // Convert to string first to avoid "startsWith is not a function"
+      const groupIdStr = groupId ? String(groupId) : '';
+      if (groupIdStr.startsWith('temp-')) {
         console.log('⚠️ Attempting to use temporary group ID:', groupId);
 
         // Try to find the real group in categoryGroups state
@@ -1681,7 +1683,7 @@ const PropertyMapView = () => {
               <tbody>
                 {categoryGroups.map((group) => {
                   const groupCategories = getCategoriesByGroup(group.id);
-                  
+
                   // 🔍 CRITICAL DEBUG - shows what's happening for each group
                   console.log(`🔴 RENDER CHECK for group "${group.name}" (${group.id}):`, {
                     categoriesLength: groupCategories.length,
@@ -1732,7 +1734,7 @@ const PropertyMapView = () => {
                           {groupCategories.map((cat) => {
                             // Debug inside category render
                             console.log(`  📝 Rendering category: "${cat.name}" (ID: ${cat.id}) in group "${group.name}"`);
-                            
+
                             const targetInfo = getTargetInfo(cat);
                             const hasTarget = targetInfo.status !== 'no-target';
                             const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
@@ -2401,7 +2403,7 @@ const PropertyMapView = () => {
 };
 
 const styles = {
-    categoryRow: {
+  categoryRow: {
     borderBottom: '1px solid #000000',
     display: 'table-row !important', // Force display
     visibility: 'visible !important', // Force visibility
