@@ -1,4 +1,3 @@
-// src/views/AddCreditCardForm.jsx
 import React, { useState } from 'react';
 
 const AddCreditCardForm = ({ onComplete, onCancel }) => {
@@ -9,11 +8,32 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
     apr: '',
     dueDate: '',
     cardNumber: '',
-    balance: '', // Added balance field
+    balance: '',
     notes: ''
   });
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Custom handler for APR (text input)
+  const handleAprChange = (e) => {
+    let value = e.target.value;
+
+    if (value === '') {
+      setFormData(prev => ({ ...prev, apr: '' }));
+      if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+      return;
+    }
+
+    // Replace comma with period (European format)
+    value = value.replace(',', '.');
+
+    // Allow only digits and at most one decimal point
+    const regex = /^\d*\.?\d*$/;
+    if (regex.test(value)) {
+      setFormData(prev => ({ ...prev, apr: value }));
+      if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+    }
+  };
 
   const validateForm = () => {
     const newErrors = {};
@@ -51,15 +71,11 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     setIsSubmitting(true);
 
     try {
-      // Format the data for submission
-      // In handleSubmit function, make sure type is always set
       const cardData = {
         name: formData.name,
         institution: formData.institution,
@@ -71,7 +87,7 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
         balance: formData.balance ? parseFloat(formData.balance) : 0,
         lastStatementBalance: formData.balance ? parseFloat(formData.balance) : 0,
         minimumPayment: 0,
-        type: 'credit', // Always set to credit
+        type: 'credit',
         status: 'active'
       };
 
@@ -87,20 +103,15 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
-    // Clear error for this field when user starts typing
     if (errors[name]) {
       setErrors(prev => ({ ...prev, [name]: undefined }));
     }
   };
 
   const formatCardNumber = (value) => {
-    // Remove all non-digits
     const digits = value.replace(/\D/g, '');
-
-    // Add space every 4 digits
     const formatted = digits.replace(/(\d{4})(?=\d)/g, '$1 ');
-
-    return formatted.slice(0, 19); // Limit to 16 digits + 3 spaces
+    return formatted.slice(0, 19);
   };
 
   const handleCardNumberChange = (e) => {
@@ -227,20 +238,17 @@ const AddCreditCardForm = ({ onComplete, onCancel }) => {
             )}
           </div>
 
-          {/* APR */}
+          {/* APR (now using text input) */}
           <div style={styles.formGroup}>
             <label style={styles.label}>
               APR (%)
             </label>
             <input
-              type="number"
+              type="text"
               name="apr"
               value={formData.apr}
-              onChange={handleChange}
+              onChange={handleAprChange}
               placeholder="18.99"
-              min="0"
-              max="100"
-              step="0.01"
               style={{
                 ...styles.input,
                 ...(errors.apr ? styles.inputError : {})

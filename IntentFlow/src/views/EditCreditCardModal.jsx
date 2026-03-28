@@ -1,4 +1,3 @@
-// src/views/EditCreditCardModal.jsx
 import React, { useState, useEffect } from 'react';
 
 const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
@@ -18,7 +17,6 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
 
   // Load card data when modal opens
   useEffect(() => {
-    console.log('EditCreditCardModal useEffect - card:', card);
     if (card && isOpen) {
       setFormData({
         name: card.name || '',
@@ -35,27 +33,27 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
   }, [card, isOpen]);
 
   if (!isOpen) return null;
+
+  // Custom handler for APR (text input)
   const handleAprChange = (e) => {
-  let value = e.target.value;
+    let value = e.target.value;
 
-  // Allow empty string
-  if (value === '') {
-    setFormData(prev => ({ ...prev, apr: '' }));
-    if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
-    return;
-  }
+    if (value === '') {
+      setFormData(prev => ({ ...prev, apr: '' }));
+      if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+      return;
+    }
 
-  // Replace comma with period (handles European decimal format)
-  value = value.replace(',', '.');
+    // Replace comma with period (European format)
+    value = value.replace(',', '.');
 
-  // Allow only digits and at most one decimal point
-  const regex = /^\d*\.?\d*$/;
-  if (regex.test(value)) {
-    setFormData(prev => ({ ...prev, apr: value }));
-    if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
-  }
-  // If invalid character is typed, just ignore it (no update)
-};
+    // Allow only digits and at most one decimal point
+    const regex = /^\d*\.?\d*$/;
+    if (regex.test(value)) {
+      setFormData(prev => ({ ...prev, apr: value }));
+      if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+    }
+  };
 
   const validateForm = () => {
     const newErrors = {};
@@ -91,9 +89,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
       return;
     }
 
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     setIsSubmitting(true);
 
@@ -254,7 +250,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
                 type="text"
                 name="apr"
                 value={formData.apr}
-                onChange={handleAprChange}   // <-- use the new handler
+                onChange={handleAprChange}
                 placeholder="18.99"
                 style={{
                   ...styles.input,

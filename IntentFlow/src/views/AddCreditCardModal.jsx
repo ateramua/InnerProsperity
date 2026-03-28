@@ -1,4 +1,3 @@
-// src/views/AddCreditCardModal.jsx
 import React, { useState } from 'react';
 
 const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
@@ -17,6 +16,27 @@ const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     if (!isOpen) return null;
+
+    // Custom handler for APR (text input)
+    const handleAprChange = (e) => {
+        let value = e.target.value;
+
+        if (value === '') {
+            setFormData(prev => ({ ...prev, apr: '' }));
+            if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+            return;
+        }
+
+        // Replace comma with period (European format)
+        value = value.replace(',', '.');
+
+        // Allow only digits and at most one decimal point
+        const regex = /^\d*\.?\d*$/;
+        if (regex.test(value)) {
+            setFormData(prev => ({ ...prev, apr: value }));
+            if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+        }
+    };
 
     const validateForm = () => {
         const newErrors = {};
@@ -48,6 +68,11 @@ const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
 
         if (!formData.dueDate) {
             newErrors.dueDate = 'Due date is required';
+        }
+
+        // APR validation (optional, but if present must be between 0 and 100)
+        if (formData.apr && (parseFloat(formData.apr) < 0 || parseFloat(formData.apr) > 100)) {
+            newErrors.apr = 'APR must be between 0 and 100';
         }
 
         setErrors(newErrors);
@@ -105,6 +130,7 @@ const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
             setIsSubmitting(false);
         }
     };
+
     const handleChange = (e) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
@@ -245,20 +271,23 @@ const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
                             )}
                         </div>
 
-                        {/* APR */}
+                        {/* APR - now using text input with custom handler */}
                         <div style={styles.formGroup}>
                             <label style={styles.label}>APR (%)</label>
                             <input
-                                type="number"
+                                type="text"
                                 name="apr"
                                 value={formData.apr}
-                                onChange={handleChange}
+                                onChange={handleAprChange}
                                 placeholder="18.99"
-                                min="0"
-                                max="100"
-                                step="0.01"
-                                style={styles.input}
+                                style={{
+                                    ...styles.input,
+                                    ...(errors.apr ? styles.inputError : {})
+                                }}
                             />
+                            {errors.apr && (
+                                <div style={styles.fieldError}>{errors.apr}</div>
+                            )}
                         </div>
                     </div>
 
