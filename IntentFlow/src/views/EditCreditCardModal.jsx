@@ -1,4 +1,3 @@
-// src/views/EditCreditCardModal.jsx
 import React, { useState, useEffect } from 'react';
 
 const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
@@ -35,27 +34,23 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
   }, [card, isOpen]);
 
   if (!isOpen) return null;
+
   const handleAprChange = (e) => {
-  let value = e.target.value;
+    let value = e.target.value;
 
-  // Allow empty string
-  if (value === '') {
-    setFormData(prev => ({ ...prev, apr: '' }));
-    if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
-    return;
-  }
+    if (value === '') {
+      setFormData(prev => ({ ...prev, apr: '' }));
+      if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+      return;
+    }
 
-  // Replace comma with period (handles European decimal format)
-  value = value.replace(',', '.');
-
-  // Allow only digits and at most one decimal point
-  const regex = /^\d*\.?\d*$/;
-  if (regex.test(value)) {
-    setFormData(prev => ({ ...prev, apr: value }));
-    if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
-  }
-  // If invalid character is typed, just ignore it (no update)
-};
+    value = value.replace(',', '.');
+    const regex = /^\d*\.?\d*$/;
+    if (regex.test(value)) {
+      setFormData(prev => ({ ...prev, apr: value }));
+      if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+    }
+  };
 
   const validateForm = () => {
     const newErrors = {};
@@ -224,7 +219,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
           {/* Two Column Layout */}
           <div style={styles.row}>
             {/* Credit Limit */}
-            <div style={styles.formGroup}>
+            <div style={styles.formGroupNoFlex}>
               <label style={styles.label}>
                 Credit Limit <span style={styles.required}>*</span>
               </label>
@@ -248,13 +243,13 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
             </div>
 
             {/* APR */}
-            <div style={styles.formGroup}>
+            <div style={styles.formGroupNoFlex}>
               <label style={styles.label}>APR (%)</label>
               <input
                 type="text"
                 name="apr"
                 value={formData.apr}
-                onChange={handleAprChange}   // <-- use the new handler
+                onChange={handleAprChange}
                 placeholder="18.99"
                 style={{
                   ...styles.input,
@@ -268,7 +263,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
           {/* Two Column Layout */}
           <div style={styles.row}>
             {/* Due Date */}
-            <div style={styles.formGroup}>
+            <div style={styles.formGroupNoFlex}>
               <label style={styles.label}>Due Date</label>
               <input
                 type="date"
@@ -280,7 +275,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
             </div>
 
             {/* Current Balance */}
-            <div style={styles.formGroup}>
+            <div style={styles.formGroupNoFlex}>
               <label style={styles.label}>Current Balance</label>
               <div style={styles.inputWrapper}>
                 <span style={styles.currencySymbol}>$</span>
@@ -396,11 +391,14 @@ const styles = {
     }
   },
   formGroup: {
-    marginBottom: '1.5rem',
-    flex: 1
+    marginBottom: '1.5rem'
+  },
+  formGroupNoFlex: {
+    marginBottom: '1.5rem'
   },
   row: {
-    display: 'flex',
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
     gap: '1rem',
     marginBottom: '0.5rem'
   },
@@ -423,6 +421,7 @@ const styles = {
     color: 'white',
     fontSize: '1rem',
     transition: 'all 0.2s',
+    boxSizing: 'border-box',
     ':focus': {
       outline: 'none',
       borderColor: '#3B82F6'
@@ -432,7 +431,8 @@ const styles = {
     borderColor: '#EF4444'
   },
   inputWrapper: {
-    position: 'relative'
+    position: 'relative',
+    width: '100%'
   },
   currencySymbol: {
     position: 'absolute',
@@ -448,7 +448,8 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem'
+    fontSize: '1rem',
+    boxSizing: 'border-box'
   },
   textarea: {
     width: '100%',
@@ -459,7 +460,8 @@ const styles = {
     color: 'white',
     fontSize: '1rem',
     fontFamily: 'inherit',
-    resize: 'vertical'
+    resize: 'vertical',
+    boxSizing: 'border-box'
   },
   fieldError: {
     color: '#EF4444',

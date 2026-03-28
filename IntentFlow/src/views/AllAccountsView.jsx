@@ -1,513 +1,540 @@
-// src/views/AllAccountsView.jsx
-import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
+import React, { useState } from 'react';
 
-const AllAccountsView = ({ accounts: propAccounts, onAccountUpdate, onAccountDelete }) => {
-  const router = useRouter();
-  const [accounts, setAccounts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [editingAccount, setEditingAccount] = useState(null);
-  const [editForm, setEditForm] = useState({
-    name: '',
-    balance: '',
-    institution: ''
-  });
-
-  // Load accounts when component mounts or prop changes
-  useEffect(() => {
-    loadAccounts();
-  }, [propAccounts]);
-
-  const loadAccounts = async () => {
-    console.log('💰 AllAccountsView - Loading accounts...');
-    setLoading(true);
-
-    try {
-      // If we have accounts from props and they're not empty, use them
-      if (propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
-        console.log('💰 Using propAccounts:', propAccounts.length);
-        setAccounts(propAccounts);
-        setLoading(false);
-        return;
-      }
-
-      console.log('💰 No propAccounts, fetching directly...');
-
-      if (!window.electronAPI) {
-        console.error('❌ electronAPI not available');
-        setError('Application API not available');
-        setLoading(false);
-        return;
-      }
-
-      // Get current user
-      const userResult = await window.electronAPI.getCurrentUser();
-      console.log('💰 User result:', userResult);
-
-      if (!userResult?.success || !userResult?.data) {
-        console.error('❌ No user logged in');
-        setError('Please log in to view accounts');
-        setLoading(false);
-        return;
-      }
-
-      const userId = userResult.data.id;
-      console.log('💰 User ID:', userId);
-
-      // Fetch all accounts using the same method that works in CashAccountsView
-      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-      console.log('💰 Accounts result:', accountsResult);
-
-      if (accountsResult?.success) {
-        const allAccounts = accountsResult.data || [];
-        console.log('💰 All accounts count:', allAccounts.length);
-        setAccounts(allAccounts);
-      } else {
-        console.error('❌ Failed to load accounts:', accountsResult?.error);
-        setError(accountsResult?.error || 'Failed to load accounts');
-      }
-    } catch (error) {
-      console.error('❌ Error loading accounts:', error);
-      setError(error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAccountClick = (account) => {
-    console.log('🔵 Clicked account:', account.id, account.name);
-    console.log('🔵 Clicked account - full object:', account);
-    console.log('🔵 Account ID:', account.id);
-    console.log('🔵 Account name:', account.name);
-    console.log('🔵 Navigation to:', `/accounts/${account.id}`);
-    router.push(`/accounts/${account.id}`);
-  };
-
-  const handleEditClick = (e, account) => {
-    e.stopPropagation();
-    setEditingAccount(account.id);
-    setEditForm({
-      name: account.name,
-      balance: account.balance,
-      institution: account.institution || ''
+const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
+    const [formData, setFormData] = useState({
+        accountNumber: '',
+        cardHolderName: '',
+        name: '', // Card name
+        institution: '',
+        limit: '',
+        apr: '',
+        dueDate: '',
+        balance: '',
+        notes: ''
     });
-  };
+    const [errors, setErrors] = useState({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleDeleteClick = async (e, accountId) => {
-    e.stopPropagation();
-    if (confirm('Are you sure you want to delete this account? This action cannot be undone.')) {
-      try {
-        const result = await window.electronAPI.deleteAccount(accountId);
-        if (result.success) {
-          alert('✅ Account deleted successfully');
-          if (onAccountDelete) {
-            onAccountDelete(accountId);
-          } else {
-            // Refresh the list if no callback provided
-            loadAccounts();
-          }
-        } else {
-          alert('❌ Error deleting account: ' + result.error);
-        }
-      } catch (error) {
-        console.error('Error deleting account:', error);
-        alert('❌ Error deleting account: ' + error.message);
-      }
-    }
-  };
+    if (!isOpen) return null;
 
-const handleSaveEdit = async (accountId) => {
-    try {
-        const userResult = await window.electronAPI.getCurrentUser();
-        if (!userResult?.success || !userResult?.data) {
-            alert('You must be logged in');
+    // Custom handler for APR (text input)
+    const handleAprChange = (e) => {
+        let value = e.target.value;
+
+        if (value === '') {
+            setFormData(prev => ({ ...prev, apr: '' }));
+            if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
             return;
         }
-        const userId = userResult.data.id;
 
-        const updates = {
-            name: editForm.name,
-            balance: parseFloat(editForm.balance),
-            institution: editForm.institution || null
-        };
+        // Replace comma with period (European format)
+        value = value.replace(',', '.');
 
-        const result = await window.electronAPI.updateAccount(accountId, userId, updates);
-        if (result.success) {
-            setEditingAccount(null);
-            alert('✅ Account updated successfully');
-            window.dispatchEvent(new CustomEvent('accounts-updated'));
-            if (onAccountUpdate) {
-                onAccountUpdate(accountId, updates);
-            } else {
-                loadAccounts();
-            }
-        } else {
-            alert('❌ Error updating account: ' + result.error);
+        // Allow only digits and at most one decimal point
+        const regex = /^\d*\.?\d*$/;
+        if (regex.test(value)) {
+            setFormData(prev => ({ ...prev, apr: value }));
+            if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
         }
-    } catch (error) {
-        console.error('Error updating account:', error);
-        alert('❌ Error updating account: ' + error.message);
-    }
-};
-  const handleCancelEdit = (e) => {
-    e.stopPropagation();
-    setEditingAccount(null);
-  };
+    };
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
+    const validateForm = () => {
+        const newErrors = {};
 
-  const getAccountTypeColor = (type) => {
-    switch (type) {
-      case 'credit': return '#7C3AED';
-      case 'checking': return '#3B82F6';
-      case 'savings': return '#10B981';
-      default: return '#6B7280';
-    }
-  };
+        if (!formData.accountNumber.trim()) {
+            newErrors.accountNumber = 'Account number is required';
+        } else {
+            const digits = formData.accountNumber.replace(/\s/g, '');
+            if (digits.length < 15) {
+                newErrors.accountNumber = 'Account number must be at least 15 digits';
+            } else if (digits.length > 16) {
+                newErrors.accountNumber = 'Account number cannot exceed 16 digits';
+            }
+        }
 
-  // Loading state
-  if (loading) {
+        if (!formData.cardHolderName.trim()) {
+            newErrors.cardHolderName = 'Card holder name is required';
+        }
+
+        if (!formData.name.trim()) {
+            newErrors.name = 'Card name is required';
+        }
+
+        if (!formData.limit) {
+            newErrors.limit = 'Credit limit is required';
+        } else if (parseFloat(formData.limit) <= 0) {
+            newErrors.limit = 'Credit limit must be greater than 0';
+        }
+
+        if (!formData.dueDate) {
+            newErrors.dueDate = 'Due date is required';
+        }
+
+        // APR validation (optional, but if present must be between 0 and 100)
+        if (formData.apr && (parseFloat(formData.apr) < 0 || parseFloat(formData.apr) > 100)) {
+            newErrors.apr = 'APR must be between 0 and 100';
+        }
+
+        setErrors(newErrors);
+        return Object.keys(newErrors).length === 0;
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+
+        if (!validateForm()) {
+            return;
+        }
+
+        setIsSubmitting(true);
+
+        try {
+            // Prepare data for saving - include ALL fields
+            const cardData = {
+                accountNumber: formData.accountNumber.replace(/\s/g, ''),
+                cardHolderName: formData.cardHolderName,
+                name: formData.name,
+                institution: formData.institution,
+                limit: parseFloat(formData.limit),
+                credit_limit: parseFloat(formData.limit), // Add both for compatibility
+                apr: formData.apr ? parseFloat(formData.apr) : 18.99,
+                interest_rate: formData.apr ? parseFloat(formData.apr) : 18.99, // Add both
+                dueDate: formData.dueDate,
+                due_date: formData.dueDate, // Add both
+                balance: formData.balance ? parseFloat(formData.balance) : 0,
+                notes: formData.notes,
+                type: 'credit'
+            };
+
+            console.log('📤 Sending card data from modal:', cardData); // Add debug log
+
+            await onSave(cardData);
+            onClose();
+
+            // Reset form
+            setFormData({
+                accountNumber: '',
+                cardHolderName: '',
+                name: '',
+                institution: '',
+                limit: '',
+                apr: '',
+                dueDate: '',
+                balance: '',
+                notes: ''
+            });
+        } catch (error) {
+            console.error('Error saving credit card:', error);
+            alert('Failed to save credit card');
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+    const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({ ...prev, [name]: value }));
+        if (errors[name]) {
+            setErrors(prev => ({ ...prev, [name]: undefined }));
+        }
+    };
+
+    const formatAccountNumber = (value) => {
+        // Remove all non-digits
+        const digits = value.replace(/\D/g, '');
+
+        // Limit to 16 digits (standard credit card length)
+        const limited = digits.slice(0, 16);
+
+        // Add space every 4 digits
+        const groups = limited.match(/.{1,4}/g);
+        return groups ? groups.join(' ') : limited;
+    };
+
     return (
-      <div style={styles.container}>
-        <h1 style={styles.title}>All Accounts</h1>
-        <p style={styles.description}>Loading your accounts...</p>
-        <div style={styles.placeholder}>
-          <div style={styles.loadingSpinner}></div>
-          <p>Loading accounts...</p>
-        </div>
-      </div>
-    );
-  }
+        <div style={styles.modalOverlay} onClick={onClose}>
+            <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+                <div style={styles.modalHeader}>
+                    <h2 style={styles.modalTitle}>Add Credit Card</h2>
+                    <button onClick={onClose} style={styles.closeButton}>×</button>
+                </div>
 
-  // Error state
-  if (error) {
-    return (
-      <div style={styles.container}>
-        <h1 style={styles.title}>All Accounts</h1>
-        <p style={styles.description}>Error loading accounts</p>
-        <div style={styles.placeholder}>
-          <p>❌ {error}</p>
-          <button onClick={loadAccounts} style={styles.retryButton}>
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.container}>
-      <h1 style={styles.title}>All Accounts</h1>
-      <p style={styles.description}>Click any account to view transactions • Hover for edit/delete options</p>
-
-      {!accounts || accounts.length === 0 ? (
-        <div style={styles.placeholder}>
-          No accounts found
-        </div>
-      ) : (
-        <div style={styles.tableContainer}>
-          <table style={styles.table}>
-            <thead style={styles.tableHead}>
-              <tr>
-                <th style={styles.tableHeader}>Account</th>
-                <th style={styles.tableHeader}>Type</th>
-                <th style={styles.tableHeader}>Balance</th>
-                <th style={styles.tableHeader}>Institution</th>
-                <th style={styles.tableHeader}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((account) => (
-                <tr
-                  key={account.id}
-                  style={styles.tableRow}
-                  onClick={() => editingAccount !== account.id && handleAccountClick(account)}
-                  className="account-row"
-                >
-                  {editingAccount === account.id ? (
-                    // Edit Mode
-                    <>
-                      <td style={styles.tableCell}>
+                <form onSubmit={handleSubmit}>
+                    {/* Account Number */}
+                    <div style={styles.formGroup}>
+                        <label style={styles.label}>
+                            Account Number <span style={styles.required}>*</span>
+                        </label>
                         <input
-                          type="text"
-                          value={editForm.name}
-                          onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                          style={styles.editInput}
-                          placeholder="Account name"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </td>
-                      <td style={styles.tableCell}>
-                        <span style={{
-                          ...styles.accountType,
-                          backgroundColor: getAccountTypeColor(account.type)
-                        }}>
-                          {account.type}
-                        </span>
-                      </td>
-                      <td style={styles.tableCell}>
-                        <input
-                          type="number"
-                          value={editForm.balance}
-                          onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })}
-                          style={styles.editInput}
-                          placeholder="0.00"
-                          step="0.01"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </td>
-                      <td style={styles.tableCell}>
-                        <input
-                          type="text"
-                          value={editForm.institution}
-                          onChange={(e) => setEditForm({ ...editForm, institution: e.target.value })}
-                          style={styles.editInput}
-                          placeholder="Institution"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </td>
-                      <td style={styles.tableCell}>
-                        <div style={styles.actionButtons}>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSaveEdit(account.id);
+                            type="text"
+                            name="accountNumber"
+                            value={formData.accountNumber}
+                            onChange={(e) => {
+                                const formatted = formatAccountNumber(e.target.value);
+                                setFormData(prev => ({ ...prev, accountNumber: formatted }));
                             }}
-                            style={styles.saveButton}
-                          >
-                            💾 Save
-                          </button>
-                          <button
-                            onClick={handleCancelEdit}
+                            placeholder="1234 5678 9012 3456"
+                            maxLength="19"
+                            style={{
+                                ...styles.input,
+                                ...(errors.accountNumber ? styles.inputError : {})
+                            }}
+                        />
+                        {errors.accountNumber && (
+                            <div style={styles.fieldError}>{errors.accountNumber}</div>
+                        )}
+                        <div style={styles.hint}>
+                            {formData.accountNumber.replace(/\s/g, '').length} / 16 digits
+                        </div>
+                    </div>
+
+                    {/* Card Holder Name */}
+                    <div style={styles.formGroup}>
+                        <label style={styles.label}>
+                            Card Holder Name <span style={styles.required}>*</span>
+                        </label>
+                        <input
+                            type="text"
+                            name="cardHolderName"
+                            value={formData.cardHolderName}
+                            onChange={handleChange}
+                            placeholder="John Doe"
+                            style={{
+                                ...styles.input,
+                                ...(errors.cardHolderName ? styles.inputError : {})
+                            }}
+                        />
+                        {errors.cardHolderName && (
+                            <div style={styles.fieldError}>{errors.cardHolderName}</div>
+                        )}
+                    </div>
+
+                    {/* Card Name */}
+                    <div style={styles.formGroup}>
+                        <label style={styles.label}>
+                            Card Name <span style={styles.required}>*</span>
+                        </label>
+                        <input
+                            type="text"
+                            name="name"
+                            value={formData.name}
+                            onChange={handleChange}
+                            placeholder="e.g., Chase Sapphire Preferred"
+                            style={{
+                                ...styles.input,
+                                ...(errors.name ? styles.inputError : {})
+                            }}
+                        />
+                        {errors.name && (
+                            <div style={styles.fieldError}>{errors.name}</div>
+                        )}
+                    </div>
+
+                    {/* Institution */}
+                    <div style={styles.formGroup}>
+                        <label style={styles.label}>Institution</label>
+                        <input
+                            type="text"
+                            name="institution"
+                            value={formData.institution}
+                            onChange={handleChange}
+                            placeholder="e.g., Chase, Capital One"
+                            style={styles.input}
+                        />
+                    </div>
+
+                    {/* Two Column Layout */}
+                    <div style={styles.row}>
+                        {/* Credit Limit */}
+                        <div style={styles.formGroup}>
+                            <label style={styles.label}>
+                                Credit Limit <span style={styles.required}>*</span>
+                            </label>
+                            <div style={styles.inputWrapper}>
+                                <span style={styles.currencySymbol}>$</span>
+                                <input
+                                    type="number"
+                                    name="limit"
+                                    value={formData.limit}
+                                    onChange={handleChange}
+                                    placeholder="5000"
+                                    min="0"
+                                    step="100"
+                                    style={{
+                                        ...styles.inputWithSymbol,
+                                        ...(errors.limit ? styles.inputError : {})
+                                    }}
+                                />
+                            </div>
+                            {errors.limit && (
+                                <div style={styles.fieldError}>{errors.limit}</div>
+                            )}
+                        </div>
+
+                        {/* APR - now using text input with custom handler */}
+                        <div style={styles.formGroup}>
+                            <label style={styles.label}>APR (%)</label>
+                            <input
+                                type="text"
+                                name="apr"
+                                value={formData.apr}
+                                onChange={handleAprChange}
+                                placeholder="18.99"
+                                style={{
+                                    ...styles.input,
+                                    ...(errors.apr ? styles.inputError : {})
+                                }}
+                            />
+                            {errors.apr && (
+                                <div style={styles.fieldError}>{errors.apr}</div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Two Column Layout */}
+                    <div style={styles.row}>
+                        {/* Due Date */}
+                        <div style={styles.formGroup}>
+                            <label style={styles.label}>
+                                Due Date <span style={styles.required}>*</span>
+                            </label>
+                            <input
+                                type="date"
+                                name="dueDate"
+                                value={formData.dueDate}
+                                onChange={handleChange}
+                                style={{
+                                    ...styles.input,
+                                    ...(errors.dueDate ? styles.inputError : {})
+                                }}
+                            />
+                            {errors.dueDate && (
+                                <div style={styles.fieldError}>{errors.dueDate}</div>
+                            )}
+                        </div>
+
+                        {/* Current Balance */}
+                        <div style={styles.formGroup}>
+                            <label style={styles.label}>Current Balance</label>
+                            <div style={styles.inputWrapper}>
+                                <span style={styles.currencySymbol}>$</span>
+                                <input
+                                    type="number"
+                                    name="balance"
+                                    value={formData.balance}
+                                    onChange={handleChange}
+                                    placeholder="0.00"
+                                    min="0"
+                                    step="0.01"
+                                    style={styles.inputWithSymbol}
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Notes */}
+                    <div style={styles.formGroup}>
+                        <label style={styles.label}>Notes (Optional)</label>
+                        <textarea
+                            name="notes"
+                            value={formData.notes}
+                            onChange={handleChange}
+                            placeholder="Add any notes about this card..."
+                            rows="3"
+                            style={styles.textarea}
+                        />
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div style={styles.modalActions}>
+                        <button
+                            type="button"
+                            onClick={onClose}
                             style={styles.cancelButton}
-                          >
-                            ✖ Cancel
-                          </button>
-                        </div>
-                      </td>
-                    </>
-                  ) : (
-                    // View Mode
-                    <>
-                      <td style={styles.tableCell}>{account.name}</td>
-                      <td style={styles.tableCell}>
-                        <span style={{
-                          ...styles.accountType,
-                          backgroundColor: getAccountTypeColor(account.type)
-                        }}>
-                          {account.type}
-                        </span>
-                      </td>
-                      <td style={{
-                        ...styles.tableCell,
-                        ...styles.tableCellBalance,
-                        color: account.balance >= 0 ? '#4ADE80' : '#F87171'
-                      }}>
-                        {formatCurrency(account.balance)}
-                      </td>
-                      <td style={styles.tableCell}>{account.institution || '-'}</td>
-                      <td style={styles.tableCell}>
-                        <div style={styles.actionButtons}>
-                          <button
-                            onClick={(e) => handleEditClick(e, account)}
-                            style={styles.editButton}
-                            title="Edit account"
-                          >
-                            ✏️ Edit
-                          </button>
-                          <button
-                            onClick={(e) => handleDeleteClick(e, account.id)}
-                            style={styles.deleteButton}
-                            title="Delete account"
-                          >
-                            🗑️ Delete
-                          </button>
-                        </div>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                            disabled={isSubmitting}
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            style={styles.saveButton}
+                            disabled={isSubmitting}
+                        >
+                            {isSubmitting ? 'Saving...' : 'Add Credit Card'}
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
-      )}
-    </div>
-  );
+    );
 };
 
-// Add these new styles
 const styles = {
-  loadingSpinner: {
-    width: '40px',
-    height: '40px',
-    border: '4px solid #3B82F6',
-    borderTopColor: 'transparent',
-    borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
-    margin: '0 auto 1rem'
-  },
-  container: {
-    width: '100%'
-  },
-  title: {
-    fontSize: '2rem',
-    fontWeight: 'bold',
-    marginBottom: '0.5rem',
-    color: 'white'
-  },
-  description: {
-    fontSize: '1rem',
-    color: '#9CA3AF',
-    marginBottom: '2rem'
-  },
-  placeholder: {
-    background: '#1F2937',
-    borderRadius: '0.75rem',
-    padding: '3rem',
-    textAlign: 'center',
-    color: '#6B7280',
-    border: '2px dashed #374151',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '1rem'
-  },
-  tableContainer: {
-    background: '#1F2937',
-    borderRadius: '0.75rem',
-    overflow: 'hidden',
-    border: '1px solid #374151'
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse'
-  },
-  tableHead: {
-    background: '#111827'
-  },
-  tableHeader: {
-    padding: '1rem',
-    textAlign: 'left',
-    color: '#9CA3AF',
-    fontWeight: '500',
-    fontSize: '0.875rem',
-    borderBottom: '2px solid #374151'
-  },
-  tableRow: {
-    // borderBottom: '1px solid #374151',
-    // cursor: 'pointer',
-    // transition: 'background 0.2s',
-    // ':hover': {
-    //   background: '#374151'
-    // },
-    // ':last-child': {
-    //   borderBottom: 'none'
-    // }
-  },
-  tableCell: {
-    padding: '1rem',
-    color: '#F3F4F6',
-    fontSize: '0.95rem'
-  },
-  tableCellBalance: {
-    fontWeight: '600'
-  },
-  accountType: {
-    display: 'inline-block',
-    padding: '0.25rem 0.75rem',
-    borderRadius: '9999px',
-    fontSize: '0.75rem',
-    fontWeight: '500',
-    color: 'white',
-    textTransform: 'capitalize'
-  },
-  actionButtons: {
-    display: 'flex',
-    gap: '0.5rem'
-  },
-  editButton: {
-    background: 'none',
-    border: '1px solid #3B82F6',
-    color: '#3B82F6',
-    padding: '0.25rem 0.5rem',
-    borderRadius: '0.25rem',
-    fontSize: '0.75rem',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    ':hover': {
-      background: '#3B82F6',
-      color: 'white'
+    modalOverlay: {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0, 0, 0, 0.7)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000
+    },
+    modalContent: {
+        background: '#1F2937',
+        borderRadius: '1rem',
+        padding: '2rem',
+        width: '90%',
+        maxWidth: '600px',
+        maxHeight: '90vh',
+        overflowY: 'auto'
+    },
+    modalHeader: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '1.5rem'
+    },
+    modalTitle: {
+        fontSize: '1.5rem',
+        fontWeight: 'bold',
+        color: 'white',
+        margin: 0
+    },
+    closeButton: {
+        background: 'none',
+        border: 'none',
+        color: '#9CA3AF',
+        fontSize: '2rem',
+        cursor: 'pointer',
+        lineHeight: 1,
+        padding: '0 0.5rem',
+        ':hover': {
+            color: 'white'
+        }
+    },
+    formGroup: {
+        marginBottom: '1.5rem',
+        flex: 1
+    },
+    row: {
+        display: 'flex',
+        gap: '1rem',
+        marginBottom: '0.5rem'
+    },
+    label: {
+        display: 'block',
+        marginBottom: '0.5rem',
+        color: '#9CA3AF',
+        fontSize: '0.875rem',
+        fontWeight: '500'
+    },
+    required: {
+        color: '#EF4444'
+    },
+    input: {
+        width: '100%',
+        padding: '0.75rem',
+        background: '#111827',
+        border: '1px solid #374151',
+        borderRadius: '0.5rem',
+        color: 'white',
+        fontSize: '1rem',
+        transition: 'all 0.2s',
+        ':focus': {
+            outline: 'none',
+            borderColor: '#3B82F6'
+        }
+    },
+    inputError: {
+        borderColor: '#EF4444'
+    },
+    inputWrapper: {
+        position: 'relative'
+    },
+    currencySymbol: {
+        position: 'absolute',
+        left: '0.75rem',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        color: '#9CA3AF'
+    },
+    inputWithSymbol: {
+        width: '100%',
+        padding: '0.75rem 0.75rem 0.75rem 2rem',
+        background: '#111827',
+        border: '1px solid #374151',
+        borderRadius: '0.5rem',
+        color: 'white',
+        fontSize: '1rem'
+    },
+    textarea: {
+        width: '100%',
+        padding: '0.75rem',
+        background: '#111827',
+        border: '1px solid #374151',
+        borderRadius: '0.5rem',
+        color: 'white',
+        fontSize: '1rem',
+        fontFamily: 'inherit',
+        resize: 'vertical'
+    },
+    fieldError: {
+        color: '#EF4444',
+        fontSize: '0.75rem',
+        marginTop: '0.25rem'
+    },
+    hint: {
+        color: '#9CA3AF',
+        fontSize: '0.75rem',
+        marginTop: '0.25rem',
+        textAlign: 'right'
+    },
+    modalActions: {
+        display: 'flex',
+        gap: '1rem',
+        marginTop: '2rem'
+    },
+    saveButton: {
+        flex: 2,
+        padding: '0.75rem',
+        background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.5rem',
+        fontSize: '1rem',
+        fontWeight: '600',
+        cursor: 'pointer',
+        transition: 'all 0.2s',
+        ':hover': {
+            transform: 'translateY(-2px)',
+            boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)'
+        },
+        ':disabled': {
+            opacity: 0.5,
+            cursor: 'not-allowed'
+        }
+    },
+    cancelButton: {
+        flex: 1,
+        padding: '0.75rem',
+        background: '#4B5563',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.5rem',
+        fontSize: '1rem',
+        fontWeight: '500',
+        cursor: 'pointer',
+        transition: 'all 0.2s',
+        ':hover': {
+            background: '#6B7280'
+        },
+        ':disabled': {
+            opacity: 0.5,
+            cursor: 'not-allowed'
+        }
     }
-  },
-  deleteButton: {
-    background: 'none',
-    border: '1px solid #EF4444',
-    color: '#EF4444',
-    padding: '0.25rem 0.5rem',
-    borderRadius: '0.25rem',
-    fontSize: '0.75rem',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    ':hover': {
-      background: '#EF4444',
-      color: 'white'
-    }
-  },
-  editInput: {
-    width: '100%',
-    padding: '0.5rem',
-    background: '#111827',
-    border: '1px solid #3B82F6',
-    borderRadius: '0.25rem',
-    color: 'white',
-    fontSize: '0.95rem'
-  },
-  saveButton: {
-    background: '#10B981',
-    border: 'none',
-    color: 'white',
-    padding: '0.25rem 0.5rem',
-    borderRadius: '0.25rem',
-    fontSize: '0.75rem',
-    cursor: 'pointer',
-    marginRight: '0.25rem'
-  },
-  cancelButton: {
-    background: '#6B7280',
-    border: 'none',
-    color: 'white',
-    padding: '0.25rem 0.5rem',
-    borderRadius: '0.25rem',
-    fontSize: '0.75rem',
-    cursor: 'pointer'
-  },
-  // New styles for loading and error states
-  loadingSpinner: {
-    width: '40px',
-    height: '40px',
-    border: '4px solid #3B82F6',
-    borderTopColor: 'transparent',
-    borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
-    margin: '0 auto 1rem'
-  },
-  retryButton: {
-    padding: '0.5rem 1rem',
-    background: '#3B82F6',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    cursor: 'pointer',
-    marginTop: '1rem',
-    fontSize: '0.875rem'
-  }
 };
 
-export default AllAccountsView;
+export default AddCreditCardModal;
