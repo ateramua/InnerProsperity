@@ -20,11 +20,7 @@ function CreditCardManager({
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
 
-<<<<<<< HEAD
-  // Debug: log cards whenever they change
-=======
   // Debug: log cards when they change
->>>>>>> main
   useEffect(() => {
     if (cards.length > 0) {
       console.table(cards.map(c => ({
@@ -39,23 +35,20 @@ function CreditCardManager({
   const handleSaveCard = async (cardData) => {
     if (onAddCard) {
       const result = await onAddCard(cardData);
-      if (result?.success) setShowAddModal(false);
+      if (result?.success) {
+        setShowAddModal(false);
+      }
       return result;
     }
   };
 
   const handleOpenEditModal = (card) => {
+    console.log('Opening edit modal for card:', card);
     setEditingCard(card);
     setShowEditModal(true);
   };
 
   const handleSaveEdit = async (cardId, updatedData) => {
-<<<<<<< HEAD
-    if (!updatedData) return;
-    if (onUpdateCard) {
-      const result = await onUpdateCard(cardId, updatedData);
-      if (result?.success) {
-=======
     console.log('📥 CreditCardManager handleSaveEdit received:', cardId, updatedData);
     if (!updatedData) {
       console.error('❌ updatedData is undefined in handleSaveEdit');
@@ -65,7 +58,6 @@ function CreditCardManager({
       const result = await onUpdateCard(cardId, updatedData);
       if (result?.success) {
         // Immediately update the local editingCard with the new data
->>>>>>> main
         setEditingCard(prev => prev ? { ...prev, ...updatedData } : null);
         setShowEditModal(false);
         setEditingCard(null);
@@ -74,10 +66,7 @@ function CreditCardManager({
     }
   };
 
-<<<<<<< HEAD
-=======
   // Calculate card statistics
->>>>>>> main
   const calculateCardStats = (card) => {
     const cardTransactions = transactions.filter(t => t.account_id === card.id);
     const now = new Date();
@@ -108,6 +97,7 @@ function CreditCardManager({
     };
   };
 
+  // Filter cards based on selection
   const getFilteredCards = () => {
     return cards.filter(card => {
       const stats = calculateCardStats(card);
@@ -142,8 +132,15 @@ function CreditCardManager({
         date: new Date().toISOString().split('T')[0],
         accountId: selectedCard
       });
-      if (result?.success) setShowPaymentModal(false);
+      if (result?.success) {
+        setShowPaymentModal(false);
+      }
     }
+  };
+
+  const handleEditClick = (e, card) => {
+    e.stopPropagation();
+    handleOpenEditModal(card);
   };
 
   const formatCurrency = (amount) => {
@@ -467,6 +464,7 @@ function CreditCardManager({
   );
 }
 
+// Full styles object (unchanged from your original)
 const styles = {
   container: {
     padding: '2rem',

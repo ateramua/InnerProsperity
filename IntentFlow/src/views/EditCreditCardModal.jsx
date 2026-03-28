@@ -17,7 +17,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
 
   // Load card data when modal opens
   useEffect(() => {
-    console.log('Card updated:', card);
+    console.log('EditCreditCardModal useEffect - card:', card);
     if (card && isOpen) {
       setFormData({
         name: card.name || '',
@@ -86,7 +86,9 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
       return;
     }
 
-    if (!validateForm()) return;
+    if (!validateForm()) {
+      return;
+    }
 
     setIsSubmitting(true);
 
