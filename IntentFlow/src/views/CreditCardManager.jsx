@@ -467,11 +467,6 @@ function CreditCardManager({
   );
 }
 
-<<<<<<< HEAD
-// Styles object – unchanged from your original file
-=======
-// Full styles object (unchanged from your original)
->>>>>>> main
 const styles = {
   container: {
     padding: '2rem',
