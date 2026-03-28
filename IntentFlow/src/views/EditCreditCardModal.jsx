@@ -24,7 +24,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
         name: card.name || '',
         institution: card.institution || '',
         limit: card.credit_limit || card.limit || '',
-        apr: card.interest_rate || card.apr || '',
+        apr: (card.interest_rate || card.apr || '').toString(),
         dueDate: card.due_date || card.dueDate || '',
         balance: Math.abs(card.balance || 0),
         cardHolderName: card.cardHolderName || '',
@@ -35,6 +35,27 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
   }, [card, isOpen]);
 
   if (!isOpen) return null;
+  const handleAprChange = (e) => {
+  let value = e.target.value;
+
+  // Allow empty string
+  if (value === '') {
+    setFormData(prev => ({ ...prev, apr: '' }));
+    if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+    return;
+  }
+
+  // Replace comma with period (handles European decimal format)
+  value = value.replace(',', '.');
+
+  // Allow only digits and at most one decimal point
+  const regex = /^\d*\.?\d*$/;
+  if (regex.test(value)) {
+    setFormData(prev => ({ ...prev, apr: value }));
+    if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+  }
+  // If invalid character is typed, just ignore it (no update)
+};
 
   const validateForm = () => {
     const newErrors = {};
@@ -230,14 +251,11 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
             <div style={styles.formGroup}>
               <label style={styles.label}>APR (%)</label>
               <input
-                type="number"
+                type="text"
                 name="apr"
                 value={formData.apr}
-                onChange={handleChange}
+                onChange={handleAprChange}   // <-- use the new handler
                 placeholder="18.99"
-                min="0"
-                max="100"
-                step="0.01"
                 style={{
                   ...styles.input,
                   ...(errors.apr ? styles.inputError : {})
