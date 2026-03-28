@@ -17,6 +17,7 @@ const EditCreditCardModal = ({ isOpen, onClose, onSave, onDelete, card }) => {
 
   // Load card data when modal opens
   useEffect(() => {
+    console.log('Card updated:', card);
     if (card && isOpen) {
       setFormData({
         name: card.name || '',

@@ -1,5 +1,4 @@
-// src/views/CreditCardManager.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import AddCreditCardModal from './AddCreditCardModal';
 import EditCreditCardModal from './EditCreditCardModal';
 
@@ -7,14 +6,12 @@ function CreditCardManager({
   cards = [],
   transactions = [],
   onMakePayment,
-  onUpdateCard,        // renamed prop
+  onUpdateCard,
   onAddCard,
   onViewTransactions,
   onOpenPlanner,
   onDeleteCard
 }) {
-  console.log('CreditCardManager props - onUpdateCard type:', typeof onUpdateCard);
-
   const [selectedCard, setSelectedCard] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState({});
@@ -23,31 +20,37 @@ function CreditCardManager({
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
 
+  // Debug: log cards whenever they change
+  useEffect(() => {
+    if (cards.length > 0) {
+      console.table(cards.map(c => ({
+        id: c.id,
+        name: c.name,
+        interest_rate: c.interest_rate,
+        apr: c.apr,
+      })));
+    }
+  }, [cards]);
+
   const handleSaveCard = async (cardData) => {
     if (onAddCard) {
       const result = await onAddCard(cardData);
-      if (result?.success) {
-        setShowAddModal(false);
-      }
+      if (result?.success) setShowAddModal(false);
       return result;
     }
   };
 
   const handleOpenEditModal = (card) => {
-    console.log('Opening edit modal for card:', card);
     setEditingCard(card);
     setShowEditModal(true);
   };
 
   const handleSaveEdit = async (cardId, updatedData) => {
-    console.log('📥 CreditCardManager handleSaveEdit received:', cardId, updatedData);
-    if (!updatedData) {
-      console.error('❌ updatedData is undefined in handleSaveEdit');
-      return;
-    }
-    if (onUpdateCard) {                     // ✅ use onUpdateCard, not onEditCard
+    if (!updatedData) return;
+    if (onUpdateCard) {
       const result = await onUpdateCard(cardId, updatedData);
       if (result?.success) {
+        setEditingCard(prev => prev ? { ...prev, ...updatedData } : null);
         setShowEditModal(false);
         setEditingCard(null);
       }
@@ -55,7 +58,6 @@ function CreditCardManager({
     }
   };
 
-  // Calculate card statistics (unchanged)
   const calculateCardStats = (card) => {
     const cardTransactions = transactions.filter(t => t.account_id === card.id);
     const now = new Date();
@@ -68,7 +70,10 @@ function CreditCardManager({
     const today = new Date();
     const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
     const utilization = (Math.abs(card.balance) / (card.limit || 1000)) * 100;
-    const monthlyRate = (card.apr || 18.99) / 100 / 12;
+
+    // Use interest_rate, fallback to apr, then default
+    const aprValue = card.interest_rate ?? card.apr ?? 18.99;
+    const monthlyRate = aprValue / 100 / 12;
     const interestIfNotPaid = Math.abs(card.balance) * monthlyRate;
 
     return {
@@ -79,11 +84,10 @@ function CreditCardManager({
       isOverdue: daysUntilDue < 0,
       utilization,
       utilizationColor: utilization > 80 ? '#EF4444' : utilization > 50 ? '#F59E0B' : '#10B981',
-      interestIfNotPaid: Math.round(interestIfNotPaid * 100) / 100
+      interestIfNotPaid: Math.round(interestIfNotPaid * 100) / 100,
     };
   };
 
-  // Filter cards based on selection
   const getFilteredCards = () => {
     return cards.filter(card => {
       const stats = calculateCardStats(card);
@@ -118,15 +122,8 @@ function CreditCardManager({
         date: new Date().toISOString().split('T')[0],
         accountId: selectedCard
       });
-      if (result?.success) {
-        setShowPaymentModal(false);
-      }
+      if (result?.success) setShowPaymentModal(false);
     }
-  };
-
-  const handleEditClick = (e, card) => {
-    e.stopPropagation();
-    handleOpenEditModal(card);
   };
 
   const formatCurrency = (amount) => {
@@ -159,7 +156,7 @@ function CreditCardManager({
 
   return (
     <div style={styles.container}>
-      {/* Header with Navigation */}
+      {/* Header */}
       <div style={styles.header}>
         <div>
           <h2 style={styles.title}>💳 Credit Card Dashboard</h2>
@@ -255,7 +252,7 @@ function CreditCardManager({
                 }}
                 onClick={() => setSelectedCard(isSelected ? null : card.id)}
               >
-                {/* Edit Button (opens modal) */}
+                {/* Edit Button */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -303,11 +300,14 @@ function CreditCardManager({
                 {/* Quick Stats */}
                 <div style={styles.quickStats}>
                   <div style={styles.stat}><span>Min Payment</span><strong>{formatCurrency(stats.minPayment)}</strong></div>
-                  <div style={styles.stat}><span>APR</span><strong>{card.apr || 18.99}%</strong></div>
+                  <div style={styles.stat}>
+                    <span>APR</span>
+                    <strong>{card.interest_rate ?? card.apr ?? 18.99}%</strong>
+                  </div>
                   <div style={styles.stat}><span>Interest</span><strong style={{ color: '#F59E0B' }}>{formatCurrency(stats.interestIfNotPaid)}/mo</strong></div>
                 </div>
 
-                {/* Action Buttons (no modals inside) */}
+                {/* Action Buttons */}
                 <div style={styles.cardActions}>
                   <button
                     onClick={(e) => { e.stopPropagation(); handlePayment(card.id); }}
@@ -428,7 +428,7 @@ function CreditCardManager({
         </div>
       )}
 
-      {/* Single Edit Credit Card Modal */}
+      {/* Edit Credit Card Modal */}
       <EditCreditCardModal
         isOpen={showEditModal}
         onClose={() => { setShowEditModal(false); setEditingCard(null); }}
@@ -447,7 +447,7 @@ function CreditCardManager({
   );
 }
 
-// Full styles object – includes all dashboard and modal styles
+// Styles object – unchanged from your original file
 const styles = {
   container: {
     padding: '2rem',

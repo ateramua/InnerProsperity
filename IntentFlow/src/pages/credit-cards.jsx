@@ -11,6 +11,7 @@ export default function CreditCardsPage() {
   const [loading, setLoading] = useState(true);
   const [editingCard, setEditingCard] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0); // 👈 force refresh key
 
   useEffect(() => {
     loadData();
@@ -19,13 +20,11 @@ export default function CreditCardsPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      // Load credit cards (accounts with type='credit')
       const cardsResult = await window.electronAPI.getCreditCards();
       if (cardsResult.success) {
         setCards(cardsResult.data);
+        setRefreshKey(prev => prev + 1); // 👈 trigger re‑mount of CreditCardManager
       }
-
-      // Load transactions for card activity
       const transactionsResult = await window.electronAPI.getTransactions();
       if (transactionsResult.success) {
         setTransactions(transactionsResult.data);
@@ -37,9 +36,24 @@ export default function CreditCardsPage() {
     }
   };
 
-  const handleUpdateCard = async (cardData) => {
+  const handleAddCard = async (cardData) => {
     try {
-      const result = await window.electronAPI.updateAccount(editingCard.id, cardData);
+      const result = await window.electronAPI.createAccount(cardData);
+      if (result.success) {
+        await loadData();
+        setShowAddForm(false);
+      } else {
+        alert('Failed to add card: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Error adding card:', error);
+      alert('Failed to add card');
+    }
+  };
+
+  const handleUpdateCard = async (cardId, updatedData) => {
+    try {
+      const result = await window.electronAPI.updateAccount(cardId, updatedData);
       if (result.success) {
         await loadData();
         setEditingCard(null);
@@ -54,7 +68,6 @@ export default function CreditCardsPage() {
 
   const handleDeleteCard = async (cardId) => {
     try {
-      console.log('Deleting card:', cardId, 'with userId:', userId);
       const result = await window.electronAPI.deleteAccount(cardId);
       if (result.success) {
         await loadData();
@@ -70,41 +83,37 @@ export default function CreditCardsPage() {
 
   const handleMakePayment = async (payment) => {
     try {
-      // Create a transaction for the payment (money leaving checking)
       const transaction = {
         date: payment.date,
         payee: 'Credit Card Payment',
-        amount: -payment.amount, // Negative because it's a payment from checking
-        categoryId: 10, // Credit Card Payment category
+        amount: -payment.amount,
+        categoryId: 10,
         accountId: payment.accountId,
         memo: `Payment to credit card`,
-        cleared: true
+        cleared: true,
       };
 
       const result = await window.electronAPI.addTransaction(transaction);
 
       if (result.success) {
-        // Also record the payment on the credit card account (debt decreases)
         const creditTransaction = {
           date: payment.date,
           payee: 'Payment Received',
-          amount: payment.amount, // Positive because it reduces debt
+          amount: payment.amount,
           categoryId: 10,
           accountId: payment.cardId,
           memo: `Payment received`,
-          cleared: true
+          cleared: true,
         };
 
         await window.electronAPI.addTransaction(creditTransaction);
 
-        // Update the card balance
-        const cardToUpdate = cards.find(c => c.id === payment.cardId);
+        const cardToUpdate = cards.find((c) => c.id === payment.cardId);
         if (cardToUpdate) {
-          const newBalance = cardToUpdate.balance + payment.amount; // Adding positive amount reduces negative balance
+          const newBalance = cardToUpdate.balance + payment.amount;
           await window.electronAPI.updateAccount(payment.cardId, { balance: newBalance });
         }
 
-        // Refresh data
         await loadData();
         return { success: true };
       }
@@ -115,6 +124,14 @@ export default function CreditCardsPage() {
     }
   };
 
+  const handleViewTransactions = (cardId) => {
+    router.push(`/accounts/${cardId}`);
+  };
+
+  const handleOpenPlanner = () => {
+    router.push('/planner');
+  };
+
   if (loading) {
     return (
       <div style={{
@@ -123,7 +140,7 @@ export default function CreditCardsPage() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'white'
+        color: 'white',
       }}>
         Loading credit cards...
       </div>
@@ -134,22 +151,21 @@ export default function CreditCardsPage() {
     <div style={{
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
-      color: 'white'
+      color: 'white',
     }}>
-      {/* Navigation Header */}
       <header style={{
         background: 'linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%)',
         padding: '1rem 1.5rem',
         position: 'sticky',
         top: 0,
-        zIndex: 10
+        zIndex: 10,
       }}>
         <div style={{
           maxWidth: '1200px',
           margin: '0 auto',
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'center'
+          alignItems: 'center',
         }}>
           <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Money Manager</h1>
           <nav style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
@@ -172,28 +188,26 @@ export default function CreditCardsPage() {
       </header>
 
       <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
-        {/* Pass the setShowAddForm to CreditCardManager so the "Add Credit Card" button inside it works */}
         <CreditCardManager
-          cards={creditCards}
+          key={refreshKey} // 👈 forces re‑mount when refreshKey changes
+          cards={cards}
           transactions={transactions}
           onMakePayment={handleMakePayment}
-          onUpdateCard={handleEditCard}     // <-- renamed
+          onUpdateCard={handleUpdateCard}
           onDeleteCard={handleDeleteCard}
-          onAddCard={() => onNavigate('credit-add')}
+          onAddCard={() => setShowAddForm(true)}
           onViewTransactions={handleViewTransactions}
           onOpenPlanner={handleOpenPlanner}
         />
 
-        {/* Add Credit Card Modal */}
         {showAddForm && (
           <AccountEditor
-            account={{ type: 'credit' }} // Pre-select credit card type
+            account={{ type: 'credit' }}
             onSave={handleAddCard}
             onClose={() => setShowAddForm(false)}
           />
         )}
 
-        {/* Edit Credit Card Modal */}
         {editingCard && (
           <AccountEditor
             account={editingCard}
