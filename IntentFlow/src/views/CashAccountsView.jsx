@@ -1,7 +1,6 @@
-// src/views/CashAccountsView.jsx
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import EditAccountModal from './EditAccountModal'; // <-- ADD THIS IMPORT
+import EditAccountModal from './EditAccountModal';
 
 const CashAccountsView = ({ accounts: propAccounts }) => {
   const router = useRouter();
@@ -9,13 +8,13 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showNewAccountModal, setShowNewAccountModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);      // <-- ADD
-  const [editingAccount, setEditingAccount] = useState(null);     // <-- ADD
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingAccount, setEditingAccount] = useState(null);
   const [newAccountData, setNewAccountData] = useState({
     name: '',
     type: 'checking',
     account_type_category: 'budget',
-    balance: 0,
+    balance: '',
     currency: 'USD',
     institution: ''
   });
@@ -43,49 +42,48 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     loadAccounts();
   }, [propAccounts]);
 
-const loadAccounts = async (force = false) => {
-  console.log('💰 CashAccountsView - Loading accounts...');
-  setLoading(true);
+  const loadAccounts = async (force = false) => {
+    console.log('💰 CashAccountsView - Loading accounts...');
+    setLoading(true);
 
-  try {
-    // If we have propAccounts, and not forcing a refresh, use them.
-    if (!force && propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
-      console.log('💰 Using propAccounts:', propAccounts.length);
-      const cashAccounts = propAccounts.filter(a =>
-        a.type === 'checking' || a.type === 'savings'
-      );
-      setAccounts(cashAccounts);
-      setLoading(false);
-      return;
-    }
+    try {
+      // If we have propAccounts, and not forcing a refresh, use them.
+      if (!force && propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
+        console.log('💰 Using propAccounts:', propAccounts.length);
+        const cashAccounts = propAccounts.filter(a =>
+          a.type === 'checking' || a.type === 'savings'
+        );
+        setAccounts(cashAccounts);
+        setLoading(false);
+        return;
+      }
 
-    console.log('💰 No propAccounts or forced refresh, fetching directly...');
-    // ... rest of the direct fetch logic ...
-    const userResult = await window.electronAPI.getCurrentUser();
-    if (!userResult?.success || !userResult?.data) {
-      console.error('❌ No user logged in');
-      setError('Please log in to view accounts');
+      console.log('💰 No propAccounts or forced refresh, fetching directly...');
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        console.error('❌ No user logged in');
+        setError('Please log in to view accounts');
+        setLoading(false);
+        return;
+      }
+      const userId = userResult.data.id;
+      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+      if (accountsResult?.success) {
+        const allAccounts = accountsResult.data || [];
+        const cashAccounts = allAccounts.filter(a =>
+          a.type === 'checking' || a.type === 'savings'
+        );
+        setAccounts(cashAccounts);
+      } else {
+        setError(accountsResult?.error || 'Failed to load accounts');
+      }
+    } catch (error) {
+      console.error('❌ Error loading accounts:', error);
+      setError(error.message);
+    } finally {
       setLoading(false);
-      return;
     }
-    const userId = userResult.data.id;
-    const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-    if (accountsResult?.success) {
-      const allAccounts = accountsResult.data || [];
-      const cashAccounts = allAccounts.filter(a =>
-        a.type === 'checking' || a.type === 'savings'
-      );
-      setAccounts(cashAccounts);
-    } else {
-      setError(accountsResult?.error || 'Failed to load accounts');
-    }
-  } catch (error) {
-    console.error('❌ Error loading accounts:', error);
-    setError(error.message);
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   const handleCreateAccount = async () => {
     try {
@@ -108,11 +106,11 @@ const loadAccounts = async (force = false) => {
       const accountData = {
         name: newAccountData.name.trim(),
         type: newAccountData.type,
-        account_type_category: 'budget',
-        balance: parseFloat(newAccountData.balance) || 0,
+        accountTypeCategory: 'budget',  // Changed from account_type_category to match service
+        balance: parseFloat(newAccountData.balance) || '',
         currency: 'USD',
         institution: newAccountData.institution.trim() || null,
-        user_id: userId
+        userId: userId  // Changed from user_id to userId
       };
 
       console.log('📝 Creating account with data:', accountData);
@@ -127,12 +125,13 @@ const loadAccounts = async (force = false) => {
           name: '',
           type: 'checking',
           account_type_category: 'budget',
-          balance: 0,
+          balance: '',
           currency: 'USD',
           institution: ''
         });
 
-        await loadAccounts();
+        // Force a fresh fetch from API, ignore propAccounts
+        await loadAccounts(true);
         window.dispatchEvent(new Event('accounts-changed'));
         alert('✅ Account created successfully!');
       } else {
@@ -145,12 +144,13 @@ const loadAccounts = async (force = false) => {
     }
   };
 
-  // <-- ADD: Edit handlers
+  // Edit handlers
   const handleEditClick = (e, account) => {
     e.stopPropagation(); // prevent row click navigation
     setEditingAccount(account);
     setShowEditModal(true);
   };
+
   const handleSaveEdit = async (accountId, updatedData) => {
     try {
       // Get current user
@@ -172,7 +172,7 @@ const loadAccounts = async (force = false) => {
         alert('✅ Account updated successfully');
         window.dispatchEvent(new CustomEvent('accounts-updated'));
         // Refresh the list
-        loadAccounts();
+        await loadAccounts(true);
       } else {
         alert('❌ Error updating account: ' + result.error);
       }
@@ -181,7 +181,6 @@ const loadAccounts = async (force = false) => {
       alert('❌ Error updating account: ' + error.message);
     }
   };
-
 
   const handleDeleteAccount = async (accountId) => {
     if (!window.confirm('Are you sure you want to delete this account? This action cannot be undone.')) {
@@ -196,9 +195,12 @@ const loadAccounts = async (force = false) => {
       }
       const userId = userResult.data.id;
 
-      const result = await window.electronAPI['accounts:delete'](accountId, userId);
+      // Fix: Use deleteAccount instead of accounts:delete
+      const result = await window.electronAPI.deleteAccount(accountId, userId);
+      
+
       if (result.success) {
-        await loadAccounts();
+        await loadAccounts(true);
         window.dispatchEvent(new Event('accounts-changed'));
         alert('✅ Account deleted successfully');
       } else {
@@ -242,7 +244,7 @@ const loadAccounts = async (force = false) => {
       <div style={styles.container}>
         <div style={styles.errorState}>
           <p>❌ {error}</p>
-          <button onClick={loadAccounts} style={styles.retryButton}>
+          <button onClick={() => loadAccounts(true)} style={styles.retryButton}>
             Retry
           </button>
         </div>
@@ -272,10 +274,9 @@ const loadAccounts = async (force = false) => {
             {accounts.filter(a => a.type === 'checking').map(account => (
               <div
                 key={account.id}
-                style={styles.accountRow} // position relative added via styles
+                style={styles.accountRow}
                 onClick={() => handleAccountClick(account.id)}
               >
-                {/* <-- ADD: Edit button */}
                 <button
                   onClick={(e) => handleEditClick(e, account)}
                   style={styles.editButton}
@@ -313,10 +314,9 @@ const loadAccounts = async (force = false) => {
             {accounts.filter(a => a.type === 'savings').map(account => (
               <div
                 key={account.id}
-                style={styles.accountRow} // position relative added via styles
+                style={styles.accountRow}
                 onClick={() => handleAccountClick(account.id)}
               >
-                {/* <-- ADD: Edit button */}
                 <button
                   onClick={(e) => handleEditClick(e, account)}
                   style={styles.editButton}
@@ -419,7 +419,7 @@ const loadAccounts = async (force = false) => {
         </div>
       )}
 
-      {/* <-- ADD: Edit Modal */}
+      {/* Edit Modal */}
       <EditAccountModal
         isOpen={showEditModal}
         onClose={() => {
@@ -427,6 +427,7 @@ const loadAccounts = async (force = false) => {
           setEditingAccount(null);
         }}
         onSave={handleSaveEdit}
+        onDelete={handleDeleteAccount}  //
         account={editingAccount}
       />
     </div>
@@ -494,7 +495,7 @@ const styles = {
     borderBottom: '1px solid #374151',
     cursor: 'pointer',
     transition: 'background 0.2s',
-    position: 'relative', // <-- ADD for edit button positioning
+    position: 'relative',
     ':hover': {
       background: '#374151'
     }
@@ -646,7 +647,6 @@ const styles = {
     fontWeight: '600',
     cursor: 'pointer'
   },
-  // <-- ADD: edit button style
   editButton: {
     position: 'absolute',
     right: '1rem',

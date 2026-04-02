@@ -26,7 +26,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   console.log('🔍 ViewContainer received currentView:', currentView);
   console.log('🔍 Available views: "accounts", "allAccounts", "creditCards", etc.');
   console.log('🔍 accounts length:', accounts?.length);
-  console.log('🔥 PRODUCTION: handleSaveAccount called with data:', data);
 
   // Modal state
   const [showAccountModal, setShowAccountModal] = useState(false);
@@ -73,25 +72,15 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   };
 
   // Load loans
+  // In ViewContainer.jsx, update the loadLoans function
   const loadLoans = async () => {
     console.log('📥 loadLoans started');
-    if (typeof setIsLoadingLoans !== 'function') {
-      console.error('❌ setIsLoadingLoans is not a function – cannot proceed');
-      return;
-    }
     setIsLoadingLoans(true);
     try {
-      if (!window.electronAPI?.getCurrentUser) {
-        throw new Error('electronAPI.getCurrentUser is not available');
-      }
-      if (!window.electronAPI?.getAccountsSummary) {
-        throw new Error('electronAPI.getAccountsSummary is not available');
-      }
-
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data?.id) {
-        console.log('❌ No user logged in or invalid user data');
-        if (typeof setLoans === 'function') setLoans([]);
+        console.log('❌ No user logged in');
+        setLoans([]);
         return;
       }
 
@@ -103,60 +92,53 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         loanAccounts = accountsResult.data.filter(acc => acc && acc.type === 'loan');
         console.log(`💰 Found ${loanAccounts.length} loans`);
       } else {
-        console.error('❌ Failed to load accounts or invalid response:', accountsResult?.error);
-        if (Array.isArray(accountsResult?.data)) {
-          loanAccounts = accountsResult.data.filter(acc => acc && acc.type === 'loan');
-          console.log(`💰 Found ${loanAccounts.length} loans from fallback data`);
-        } else {
-          if (typeof setLoans === 'function') setLoans([]);
-          return;
-        }
+        console.error('❌ Failed to load accounts:', accountsResult?.error);
+        setLoans([]);
+        return;
       }
 
       const mappedLoans = loanAccounts.map(acc => {
         if (!acc || typeof acc !== 'object') return null;
-        const balance = Math.abs(parseFloat(acc.balance) || 0);
-        const originalBalance = acc.original_balance !== undefined && acc.original_balance !== null
-          ? Math.abs(parseFloat(acc.original_balance))
-          : balance;
-        const interestRate = parseFloat(acc.interest_rate) || 5.0;
-        const term = parseInt(acc.term_months, 10) || 60;
-        const remainingPayments = parseInt(acc.remaining_payments, 10) || term;
-        const monthlyPayment = parseFloat(acc.payment_amount) || Math.max(25, balance * 0.02);
-        const nextPaymentDate = acc.next_payment_date || acc.due_date || null;
 
         return {
-          id: acc.id || `temp-${Date.now()}-${Math.random()}`,
+          id: acc.id,
           name: acc.name || 'Unnamed Loan',
-          type: acc.loan_type || 'personal',
-          lender: acc.institution || 'Unknown',
-          originalBalance,
-          balance,
-          interestRate,
-          term,
-          remainingPayments,
-          monthlyPayment,
-          nextPaymentDate,
-          userId: acc.user_id || null
+          type: acc.type || 'loan',
+          balance: Math.abs(parseFloat(acc.balance) || 0),
+          original_balance: acc.original_balance ? Math.abs(parseFloat(acc.original_balance)) : null,
+          interest_rate: parseFloat(acc.interest_rate) || null,
+          interestRate: parseFloat(acc.interest_rate) || null,
+          monthly_payment: parseFloat(acc.payment_amount) || parseFloat(acc.monthly_payment) || null,
+          monthlyPayment: parseFloat(acc.payment_amount) || parseFloat(acc.monthly_payment) || null,
+          term_months: parseInt(acc.term_months, 10) || null,
+          due_date: acc.due_date || null,
+          institution: acc.institution || '',
+          lender: acc.institution || '',
+          account_number: acc.account_number || '',  // ← Include account number
+          account_holder_name: acc.account_holder_name || '',  // ← Include account holder name
+          notes: acc.notes || '',
+          loan_type: acc.loan_type || 'personal',
+          userId: acc.user_id
         };
       }).filter(loan => loan !== null);
 
-      if (typeof setLoans === 'function') {
-        setLoans(mappedLoans);
-      } else {
-        console.error('❌ setLoans is not a function');
-      }
+      setLoans(mappedLoans);
+      console.log('✅ Loans loaded with account fields:', mappedLoans.map(l => ({
+        name: l.name,
+        account_number: l.account_number,
+        account_holder_name: l.account_holder_name
+      })));
     } catch (error) {
       console.error('❌ Unexpected error in loadLoans:', error);
-      if (typeof setLoans === 'function') {
-        setLoans([]);
-      }
+      setLoans([]);
     } finally {
-      if (typeof setIsLoadingLoans === 'function') {
-        setIsLoadingLoans(false);
-      }
-      console.log('🏁 loadLoans finished');
+      setIsLoadingLoans(false);
     }
+  };
+  // Refresh loans function - ensures state is updated
+  const refreshLoans = async () => {
+    console.log('🔄 Manually refreshing loans...');
+    await loadLoans();
   };
 
   // Load credit cards when entering credit-related views
@@ -176,7 +158,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       currentView === 'loan-strategist' ||
       currentView === 'loan-add' ||
       currentView.startsWith('account-')) {
-      loadLoans();
+      refreshLoans();
     }
   }, [currentView]);
 
@@ -185,18 +167,25 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
     const handleAccountsUpdated = () => {
       console.log('🔄 ViewContainer: accounts-updated event received, refreshing credit cards and loans');
       loadCreditCards();
-      loadLoans();
+      refreshLoans();
     };
     window.addEventListener('accounts-updated', handleAccountsUpdated);
     return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
   }, []);
 
   // Modal handlers for loans
-  const handleAddLoanClick = () => {
-    setModalMode('add');
-    setEditingAccount(null);
-    setModalDefaultType('loan');
-    setShowAccountModal(true);
+  const handleAddLoanClick = (loanData) => {
+    console.log('📝 handleAddLoanClick called with loanData:', loanData);
+    if (loanData) {
+      // If loanData is provided (from LoanManager's direct creation), refresh
+      refreshLoans();
+    } else {
+      // Otherwise, open the modal for manual entry
+      setModalMode('add');
+      setEditingAccount(null);
+      setModalDefaultType('loan');
+      setShowAccountModal(true);
+    }
   };
 
   const handleEditLoanClick = (loan) => {
@@ -208,7 +197,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Unified account save handler (for modal)
   const handleSaveAccount = async (data, accountId) => {
     try {
-console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data);
+      console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data);
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         alert('You must be logged in');
@@ -218,12 +207,12 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
 
       if (accountId) {
         // EDIT mode – remove type from updates (account type should not change)
-        const { type, ...updateData } = data;   // <-- excludes type
+        const { type, ...updateData } = data;
         const result = await window.electronAPI.updateAccount(accountId, userId, updateData);
         if (result.success) {
           // After update, refresh lists based on original type (from data)
           if (data.type === 'credit') await loadCreditCards();
-          else if (data.type === 'loan') await loadLoans();
+          else if (data.type === 'loan') await refreshLoans();
           window.dispatchEvent(new CustomEvent('accounts-updated'));
           alert('✅ Account updated successfully');
         } else {
@@ -235,7 +224,7 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
         const result = await window.electronAPI.createAccount(accountData);
         if (result.success) {
           if (data.type === 'credit') await loadCreditCards();
-          else if (data.type === 'loan') await loadLoans();
+          else if (data.type === 'loan') await refreshLoans();
           window.dispatchEvent(new CustomEvent('accounts-updated'));
           alert('✅ Account added successfully');
           if (onNavigate && result.data?.id) {
@@ -284,42 +273,41 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
   };
 
   const handleDeleteAccount = async (account) => {
-  if (!account || !account.id) return;
-  const confirmDelete = window.confirm(`Are you sure you want to delete "${account.name}"? This action cannot be undone.`);
-  if (!confirmDelete) return;
+    if (!account || !account.id) return;
+    const confirmDelete = window.confirm(`Are you sure you want to delete "${account.name}"? This action cannot be undone.`);
+    if (!confirmDelete) return;
 
-  try {
-    if (account.type === 'credit') {
-      await handleDeleteCard(account.id);
-    } else if (account.type === 'loan') {
-      await handleDeleteLoan(account.id);
-    } else {
-      // checking, savings, or other
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return;
-      }
-      const userId = userResult.data.id;
-      const result = await window.electronAPI.deleteAccount(account.id, userId);
-      if (result.success) {
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Account deleted successfully');
+    try {
+      if (account.type === 'credit') {
+        await handleDeleteCard(account.id);
+      } else if (account.type === 'loan') {
+        await handleDeleteLoan(account.id);
       } else {
-        alert('❌ Failed to delete account: ' + result.error);
-        return;
+        // checking, savings, or other
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (!userResult?.success || !userResult?.data) {
+          alert('You must be logged in');
+          return;
+        }
+        const userId = userResult.data.id;
+        const result = await window.electronAPI.deleteAccount(account.id, userId);
+        if (result.success) {
+          window.dispatchEvent(new CustomEvent('accounts-updated'));
+          alert('✅ Account deleted successfully');
+        } else {
+          alert('❌ Failed to delete account: ' + result.error);
+          return;
+        }
       }
+      // Close the modal after successful deletion
+      setShowAccountModal(false);
+      setEditingAccount(null);
+      setModalMode('add');
+    } catch (error) {
+      console.error('Error deleting account:', error);
+      alert('Error: ' + error.message);
     }
-    // Close the modal after successful deletion
-    setShowAccountModal(false);
-    setEditingAccount(null);
-    setModalMode('add');
-  } catch (error) {
-    console.error('Error deleting account:', error);
-    alert('Error: ' + error.message);
-  }
-};
-  
+  };
 
   const handleLoanPayment = async (loanId) => {
     console.log('Processing loan payment for:', loanId);
@@ -409,14 +397,15 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
       console.log('✅ Loan added successfully:', result.data);
       alert('✅ Loan added successfully!');
 
-      if (typeof loadLoans === 'function') {
+      // Refresh loans after adding
+      if (typeof refreshLoans === 'function') {
         try {
-          await loadLoans();
+          await refreshLoans();
         } catch (loadError) {
           console.error('❌ Error refreshing loans:', loadError);
         }
       } else {
-        console.warn('loadLoans function not available, cannot refresh list');
+        console.warn('refreshLoans function not available, cannot refresh list');
       }
 
       try {
@@ -577,6 +566,35 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
     }
   };
 
+  // Delete loan
+  const handleDeleteLoan = async (loanId) => {
+    console.log('🗑️ Deleting loan:', loanId);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return { success: false };
+      }
+      const userId = userResult.data.id;
+
+      const result = await window.electronAPI.deleteAccount(loanId, userId);
+
+      if (result.success) {
+        await refreshLoans();
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        alert('✅ Loan deleted successfully');
+        return { success: true };
+      } else {
+        alert('Failed to delete loan: ' + result.error);
+        return { success: false };
+      }
+    } catch (error) {
+      console.error('Error deleting loan:', error);
+      alert('Error: ' + error.message);
+      return { success: false };
+    }
+  };
+
   // Navigation helpers for credit cards
   const handleViewTransactions = (cardId) => {
     if (onNavigate) onNavigate(`account-${cardId}`);
@@ -606,36 +624,6 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
       detail: { toCategory: 'credit-card-payment', amount, cardId }
     }));
     if (onNavigate) onNavigate('propertyMap');
-  };
-
-  // Delete loan
-  const handleDeleteLoan = async (loanId) => {
-    console.log('✅ The real handleDeleteLoan was called!');
-    console.log('🗑️ Deleting loan:', loanId);
-    try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return { success: false };
-      }
-      const userId = userResult.data.id;
-
-      const result = await window.electronAPI.deleteAccount(loanId, userId);
-
-      if (result.success) {
-        await loadLoans();
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Loan deleted successfully');
-        return { success: true };
-      } else {
-        alert('Failed to delete loan: ' + result.error);
-        return { success: false };
-      }
-    } catch (error) {
-      console.error('Error deleting loan:', error);
-      alert('Error: ' + error.message);
-      return { success: false };
-    }
   };
 
   // Render the appropriate view based on currentView
@@ -871,21 +859,7 @@ console.log('🔥🔥🔥 PRODUCTION: handleSaveAccount called with data:', data
           setModalDefaultType('checking');
         }}
         onSave={handleSaveAccount}
-        onDelete={handleDeleteAccount}   // <-- add this line
-        account={editingAccount}
-        mode={modalMode}
-        defaultType={modalDefaultType}
-      />
-      <AccountModal
-        isOpen={showAccountModal}
-        onClose={() => {
-          setShowAccountModal(false);
-          setEditingAccount(null);
-          setModalMode('add');
-          setModalDefaultType('checking');
-        }}
-        onSave={handleSaveAccount}
-        onDelete={handleDeleteAccount}   // <-- add this line
+        onDelete={handleDeleteAccount}
         account={editingAccount}
         mode={modalMode}
         defaultType={modalDefaultType}

@@ -2,29 +2,45 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import CreditCardManager from '../views/CreditCardManager';
-import AccountEditor from '../components/AccountEditor';
 
 export default function CreditCardsPage() {
   const router = useRouter();
   const [cards, setCards] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [editingCard, setEditingCard] = useState(null);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0); // 👈 force refresh key
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     loadData();
+    
+    // Listen for accounts-updated events to refresh data
+    const handleAccountsUpdated = () => {
+      loadData();
+    };
+    
+    window.addEventListener('accounts-updated', handleAccountsUpdated);
+    return () => {
+      window.removeEventListener('accounts-updated', handleAccountsUpdated);
+    };
   }, []);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const cardsResult = await window.electronAPI.getCreditCards();
-      if (cardsResult.success) {
-        setCards(cardsResult.data);
-        setRefreshKey(prev => prev + 1); // 👈 trigger re‑mount of CreditCardManager
+      // Get all accounts and filter for credit cards
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const userId = userResult.data.id;
+        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+        if (accountsResult.success) {
+          const allAccounts = accountsResult.data || [];
+          // Filter for credit cards only
+          const creditCards = allAccounts.filter(account => account.type === 'credit');
+          setCards(creditCards);
+          setRefreshKey(prev => prev + 1);
+        }
       }
+      
       const transactionsResult = await window.electronAPI.getTransactions();
       if (transactionsResult.success) {
         setTransactions(transactionsResult.data);
@@ -33,51 +49,6 @@ export default function CreditCardsPage() {
       console.error('Error loading data:', error);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleAddCard = async (cardData) => {
-    try {
-      const result = await window.electronAPI.createAccount(cardData);
-      if (result.success) {
-        await loadData();
-        setShowAddForm(false);
-      } else {
-        alert('Failed to add card: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Error adding card:', error);
-      alert('Failed to add card');
-    }
-  };
-
-  const handleUpdateCard = async (cardId, updatedData) => {
-    try {
-      const result = await window.electronAPI.updateAccount(cardId, updatedData);
-      if (result.success) {
-        await loadData();
-        setEditingCard(null);
-      } else {
-        alert('Failed to update credit card: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Error updating credit card:', error);
-      alert('Failed to update credit card');
-    }
-  };
-
-  const handleDeleteCard = async (cardId) => {
-    try {
-      const result = await window.electronAPI.deleteAccount(cardId);
-      if (result.success) {
-        await loadData();
-        setEditingCard(null);
-      } else {
-        alert('Failed to delete credit card: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Error deleting credit card:', error);
-      alert('Failed to delete credit card');
     }
   };
 
@@ -189,33 +160,15 @@ export default function CreditCardsPage() {
 
       <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
         <CreditCardManager
-          key={refreshKey} // 👈 forces re‑mount when refreshKey changes
+          key={refreshKey}
           cards={cards}
           transactions={transactions}
           onMakePayment={handleMakePayment}
-          onUpdateCard={handleUpdateCard}
-          onDeleteCard={handleDeleteCard}
-          onAddCard={() => setShowAddForm(true)}
           onViewTransactions={handleViewTransactions}
           onOpenPlanner={handleOpenPlanner}
+          // REMOVED: onAddCard, onUpdateCard, onDeleteCard
+          // These are now handled internally by CreditCardManager
         />
-
-        {showAddForm && (
-          <AccountEditor
-            account={{ type: 'credit' }}
-            onSave={handleAddCard}
-            onClose={() => setShowAddForm(false)}
-          />
-        )}
-
-        {editingCard && (
-          <AccountEditor
-            account={editingCard}
-            onSave={handleUpdateCard}
-            onDelete={handleDeleteCard}
-            onClose={() => setEditingCard(null)}
-          />
-        )}
       </main>
     </div>
   );

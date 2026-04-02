@@ -1,22 +1,18 @@
+// src/views/CreditCardManager.jsx
 import React, { useState, useEffect } from 'react';
-import AddCreditCardModal from './AddCreditCardModal';
-import EditCreditCardModal from './EditCreditCardModal';
+import EditAccountModal from './EditAccountModal';
 
 function CreditCardManager({
   cards = [],
   transactions = [],
   onMakePayment,
-  onUpdateCard,
-  onAddCard,
   onViewTransactions,
-  onOpenPlanner,
-  onDeleteCard
+  onOpenPlanner
 }) {
   const [selectedCard, setSelectedCard] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState({});
   const [filter, setFilter] = useState('all');
-  const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
 
@@ -26,20 +22,36 @@ function CreditCardManager({
       console.table(cards.map(c => ({
         id: c.id,
         name: c.name,
+        balance: c.balance,
         interest_rate: c.interest_rate,
         apr: c.apr,
+        account_number: c.account_number,
+        account_holder_name: c.account_holder_name
       })));
     }
   }, [cards]);
 
-  const handleSaveCard = async (cardData) => {
-    if (onAddCard) {
-      const result = await onAddCard(cardData);
-      if (result?.success) {
-        setShowAddModal(false);
-      }
-      return result;
-    }
+  // Handle adding a new card (opens EditAccountModal in "add" mode)
+  const handleAddNewCard = () => {
+    // Create a temporary card object with default credit card values
+    const newCardTemplate = {
+      id: 'new',
+      name: '',
+      type: 'credit',
+      balance: '',
+      credit_limit: '',
+      limit: '',
+      interest_rate: '18.99',
+      apr: '18.99',
+      due_date: '',
+      dueDate: '',
+      institution: '',
+      account_number: '',
+      account_holder_name: '',
+      notes: ''
+    };
+    setEditingCard(newCardTemplate);
+    setShowEditModal(true);
   };
 
   const handleOpenEditModal = (card) => {
@@ -50,19 +62,153 @@ function CreditCardManager({
 
   const handleSaveEdit = async (cardId, updatedData) => {
     console.log('📥 CreditCardManager handleSaveEdit received:', cardId, updatedData);
+
     if (!updatedData) {
       console.error('❌ updatedData is undefined in handleSaveEdit');
+      alert('Error: No data to save');
       return;
     }
-    if (onUpdateCard) {
-      const result = await onUpdateCard(cardId, updatedData);
-      if (result?.success) {
-        // Immediately update the local editingCard with the new data
-        setEditingCard(prev => prev ? { ...prev, ...updatedData } : null);
-        setShowEditModal(false);
-        setEditingCard(null);
+
+    // Check if this is a new card (temporary ID 'new')
+    if (cardId === 'new') {
+      // Create new card
+      try {
+        // Get current user
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (!userResult?.success || !userResult?.data) {
+          alert('You must be logged in to create a credit card');
+          return;
+        }
+
+        const userId = userResult.data.id;
+
+        // Validate required fields
+        if (!updatedData.name || updatedData.name.trim() === '') {
+          alert('Please enter a card name');
+          return;
+        }
+
+        // Handle balance correctly - convert positive user input to negative for database
+        let balanceValue = 0;
+        if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
+          const parsedBalance = parseFloat(updatedData.balance);
+          if (!isNaN(parsedBalance)) {
+            balanceValue = -Math.abs(parsedBalance);
+          }
+        }
+
+        // Prepare credit card data
+        const cardData = {
+          name: updatedData.name.trim(),
+          type: 'credit',
+          account_type_category: 'credit',
+          balance: balanceValue,
+          credit_limit: updatedData.credit_limit ? parseFloat(updatedData.credit_limit) : 0,
+          limit: updatedData.credit_limit ? parseFloat(updatedData.credit_limit) : 0,
+          interest_rate: updatedData.interest_rate ? parseFloat(updatedData.interest_rate) : 18.99,
+          apr: updatedData.interest_rate ? parseFloat(updatedData.interest_rate) : 18.99,
+          due_date: updatedData.due_date || null,
+          dueDate: updatedData.due_date || null,
+          institution: updatedData.institution?.trim() || null,
+          account_number: updatedData.account_number?.trim() || null,
+          account_holder_name: updatedData.account_holder_name?.trim() || null,
+          notes: updatedData.notes?.trim() || null,
+          user_id: userId,
+          userId: userId,
+          currency: 'USD'
+        };
+
+        console.log('📝 Creating credit card with data:', cardData);
+
+        const result = await window.electronAPI.createAccount(cardData);
+        console.log('createAccount result:', result);
+
+        if (result && result.success) {
+          console.log('✅ Credit card created successfully:', result.data);
+          setShowEditModal(false);
+          setEditingCard(null);
+          window.dispatchEvent(new CustomEvent('accounts-updated'));
+          alert('✅ Credit card created successfully!');
+        } else {
+          const errorMsg = result?.error || 'Unknown error occurred';
+          console.error('❌ Failed to create credit card:', errorMsg);
+          alert(`Failed to create credit card: ${errorMsg}`);
+        }
+      } catch (error) {
+        console.error('❌ Error creating credit card:', error);
+        alert(`Error creating credit card: ${error.message}`);
       }
-      return result;
+    } else {
+      // Update existing card
+      try {
+        // Get current user FIRST
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (!userResult?.success || !userResult?.data) {
+          alert('You must be logged in');
+          return;
+        }
+        
+        const userId = userResult.data.id;
+        
+        // Build update payload with only changed fields
+        let updatePayload = {};
+
+        // Only include fields that have values
+        if (updatedData.name !== undefined && updatedData.name !== '') updatePayload.name = updatedData.name;
+        if (updatedData.institution !== undefined) updatePayload.institution = updatedData.institution;
+        if (updatedData.credit_limit !== undefined && updatedData.credit_limit !== '') {
+          updatePayload.credit_limit = parseFloat(updatedData.credit_limit) || 0;
+          updatePayload.limit = parseFloat(updatedData.credit_limit) || 0;
+        }
+        if (updatedData.interest_rate !== undefined && updatedData.interest_rate !== '') {
+          updatePayload.interest_rate = parseFloat(updatedData.interest_rate) || 18.99;
+          updatePayload.apr = parseFloat(updatedData.interest_rate) || 18.99;
+        }
+        if (updatedData.due_date !== undefined) updatePayload.due_date = updatedData.due_date;
+        if (updatedData.dueDate !== undefined) updatePayload.dueDate = updatedData.dueDate;
+        if (updatedData.account_number !== undefined) updatePayload.account_number = updatedData.account_number;
+        if (updatedData.account_holder_name !== undefined) updatePayload.account_holder_name = updatedData.account_holder_name;
+        if (updatedData.notes !== undefined) updatePayload.notes = updatedData.notes;
+
+        // Handle balance specially - convert to negative
+        if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
+          const parsedBalance = parseFloat(updatedData.balance);
+          if (!isNaN(parsedBalance)) {
+            updatePayload.balance = -Math.abs(parsedBalance);
+          }
+        } else if (updatedData.balance === '') {
+          updatePayload.balance = 0;
+        }
+
+        // Ensure we have at least one field to update
+        if (Object.keys(updatePayload).length === 0) {
+          console.error('❌ No fields to update');
+          alert('No changes to save');
+          return;
+        }
+
+        console.log('📝 Updating credit card with payload:', updatePayload);
+        console.log('📝 Card ID:', cardId);
+        console.log('📝 User ID:', userId);
+
+        const result = await window.electronAPI.updateAccount(cardId, userId, updatePayload);
+        console.log('updateAccount result:', result);
+
+        if (result && result.success) {
+          console.log('✅ Credit card updated successfully');
+          setShowEditModal(false);
+          setEditingCard(null);
+          window.dispatchEvent(new CustomEvent('accounts-updated'));
+          alert('✅ Credit card updated successfully!');
+        } else {
+          const errorMsg = result?.error || 'Unknown error occurred';
+          console.error('❌ Failed to update credit card:', errorMsg);
+          alert(`Failed to update credit card: ${errorMsg}`);
+        }
+      } catch (error) {
+        console.error('❌ Error updating credit card:', error);
+        alert(`Error updating credit card: ${error.message}`);
+      }
     }
   };
 
@@ -74,11 +220,11 @@ function CreditCardManager({
     const statementBalance = cardTransactions
       .filter(t => t.date >= firstOfMonth)
       .reduce((sum, t) => sum + t.amount, 0);
-    const minPayment = card.minimumPayment || Math.max(25, Math.abs(card.balance) * 0.02);
-    const dueDate = new Date(card.dueDate);
+    const minPayment = card.minimum_payment || card.minimumPayment || Math.max(25, Math.abs(card.balance) * 0.02);
+    const dueDate = new Date(card.dueDate || card.due_date);
     const today = new Date();
-    const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
-    const utilization = (Math.abs(card.balance) / (card.limit || 1000)) * 100;
+    const daysUntilDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24)) : 999;
+    const utilization = (Math.abs(card.balance) / (card.limit || card.credit_limit || 1000)) * 100;
 
     // Use interest_rate, fallback to apr, then default
     const aprValue = card.interest_rate ?? card.apr ?? 18.99;
@@ -91,7 +237,7 @@ function CreditCardManager({
       daysUntilDue,
       isDueSoon: daysUntilDue <= 7 && daysUntilDue > 0,
       isOverdue: daysUntilDue < 0,
-      utilization,
+      utilization: Math.min(utilization, 100),
       utilizationColor: utilization > 80 ? '#EF4444' : utilization > 50 ? '#F59E0B' : '#10B981',
       interestIfNotPaid: Math.round(interestIfNotPaid * 100) / 100,
     };
@@ -134,6 +280,7 @@ function CreditCardManager({
       });
       if (result?.success) {
         setShowPaymentModal(false);
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
       }
     }
   };
@@ -152,19 +299,37 @@ function CreditCardManager({
   };
 
   const handleDeleteCard = async (cardId) => {
-    if (onDeleteCard) {
-      const result = await onDeleteCard(cardId);
-      if (result?.success) {
+    if (!window.confirm('Are you sure you want to delete this credit card? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return;
+      }
+      const userId = userResult.data.id;
+
+      const result = await window.electronAPI.deleteAccount(cardId, userId);
+
+      if (result && result.success) {
         setShowEditModal(false);
         setEditingCard(null);
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        alert('✅ Credit card deleted successfully!');
+      } else {
+        alert('Failed to delete credit card: ' + (result?.error || 'Unknown error'));
       }
-      return result;
+    } catch (error) {
+      console.error('Error deleting credit card:', error);
+      alert('Error: ' + error.message);
     }
   };
 
   const filteredCards = getFilteredCards();
   const totalBalance = cards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0);
-  const totalLimit = cards.reduce((sum, c) => sum + (c.limit || 0), 0);
+  const totalLimit = cards.reduce((sum, c) => sum + (c.limit || c.credit_limit || 0), 0);
   const overallUtilization = totalLimit > 0 ? (totalBalance / totalLimit) * 100 : 0;
   const urgentCount = cards.filter(c => {
     const stats = calculateCardStats(c);
@@ -181,7 +346,7 @@ function CreditCardManager({
         </div>
         <div style={styles.headerActions}>
           <button onClick={onOpenPlanner} style={styles.plannerButton}>📈 Open Planner</button>
-          <button onClick={() => setShowAddModal(true)} style={styles.addButton}>➕ Add Credit Card</button>
+          <button onClick={handleAddNewCard} style={styles.addButton}>➕ Add Credit Card</button>
         </div>
       </div>
 
@@ -248,7 +413,7 @@ function CreditCardManager({
             {filter === 'all' ? 'Get started by adding your first credit card' : 'No cards match the selected filter'}
           </p>
           {filter === 'all' && (
-            <button onClick={() => setShowAddModal(true)} style={styles.emptyAddButton}>
+            <button onClick={handleAddNewCard} style={styles.emptyAddButton}>
               ➕ Add Your First Credit Card
             </button>
           )}
@@ -269,12 +434,9 @@ function CreditCardManager({
                 }}
                 onClick={() => setSelectedCard(isSelected ? null : card.id)}
               >
-                {/* Edit Button */}
+                {/* Edit Button - Positioned at top right */}
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenEditModal(card);
-                  }}
+                  onClick={(e) => handleEditClick(e, card)}
                   style={styles.editButton}
                   title="Edit Card"
                 >
@@ -286,6 +448,12 @@ function CreditCardManager({
                   <div>
                     <h3 style={styles.cardName}>{card.name}</h3>
                     <div style={styles.cardInstitution}>{card.institution || 'Credit Card'}</div>
+                    {card.account_number && (
+                      <div style={styles.accountNumber}>•••• {card.account_number.slice(-4)}</div>
+                    )}
+                    {card.account_holder_name && (
+                      <div style={styles.cardHolderName}>Holder: {card.account_holder_name}</div>
+                    )}
                   </div>
                   <div style={{ ...styles.utilizationBadge, background: stats.utilizationColor + '20', color: stats.utilizationColor }}>
                     {stats.utilization.toFixed(1)}% utilized
@@ -298,7 +466,7 @@ function CreditCardManager({
                   <div style={{ ...styles.balanceAmount, color: card.balance < 0 ? '#EF4444' : '#10B981' }}>
                     {formatCurrency(card.balance)}
                   </div>
-                  <div style={styles.limitText}>of {formatCurrency(card.limit || 0)} limit</div>
+                  <div style={styles.limitText}>of {formatCurrency(card.limit || card.credit_limit || 0)} limit</div>
                 </div>
 
                 {/* Progress Bar */}
@@ -308,7 +476,7 @@ function CreditCardManager({
 
                 {/* Due Date */}
                 <div style={{ ...styles.dueDateSection, background: stats.isOverdue ? '#EF444420' : stats.isDueSoon ? '#F59E0B20' : 'transparent' }}>
-                  <span>Due: {card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'Not set'}</span>
+                  <span>Due: {card.dueDate || card.due_date ? new Date(card.dueDate || card.due_date).toLocaleDateString() : 'Not set'}</span>
                   <span style={{ color: stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : '#9CA3AF', fontWeight: 'bold' }}>
                     {stats.isOverdue ? 'OVERDUE' : stats.daysUntilDue > 0 && stats.daysUntilDue < 999 ? `${stats.daysUntilDue} days left` : stats.daysUntilDue === 999 ? 'No due date' : 'Due today'}
                   </span>
@@ -337,10 +505,10 @@ function CreditCardManager({
                       e.stopPropagation();
                       handleOpenEditModal(card);
                     }}
-                    style={styles.editButton}
+                    style={styles.editButtonInline}
                     title="Edit Card"
                   >
-                    ✏️
+                    ✏️ Edit
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); onViewTransactions(card.id); }}
@@ -358,7 +526,7 @@ function CreditCardManager({
                       <div style={styles.strategyCard}>
                         <div style={styles.strategyLabel}>Pay in Full By</div>
                         <div style={styles.strategyValue}>
-                          {card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'No due date set'}
+                          {card.dueDate || card.due_date ? new Date(card.dueDate || card.due_date).toLocaleDateString() : 'No due date set'}
                         </div>
                         <div style={styles.strategyNote}>
                           Save {formatCurrency(stats.interestIfNotPaid)} in interest
@@ -409,7 +577,7 @@ function CreditCardManager({
                 <input
                   type="number"
                   value={paymentAmount.amount}
-                  onChange={(e) => setPaymentAmount({ ...paymentAmount, amount: parseFloat(e.target.value) })}
+                  onChange={(e) => setPaymentAmount({ ...paymentAmount, amount: parseFloat(e.target.value) || 0 })}
                   min={paymentAmount.minPayment}
                   step="0.01"
                   style={styles.modalInput}
@@ -445,26 +613,21 @@ function CreditCardManager({
         </div>
       )}
 
-      {/* Edit Credit Card Modal */}
-      <EditCreditCardModal
+      {/* Unified Edit Account Modal - Handles both Create and Edit */}
+      <EditAccountModal
         isOpen={showEditModal}
-        onClose={() => { setShowEditModal(false); setEditingCard(null); }}
+        onClose={() => {
+          setShowEditModal(false);
+          setEditingCard(null);
+        }}
         onSave={handleSaveEdit}
-        onDelete={onDeleteCard}
-        card={editingCard}
-      />
-
-      {/* Add Credit Card Modal */}
-      <AddCreditCardModal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        onSave={handleSaveCard}
+        onDelete={handleDeleteCard}
+        account={editingCard}
       />
     </div>
   );
 }
 
-// Full styles object (unchanged from your original)
 const styles = {
   container: {
     padding: '2rem',
@@ -611,10 +774,25 @@ const styles = {
     cursor: 'pointer',
     padding: '0.25rem',
     borderRadius: '0.25rem',
+    zIndex: 2,
     ':hover': {
       background: '#374151',
       color: 'white'
     }
+  },
+  editButtonInline: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'transparent',
+    border: '1px solid #F59E0B',
+    color: '#F59E0B',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.25rem'
   },
   cardHeader: {
     display: 'flex',
@@ -632,6 +810,17 @@ const styles = {
   cardInstitution: {
     fontSize: '0.75rem',
     color: '#9CA3AF'
+  },
+  cardHolderName: {
+    fontSize: '0.7rem',
+    color: '#6B7280',
+    marginTop: '0.25rem'
+  },
+  accountNumber: {
+    fontSize: '0.7rem',
+    color: '#6B7280',
+    marginTop: '0.25rem',
+    fontFamily: 'monospace'
   },
   utilizationBadge: {
     padding: '0.25rem 0.5rem',
@@ -814,23 +1003,78 @@ const styles = {
     background: '#1F2937',
     borderRadius: '1rem',
     padding: '2rem',
-    maxWidth: '400px',
+    maxWidth: '500px',
     width: '90%'
   },
   modalTitle: {
-    fontSize: '1.25rem',
-    fontWeight: '600',
-    margin: '0 0 1.5rem 0',
+    fontSize: '1.5rem',
+    fontWeight: 'bold',
+    marginBottom: '1.5rem',
     color: 'white'
   },
   formGroup: {
-    marginBottom: '1.5rem'
+    marginBottom: '1rem'
   },
   label: {
     display: 'block',
     marginBottom: '0.5rem',
     color: '#9CA3AF',
     fontSize: '0.875rem'
+  },
+  required: {
+    color: '#EF4444',
+    marginLeft: '0.25rem'
+  },
+  hint: {
+    display: 'block',
+    marginTop: '0.25rem',
+    fontSize: '0.75rem',
+    color: '#6B7280'
+  },
+  input: {
+    width: '100%',
+    padding: '0.75rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '1rem'
+  },
+  select: {
+    width: '100%',
+    padding: '0.75rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '1rem'
+  },
+  modalActions: {
+    display: 'flex',
+    gap: '1rem',
+    marginTop: '2rem'
+  },
+  saveButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: '#3B82F6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer'
+  },
+  cancelButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: '#4B5563',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer'
   },
   inputWrapper: {
     position: 'relative'
@@ -865,11 +1109,6 @@ const styles = {
     cursor: 'pointer',
     fontSize: '0.75rem'
   },
-  modalActions: {
-    display: 'flex',
-    gap: '1rem',
-    marginTop: '2rem'
-  },
   submitButton: {
     flex: 2,
     padding: '0.75rem',
@@ -879,16 +1118,6 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     fontWeight: '600',
-    cursor: 'pointer'
-  },
-  cancelButton: {
-    flex: 1,
-    padding: '0.75rem',
-    background: '#6B7280',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '0.875rem',
     cursor: 'pointer'
   }
 };

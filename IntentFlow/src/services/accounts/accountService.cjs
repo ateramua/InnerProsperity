@@ -27,46 +27,60 @@ class AccountService {
 
     // ==================== BASIC CRUD OPERATIONS ====================
 
-    async getAllAccounts(userId) {
-        console.log('🟢🟢🟢 accountService.getAllAccounts CALLED for userId:', userId);
+    async createAccount(accountData) {
         const db = await this.getDb();
         try {
-            const accounts = await db.all(`
-            SELECT * FROM accounts 
-            WHERE user_id = ? 
-            ORDER BY type, name
-        `, [userId]);
+            const id = uuidv4();
+            const {
+                userId,
+                user_id,  // Accept both formats
+                name,
+                type,
+                accountTypeCategory,
+                account_type_category,  // Accept both formats
+                balance = 0,
+                currency = 'USD',
+                institution = '',
+                creditLimit = null,
+                interestRate = null,
+                dueDate = null,
+                minimumPayment = null,
+                account_number = null,
+                account_holder_name = null,
+                notes = null
+            } = accountData;
 
-            console.log(`🟢 Found ${accounts.length} accounts`);
-
-            // 🔍 Debug: log first account's interest_rate
-            if (accounts.length > 0) {
-                console.log('🔍 First raw account interest_rate:', accounts[0].interest_rate);
+            // Use either userId or user_id
+            const finalUserId = userId || user_id;
+            if (!finalUserId) {
+                throw new Error('userId is required');
             }
 
-            // Format accounts with all relevant fields
-            const formattedAccounts = accounts.map(account => ({
-                id: account.id,
-                name: account.name,
-                type: account.type,
-                balance: account.balance || 0,
-                institution: account.institution || '',
-                account_type_category: account.account_type_category || 'budget',
-                cleared_balance: account.cleared_balance || account.balance || 0,
-                working_balance: account.working_balance || account.balance || 0,
-                currency: account.currency || 'USD',
-                is_active: account.is_active !== 0,
-                // ✅ Credit card specific fields
-                interest_rate: account.interest_rate,
-                credit_limit: account.credit_limit,
-                due_date: account.due_date,
-                minimum_payment: account.minimum_payment
-            }));
+            // Use either accountTypeCategory or account_type_category
+            const finalAccountTypeCategory = accountTypeCategory || account_type_category || 'budget';
 
-            return formattedAccounts;
-        } catch (error) {
-            console.error('🔴 Error in getAllAccounts:', error);
-            return [];
+            await db.run(`
+                INSERT INTO accounts (
+                    id, user_id, name, type, account_type_category,
+                    balance, cleared_balance, working_balance,
+                    currency, institution,
+                    credit_limit, interest_rate, due_date, minimum_payment,
+                    account_number, account_holder_name, notes,
+                    is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+            `, [
+                id, finalUserId, name, type, finalAccountTypeCategory,
+                balance, balance, balance,
+                currency, institution,
+                creditLimit, interestRate, dueDate, minimumPayment,
+                account_number, account_holder_name, notes
+            ]);
+
+            return this.getAccountById(id, finalUserId);
+        } finally {
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
         }
     }
 
@@ -83,6 +97,22 @@ class AccountService {
         }
     }
 
+    async getAllAccounts(userId) {
+        const db = await this.getDb();
+        try {
+            const accounts = await db.all(`
+                SELECT * FROM accounts 
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY type, name
+            `, [userId]);
+            return accounts;
+        } finally {
+            if (!this.dbProvider && db && typeof db.close === 'function') {
+                await db.close();
+            }
+        }
+    }
+
     async getAccountById(id, userId) {
         const db = await this.getDb();
         try {
@@ -92,61 +122,25 @@ class AccountService {
             `, [id, userId]);
             return account;
         } finally {
-            // If we opened a direct connection (fallback), close it
             if (!this.dbProvider && db && typeof db.close === 'function') {
                 await db.close();
             }
         }
     }
 
-    async createAccount(accountData) {
-        const db = await this.getDb();
-        try {
-            const id = uuidv4();
-            const {
-                userId,
-                name,
-                type,
-                accountTypeCategory = 'budget',
-                balance = 0,
-                currency = 'USD',
-                institution = '',
-                creditLimit = null,
-                interestRate = null,
-                dueDate = null,
-                minimumPayment = null
-            } = accountData;
-
-            await db.run(`
-            INSERT INTO accounts (
-                id, user_id, name, type, account_type_category,
-                balance, cleared_balance, working_balance,
-                currency, institution,
-                credit_limit, interest_rate, due_date, minimum_payment,
-                is_active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
-        `, [
-                id, userId, name, type, accountTypeCategory,
-                balance, balance, balance,
-                currency, institution,
-                creditLimit, interestRate, dueDate, minimumPayment
-            ]);
-
-            return this.getAccountById(id, userId);
-        } finally {
-            if (!this.dbProvider && db && typeof db.close === 'function') {
-                await db.close();
-            }
-        }
-    }
     async updateAccount(id, userId, updates) {
         const db = await this.getDb();
         try {
+            // Complete list of allowed fields for update
             const allowedUpdates = [
                 'name', 'type', 'account_type_category', 'institution',
-                'account_number', 'routing_number', 'credit_limit',
-                'interest_rate', 'due_date', 'minimum_payment', 'is_active',
-                'balance'
+                'account_number', 'account_holder_name', 'notes',
+                'routing_number', 'credit_limit', 'limit',
+                'interest_rate', 'apr', 'due_date', 'dueDate',
+                'minimum_payment', 'minimumPayment', 'is_active',
+                'balance', 'original_balance', 'term_months', 'term',
+                'payment_amount', 'paymentAmount', 'payment_frequency',
+                'next_payment_date', 'nextPaymentDate'
             ];
 
             const setClauses = [];
@@ -154,29 +148,52 @@ class AccountService {
 
             for (const [key, value] of Object.entries(updates)) {
                 if (allowedUpdates.includes(key)) {
-                    setClauses.push(`${key} = ?`);
+                    // Map alternative field names to database column names
+                    let columnName = key;
+                    if (key === 'limit') columnName = 'credit_limit';
+                    if (key === 'apr') columnName = 'interest_rate';
+                    if (key === 'dueDate') columnName = 'due_date';
+                    if (key === 'minimumPayment') columnName = 'minimum_payment';
+                    if (key === 'term') columnName = 'term_months';
+                    if (key === 'paymentAmount') columnName = 'payment_amount';
+                    if (key === 'nextPaymentDate') columnName = 'next_payment_date';
+                    
+                    setClauses.push(`${columnName} = ?`);
                     values.push(value);
                 }
             }
 
+            // If balance is updated, also update cleared_balance and working_balance
             if (updates.balance !== undefined) {
                 setClauses.push('cleared_balance = ?');
                 setClauses.push('working_balance = ?');
                 values.push(updates.balance, updates.balance);
             }
 
-            if (setClauses.length === 0) return null;
+            if (setClauses.length === 0) {
+                console.log('❌ No valid fields to update');
+                return null;
+            }
 
-            setClauses.push('updated_at = datetime("now")'); // ← this is correct
+            setClauses.push('updated_at = datetime("now")');
             values.push(id, userId);
 
             const sql = `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`;
-            console.log('🔍 updateAccount SQL:', sql); // 👈 DEBUG
-            console.log('🔍 updateAccount values:', values); // 👈 DEBUG
+            console.log('🔍 updateAccount SQL:', sql);
+            console.log('🔍 updateAccount values:', values);
 
-            await db.run(sql, values);
+            const result = await db.run(sql, values);
+            console.log('🔍 Update result:', result);
+
+            if (result.changes === 0) {
+                console.log('⚠️ No rows were updated. Account may not exist or user_id mismatch.');
+                return null;
+            }
 
             return this.getAccountById(id, userId);
+        } catch (error) {
+            console.error('❌ Error in updateAccount:', error);
+            throw error;
         } finally {
             if (!this.dbProvider && db && typeof db.close === 'function') {
                 await db.close();
@@ -279,11 +296,15 @@ class AccountService {
                 working_balance: account.working_balance || account.balance || 0,
                 currency: account.currency || 'USD',
                 is_active: account.is_active !== 0,
-                // ✅ Credit card specific fields
+                // Credit card specific fields
                 interest_rate: account.interest_rate,
                 credit_limit: account.credit_limit,
                 due_date: account.due_date,
-                minimum_payment: account.minimum_payment
+                minimum_payment: account.minimum_payment,
+                // Account number fields
+                account_number: account.account_number,
+                account_holder_name: account.account_holder_name,
+                notes: account.notes
             }));
 
             return formattedAccounts;
@@ -370,7 +391,8 @@ class AccountService {
             const account = await db.get(`
                 SELECT 
                     id, name, working_balance as current_balance,
-                    credit_limit, interest_rate, due_date, minimum_payment
+                    credit_limit, interest_rate, due_date, minimum_payment,
+                    account_number, account_holder_name, notes
                 FROM accounts 
                 WHERE id = ? AND user_id = ? AND type = 'credit'
             `, [accountId, userId]);

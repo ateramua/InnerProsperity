@@ -248,10 +248,10 @@ const CashFlowView = ({
         <div style={styles.comparisonTable}>
           {/* Header */}
           <div style={styles.tableHeader}>
-            <span style={styles.tableHeaderCell}>Category</span>
-            <span style={styles.tableHeaderCell}>Budgeted</span>
-            <span style={styles.tableHeaderCell}>Actual</span>
-            <span style={styles.tableHeaderCell}>Variance</span>
+            <span style={{...styles.tableHeaderCell, textAlign: 'left'}}>Category</span>
+            <span style={{...styles.tableHeaderCell, textAlign: 'right'}}>Budgeted</span>
+            <span style={{...styles.tableHeaderCell, textAlign: 'right'}}>Actual</span>
+            <span style={{...styles.tableHeaderCell, textAlign: 'right'}}>Variance</span>
           </div>
 
           {/* Fixed Expenses */}
@@ -505,7 +505,7 @@ const CashFlowView = ({
   );
 };
 
-// Define styles without any document references
+// Define styles - removed all pseudo-classes
 const styles = {
   container: {
     padding: '2rem',
@@ -566,10 +566,7 @@ const styles = {
     fontSize: '1rem',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    ':hover': {
-      background: '#4B5563'
-    }
+    justifyContent: 'center'
   },
   monthDisplay: {
     fontSize: '1.1rem',
@@ -638,10 +635,7 @@ const styles = {
     fontSize: '0.875rem'
   },
   tableHeaderCell: {
-    textAlign: 'right',
-    '&:first-child': {
-      textAlign: 'left'
-    }
+    // No pseudo-classes - handle alignment inline
   },
   tableRow: {
     display: 'grid',
@@ -849,8 +843,5 @@ const styles = {
     margin: 0
   }
 };
-
-// Add the keyframe animation to a global stylesheet or use a CSS module
-// For now, we'll rely on the browser's default animation support
 
 export default CashFlowView;

@@ -3,11 +3,26 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../../contexts/AuthContext';
 
-
 const Sidebar = ({ onNavigate, currentView }) => {
     const [expandedSection, setExpandedSection] = useState(null);
+    const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+    const [accountType, setAccountType] = useState('credit');
     const router = useRouter();
     const { logout } = useAuth();
+
+    // Form state for new account
+    const [newAccountData, setNewAccountData] = useState({
+        name: '',
+        type: 'credit',
+        balance: '',
+        credit_limit: '',
+        interest_rate: '',
+        due_date: '',
+        institution: '',
+        account_number: '',
+        account_holder_name: '',
+        notes: ''
+    });
 
     // Account data - all arrays start empty (will be populated from database)
     const accounts = {
@@ -16,8 +31,124 @@ const Sidebar = ({ onNavigate, currentView }) => {
         loans: []      // Will be populated from database
     };
 
+    const handleAddAccountClick = (type) => {
+        setAccountType(type);
+        setNewAccountData({
+            name: '',
+            type: type,
+            balance: '',
+            credit_limit: '',
+            interest_rate: type === 'credit' ? '18.99' : type === 'loan' ? '5.99' : '',
+            due_date: '',
+            institution: '',
+            account_number: '',
+            account_holder_name: '',
+            notes: ''
+        });
+        setShowAddAccountModal(true);
+    };
+
+    const handleCreateAccount = async () => {
+        try {
+            // Validate required fields
+            if (!newAccountData.name.trim()) {
+                alert('Please enter an account name');
+                return;
+            }
+
+            // Get current user
+            const userResult = await window.electronAPI.getCurrentUser();
+            if (!userResult?.success || !userResult?.data) {
+                alert('You must be logged in to create an account');
+                return;
+            }
+
+            const userId = userResult.data.id;
+
+            // Prepare account data based on type
+            let accountData = {
+                name: newAccountData.name.trim(),
+                type: newAccountData.type,
+                user_id: userId,
+                userId: userId,
+                currency: 'USD',
+                institution: newAccountData.institution?.trim() || null,
+                account_number: newAccountData.account_number?.trim() || null,
+                account_holder_name: newAccountData.account_holder_name?.trim() || null,
+                notes: newAccountData.notes?.trim() || null
+            };
+
+            // Handle balance based on account type
+            let balanceValue = 0;
+            if (newAccountData.balance !== '' && newAccountData.balance !== null) {
+                const parsedBalance = parseFloat(newAccountData.balance);
+                if (!isNaN(parsedBalance)) {
+                    if (newAccountData.type === 'credit' || newAccountData.type === 'loan') {
+                        // Credit cards and loans are liabilities (negative balance)
+                        balanceValue = -Math.abs(parsedBalance);
+                    } else {
+                        // Checking and savings are assets (positive balance)
+                        balanceValue = Math.abs(parsedBalance);
+                    }
+                }
+            }
+            accountData.balance = balanceValue;
+
+            // Add type-specific fields
+            if (newAccountData.type === 'credit') {
+                accountData.account_type_category = 'credit';
+                accountData.credit_limit = parseFloat(newAccountData.credit_limit) || 0;
+                accountData.limit = parseFloat(newAccountData.credit_limit) || 0;
+                accountData.interest_rate = parseFloat(newAccountData.interest_rate) || 18.99;
+                accountData.apr = parseFloat(newAccountData.interest_rate) || 18.99;
+                accountData.due_date = newAccountData.due_date || null;
+                accountData.dueDate = newAccountData.due_date || null;
+            } else if (newAccountData.type === 'loan') {
+                accountData.account_type_category = 'loan';
+                accountData.loan_type = 'personal';
+                accountData.interest_rate = parseFloat(newAccountData.interest_rate) || null;
+                accountData.due_date = newAccountData.due_date || null;
+                accountData.original_balance = Math.abs(balanceValue);
+            } else {
+                accountData.account_type_category = 'budget';
+            }
+
+            console.log('📝 Creating account with data:', accountData);
+
+            const result = await window.electronAPI.createAccount(accountData);
+
+            if (result.success) {
+                console.log('✅ Account created successfully:', result.data);
+                setShowAddAccountModal(false);
+                
+                // Reset form
+                setNewAccountData({
+                    name: '',
+                    type: 'credit',
+                    balance: '',
+                    credit_limit: '',
+                    interest_rate: '',
+                    due_date: '',
+                    institution: '',
+                    account_number: '',
+                    account_holder_name: '',
+                    notes: ''
+                });
+
+                // Trigger refresh
+                window.dispatchEvent(new CustomEvent('accounts-updated'));
+                alert(`✅ ${newAccountData.type === 'credit' ? 'Credit card' : newAccountData.type === 'loan' ? 'Loan' : 'Account'} created successfully!`);
+            } else {
+                console.error('❌ Failed to create account:', result.error);
+                alert(`Failed to create account: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('❌ Error creating account:', error);
+            alert(`Error: ${error.message}`);
+        }
+    };
+
     const navigationItems = [
-        // In your navigation items array, add/check this:
         {
             id: 'propertyMap',
             label: 'PropertyMap',
@@ -30,7 +161,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
             icon: '🏦',
             description: 'Manage checking & savings',
             onClick: () => {
-                router.push('/?view=accounts'); // Or use your view system
+                router.push('/?view=accounts');
                 if (onNavigate) onNavigate('accounts');
             }
         },
@@ -72,7 +203,6 @@ const Sidebar = ({ onNavigate, currentView }) => {
                 if (onNavigate) onNavigate('linked-banks');
             }
         },
-
         {
             id: 'forecast',
             label: 'Forecast',
@@ -104,6 +234,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
             description: 'Credit card accounts',
             hasSubItems: true,
             isExpandable: true,
+            onAddClick: () => handleAddAccountClick('credit'),
             subItems: [
                 {
                     id: 'credit-dashboard',
@@ -124,10 +255,10 @@ const Sidebar = ({ onNavigate, currentView }) => {
                     label: 'Add Credit Card',
                     icon: '➕',
                     description: 'Add new credit card',
-                    action: 'add'
+                    action: 'add',
+                    isAddButton: true
                 },
                 { type: 'divider' },
-                // Credit accounts will be populated from database
                 ...(accounts.credit && accounts.credit.length > 0
                     ? accounts.credit.map(account => ({
                         id: `account-${account.id}`,
@@ -149,6 +280,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
             description: 'Loan accounts',
             hasSubItems: true,
             isExpandable: true,
+            onAddClick: () => handleAddAccountClick('loan'),
             subItems: [
                 {
                     id: 'loan-dashboard',
@@ -169,10 +301,10 @@ const Sidebar = ({ onNavigate, currentView }) => {
                     label: 'Add Loan',
                     icon: '➕',
                     description: 'Add new loan',
-                    action: 'add'
+                    action: 'add',
+                    isAddButton: true
                 },
                 { type: 'divider' },
-                // Loan accounts will be populated from database
                 ...(accounts.loans && accounts.loans.length > 0
                     ? accounts.loans.map(account => ({
                         id: `account-${account.id}`,
@@ -204,6 +336,13 @@ const Sidebar = ({ onNavigate, currentView }) => {
 
     const handleSubItemClick = (subItem) => {
         if (subItem.type === 'divider') return;
+        
+        // Handle add button click
+        if (subItem.isAddButton) {
+            const parentSection = subItem.id.includes('credit') ? 'credit' : 'loan';
+            handleAddAccountClick(parentSection);
+            return;
+        }
 
         console.log('🔍 SubItem clicked:', subItem);
 
@@ -243,7 +382,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
             currency: 'USD',
             minimumFractionDigits: 0,
             maximumFractionDigits: 0
-        }).format(amount);
+        }).format(Math.abs(amount || 0));
     };
 
     const renderSubItems = (item) => {
@@ -269,7 +408,8 @@ const Sidebar = ({ onNavigate, currentView }) => {
                             key={subItem.id}
                             style={{
                                 ...styles.subItem,
-                                ...(isActive ? styles.activeSubItem : {})
+                                ...(isActive ? styles.activeSubItem : {}),
+                                ...(subItem.isAddButton ? styles.addButtonSubItem : {})
                             }}
                             onClick={() => handleSubItemClick(subItem)}
                         >
@@ -293,7 +433,7 @@ const Sidebar = ({ onNavigate, currentView }) => {
                                     {subItem.institution.length > 3 ? `${subItem.institution.substring(0, 3)}...` : subItem.institution}
                                 </span>
                             )}
-                            {subItem.description && !subItem.isAccount && (
+                            {subItem.description && !subItem.isAccount && !subItem.isAddButton && (
                                 <span style={styles.subItemTooltip} title={subItem.description}>
                                     ℹ️
                                 </span>
@@ -320,113 +460,243 @@ const Sidebar = ({ onNavigate, currentView }) => {
     };
 
     return (
-        <div style={styles.sidebar}>
-            {/* Header */}
-            <div style={styles.header}>
-                <h2 style={styles.title}>IntentFlow</h2>
-                <div style={styles.version}>v1.0.0</div>
+        <>
+            <div style={styles.sidebar}>
+                {/* Header */}
+                <div style={styles.header}>
+                    <h2 style={styles.title}>IntentFlow</h2>
+                    <div style={styles.version}>v1.0.0</div>
+                </div>
+
+                {/* Navigation Items */}
+                <nav style={styles.nav}>
+                    {navigationItems.map((item) => (
+                        <div key={item.id}>
+                            {/* Main Navigation Item */}
+                            <div
+                                style={{
+                                    ...styles.navItem,
+                                    ...(currentView === item.id ? styles.activeNavItem : {}),
+                                    ...(item.hasSubItems ? styles.navItemWithSubItems : {})
+                                }}
+                                onClick={() => {
+                                    if (item.hasSubItems) {
+                                        toggleSection(item.id);
+                                    } else if (item.accounts && item.accounts.length > 0) {
+                                        toggleSection(item.id);
+                                    } else {
+                                        handleNavigation(item.id);
+                                    }
+                                }}
+                            >
+                                <span style={styles.navIcon}>{item.icon}</span>
+                                <span style={styles.navLabel}>{item.label}</span>
+                                {(item.hasSubItems || (item.accounts && item.accounts.length > 0)) && (
+                                    <span style={styles.navChevron}>
+                                        {expandedSection === item.id ? '▼' : '▶'}
+                                    </span>
+                                )}
+                            </div>
+
+                            {/* Render sub-items for credit cards and loans */}
+                            {item.hasSubItems && renderSubItems(item)}
+                        </div>
+                    ))}
+                </nav>
+
+                {/* Footer */}
+                <div style={styles.footer}>
+                    <div style={styles.footerItem} onClick={() => router.push('/settings')}>
+                        <span style={styles.footerIcon}>⚙️</span>
+                        <span>Settings</span>
+                    </div>
+                    <div style={styles.footerItem} onClick={() => router.push('/reports')}>
+                        <span style={styles.footerIcon}>📊</span>
+                        <span>Reports</span>
+                    </div>
+                    <div style={{ ...styles.footerItem, borderTop: '1px solid #374151', marginTop: '8px', paddingTop: '12px' }} onClick={handleLogout}>
+                        <span style={styles.footerIcon}>🚪</span>
+                        <span style={{ color: '#F87171' }}>Logout</span>
+                    </div>
+                </div>
             </div>
 
-            {/* Navigation Items */}
-            <nav style={styles.nav}>
-                {navigationItems.map((item) => (
-                    <div key={item.id}>
-                        {/* Main Navigation Item */}
-                        <div
-                            style={{
-                                ...styles.navItem,
-                                ...(currentView === item.id ? styles.activeNavItem : {}),
-                                ...(item.hasSubItems ? styles.navItemWithSubItems : {})
-                            }}
-                            onClick={() => {
-                                if (item.hasSubItems) {
-                                    toggleSection(item.id);
-                                } else if (item.accounts && item.accounts.length > 0) {
-                                    toggleSection(item.id);
-                                } else {
-                                    handleNavigation(item.id);
-                                }
-                            }}
-                        >
-                            <span style={styles.navIcon}>{item.icon}</span>
-                            <span style={styles.navLabel}>{item.label}</span>
-                            {(item.hasSubItems || (item.accounts && item.accounts.length > 0)) && (
-                                <span style={styles.navChevron}>
-                                    {expandedSection === item.id ? '▼' : '▶'}
-                                </span>
+            {/* Inline Add Account Modal */}
+            {showAddAccountModal && (
+                <div style={styles.modalOverlay} onClick={() => setShowAddAccountModal(false)}>
+                    <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+                        <h2 style={styles.modalTitle}>
+                            {accountType === 'credit' ? '💳 Add Credit Card' : 
+                             accountType === 'loan' ? '🏦 Add Loan' : 
+                             '💰 Add Account'}
+                        </h2>
+
+                        {/* Basic Information */}
+                        <div style={styles.section}>
+                            <h3 style={styles.sectionTitle}>Basic Information</h3>
+                            
+                            <div style={styles.formGroup}>
+                                <label style={styles.label}>
+                                    Account Name <span style={styles.required}>*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={newAccountData.name}
+                                    onChange={(e) => setNewAccountData({ ...newAccountData, name: e.target.value })}
+                                    style={styles.input}
+                                    placeholder={accountType === 'credit' ? "e.g., Chase Sapphire" : accountType === 'loan' ? "e.g., Auto Loan" : "e.g., Main Checking"}
+                                    autoFocus
+                                />
+                            </div>
+
+                            <div style={styles.formGroup}>
+                                <label style={styles.label}>Institution</label>
+                                <input
+                                    type="text"
+                                    value={newAccountData.institution}
+                                    onChange={(e) => setNewAccountData({ ...newAccountData, institution: e.target.value })}
+                                    style={styles.input}
+                                    placeholder={accountType === 'credit' ? "e.g., Chase Bank" : accountType === 'loan' ? "e.g., Wells Fargo" : "e.g., Bank of America"}
+                                />
+                            </div>
+
+                            <div style={styles.formGroup}>
+                                <label style={styles.label}>
+                                    Current Balance <span style={styles.required}>*</span>
+                                </label>
+                                <div style={styles.inputWrapper}>
+                                    <span style={styles.currencySymbol}>$</span>
+                                    <input
+                                        type="number"
+                                        value={newAccountData.balance}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            if (value === '') {
+                                                setNewAccountData({ ...newAccountData, balance: '' });
+                                            } else {
+                                                const numValue = parseFloat(value);
+                                                if (!isNaN(numValue)) {
+                                                    setNewAccountData({ ...newAccountData, balance: numValue });
+                                                }
+                                            }
+                                        }}
+                                        onBlur={() => {
+                                            if (newAccountData.balance === '' || newAccountData.balance === null) {
+                                                setNewAccountData({ ...newAccountData, balance: '' });
+                                            }
+                                        }}
+                                        style={styles.modalInput}
+                                        step="0.01"
+                                        placeholder="0.00"
+                                    />
+                                </div>
+                                <small style={styles.hint}>
+                                    {accountType === 'credit' ? 'Enter the current amount owed' : 
+                                     accountType === 'loan' ? 'Enter the remaining loan balance' : 
+                                     'Enter the current account balance'}
+                                </small>
+                            </div>
+                        </div>
+
+                        {/* Account Details */}
+                        <div style={styles.section}>
+                            <h3 style={styles.sectionTitle}>Account Details</h3>
+                            
+                            {(accountType === 'credit' || accountType === 'loan') && (
+                                <div style={styles.formGroup}>
+                                    <label style={styles.label}>
+                                        {accountType === 'credit' ? 'Credit Limit' : 'Interest Rate (APR %)'}
+                                    </label>
+                                    <div style={styles.inputWrapper}>
+                                        {accountType === 'credit' && <span style={styles.currencySymbol}>$</span>}
+                                        <input
+                                            type="number"
+                                            value={accountType === 'credit' ? newAccountData.credit_limit : newAccountData.interest_rate}
+                                            onChange={(e) => {
+                                                const field = accountType === 'credit' ? 'credit_limit' : 'interest_rate';
+                                                const value = e.target.value;
+                                                if (value === '') {
+                                                    setNewAccountData({ ...newAccountData, [field]: '' });
+                                                } else {
+                                                    const numValue = parseFloat(value);
+                                                    if (!isNaN(numValue)) {
+                                                        setNewAccountData({ ...newAccountData, [field]: numValue });
+                                                    }
+                                                }
+                                            }}
+                                            style={styles.modalInput}
+                                            step="0.01"
+                                            placeholder={accountType === 'credit' ? "0.00" : "5.99"}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
+                            {(accountType === 'credit' || accountType === 'loan') && (
+                                <div style={styles.formGroup}>
+                                    <label style={styles.label}>Due Date</label>
+                                    <input
+                                        type="date"
+                                        value={newAccountData.due_date}
+                                        onChange={(e) => setNewAccountData({ ...newAccountData, due_date: e.target.value })}
+                                        style={styles.input}
+                                    />
+                                </div>
                             )}
                         </div>
 
-                        {/* Render sub-items for credit cards and loans */}
-                        {item.hasSubItems && renderSubItems(item)}
-
-                        {/* Account Sub-items for cash section */}
-                        {item.id === 'cash' && item.accounts && expandedSection === item.id && (
-                            <div style={styles.subItemsContainer}>
-                                <button onClick={() => onNavigate('linked-banks')}>🔗 Linked Banks</button>
-                                {item.accounts.map((accountItem) => (
-                                    <div
-                                        key={accountItem.id}
-                                        style={{
-                                            ...styles.subItem,
-                                            ...(currentView === `account-${accountItem.id}` ? styles.activeSubItem : {})
-                                        }}
-                                    >
-                                        <span style={styles.subItemIcon}>
-                                            {accountItem.type === 'checking' ? '🏦' :
-                                                accountItem.type === 'savings' ? '💰' : '📊'}
-                                        </span>
-                                        <span
-                                            style={styles.subItemLabel}
-                                            onClick={() => handleAccountClick(accountItem.id)}
-                                        >
-                                            {accountItem.name}
-                                        </span>
-                                        <span style={{
-                                            ...styles.subItemBalance,
-                                            color: accountItem.balance >= 0 ? '#4ADE80' : '#F87171'
-                                        }}>
-                                            {formatCurrency(accountItem.balance)}
-                                        </span>
-
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                router.push(`/accounts/${accountItem.id}/edit`);
-                                            }}
-                                            style={styles.editButton}
-                                        >
-                                            ✏️
-                                        </button>
-                                    </div>
-                                ))}
-                                {item.accounts.length === 0 && (
-                                    <div style={styles.emptyState}>
-                                        No accounts yet
-                                    </div>
-                                )}
+                        {/* Additional Information */}
+                        <div style={styles.section}>
+                            <h3 style={styles.sectionTitle}>Additional Information</h3>
+                            
+                            <div style={styles.formGroup}>
+                                <label style={styles.label}>Account Number</label>
+                                <input
+                                    type="text"
+                                    value={newAccountData.account_number}
+                                    onChange={(e) => setNewAccountData({ ...newAccountData, account_number: e.target.value })}
+                                    style={styles.input}
+                                    placeholder="Last 4 digits or full account number"
+                                    maxLength={accountType === 'credit' ? 4 : 20}
+                                />
+                                <small style={styles.hint}>For reference only</small>
                             </div>
-                        )}
-                    </div>
-                ))}
-            </nav>
 
-            {/* Footer */}
-            <div style={styles.footer}>
-                <div style={styles.footerItem} onClick={() => router.push('/settings')}>
-                    <span style={styles.footerIcon}>⚙️</span>
-                    <span>Settings</span>
+                            <div style={styles.formGroup}>
+                                <label style={styles.label}>Account Holder Name</label>
+                                <input
+                                    type="text"
+                                    value={newAccountData.account_holder_name}
+                                    onChange={(e) => setNewAccountData({ ...newAccountData, account_holder_name: e.target.value })}
+                                    style={styles.input}
+                                    placeholder="Name on the account"
+                                />
+                            </div>
+
+                            <div style={styles.formGroup}>
+                                <label style={styles.label}>Notes</label>
+                                <textarea
+                                    value={newAccountData.notes}
+                                    onChange={(e) => setNewAccountData({ ...newAccountData, notes: e.target.value })}
+                                    style={styles.textarea}
+                                    rows="3"
+                                    placeholder="Add any additional notes about this account..."
+                                />
+                            </div>
+                        </div>
+
+                        <div style={styles.modalActions}>
+                            <button onClick={handleCreateAccount} style={styles.saveButton}>
+                                Create {accountType === 'credit' ? 'Credit Card' : accountType === 'loan' ? 'Loan' : 'Account'}
+                            </button>
+                            <button onClick={() => setShowAddAccountModal(false)} style={styles.cancelButton}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div style={styles.footerItem} onClick={() => router.push('/reports')}>
-                    <span style={styles.footerIcon}>📊</span>
-                    <span>Reports</span>
-                </div>
-                <div style={{ ...styles.footerItem, borderTop: '1px solid #374151', marginTop: '8px', paddingTop: '12px' }} onClick={handleLogout}>
-                    <span style={styles.footerIcon}>🚪</span>
-                    <span style={{ color: '#F87171' }}>Logout</span>
-                </div>
-            </div>
-        </div>
+            )}
+        </>
     );
 };
 
@@ -503,7 +773,7 @@ const styles = {
         marginLeft: '8px'
     },
     subItemsContainer: {
-        background: '#0A2472', // Darker blue for sub-items
+        background: '#0A2472',
         padding: '4px 0'
     },
     subItem: {
@@ -515,6 +785,14 @@ const styles = {
         position: 'relative',
         ':hover': {
             background: '#1E3A8A'
+        }
+    },
+    addButtonSubItem: {
+        background: 'rgba(59, 130, 246, 0.2)',
+        borderBottom: '1px solid #3B82F6',
+        fontWeight: '600',
+        ':hover': {
+            background: 'rgba(59, 130, 246, 0.4)'
         }
     },
     activeSubItem: {
@@ -551,20 +829,6 @@ const styles = {
         cursor: 'help',
         marginLeft: '4px'
     },
-    editButton: {
-        background: 'none',
-        border: 'none',
-        fontSize: '0.9rem',
-        cursor: 'pointer',
-        opacity: 0.6,
-        transition: 'opacity 0.2s',
-        padding: '4px',
-        color: '#9CA3AF',
-        ':hover': {
-            opacity: 1,
-            color: 'white'
-        }
-    },
     divider: {
         height: '1px',
         background: '#374151',
@@ -595,6 +859,133 @@ const styles = {
         marginRight: '12px',
         width: '24px',
         textAlign: 'center'
+    },
+    // Modal styles
+    modalOverlay: {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0, 0, 0, 0.7)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 2000
+    },
+    modalContent: {
+        background: '#1F2937',
+        padding: '2rem',
+        borderRadius: '1rem',
+        width: '90%',
+        maxWidth: '550px',
+        maxHeight: '90vh',
+        overflowY: 'auto'
+    },
+    modalTitle: {
+        fontSize: '1.5rem',
+        fontWeight: 'bold',
+        marginBottom: '1.5rem',
+        color: 'white'
+    },
+    section: {
+        marginBottom: '1.5rem',
+        paddingBottom: '1rem',
+        borderBottom: '1px solid #374151'
+    },
+    sectionTitle: {
+        fontSize: '0.875rem',
+        fontWeight: '600',
+        color: '#9CA3AF',
+        marginBottom: '1rem',
+        textTransform: 'uppercase',
+        letterSpacing: '0.05em'
+    },
+    formGroup: {
+        marginBottom: '1rem'
+    },
+    label: {
+        display: 'block',
+        marginBottom: '0.5rem',
+        color: '#9CA3AF',
+        fontSize: '0.875rem'
+    },
+    required: {
+        color: '#EF4444',
+        marginLeft: '0.25rem'
+    },
+    hint: {
+        display: 'block',
+        marginTop: '0.25rem',
+        fontSize: '0.75rem',
+        color: '#6B7280'
+    },
+    input: {
+        width: '100%',
+        padding: '0.75rem',
+        background: '#111827',
+        border: '1px solid #374151',
+        borderRadius: '0.5rem',
+        color: 'white',
+        fontSize: '1rem'
+    },
+    textarea: {
+        width: '100%',
+        padding: '0.75rem',
+        background: '#111827',
+        border: '1px solid #374151',
+        borderRadius: '0.5rem',
+        color: 'white',
+        fontSize: '0.875rem',
+        fontFamily: 'inherit',
+        resize: 'vertical'
+    },
+    inputWrapper: {
+        position: 'relative'
+    },
+    currencySymbol: {
+        position: 'absolute',
+        left: '0.75rem',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        color: '#9CA3AF',
+        zIndex: 1
+    },
+    modalInput: {
+        width: '100%',
+        padding: '0.75rem 0.75rem 0.75rem 2rem',
+        background: '#111827',
+        border: '1px solid #374151',
+        borderRadius: '0.5rem',
+        color: 'white',
+        fontSize: '1rem'
+    },
+    modalActions: {
+        display: 'flex',
+        gap: '1rem',
+        marginTop: '1.5rem'
+    },
+    saveButton: {
+        flex: 1,
+        padding: '0.75rem',
+        background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.5rem',
+        fontSize: '1rem',
+        fontWeight: '600',
+        cursor: 'pointer'
+    },
+    cancelButton: {
+        flex: 1,
+        padding: '0.75rem',
+        background: '#4B5563',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.5rem',
+        fontSize: '1rem',
+        fontWeight: '600',
+        cursor: 'pointer'
     }
 };
 

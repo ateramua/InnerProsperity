@@ -1,540 +1,837 @@
-import React, { useState } from 'react';
+// src/views/AllAccountsView.jsx
+import React, { useState, useEffect } from 'react';
+import AddCreditCardModal from './AddCreditCardModal';
+import EditAccountModal from './EditAccountModal';
 
-const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
-    const [formData, setFormData] = useState({
-        accountNumber: '',
-        cardHolderName: '',
-        name: '', // Card name
-        institution: '',
-        limit: '',
-        apr: '',
-        dueDate: '',
-        balance: '',
-        notes: ''
-    });
-    const [errors, setErrors] = useState({});
-    const [isSubmitting, setIsSubmitting] = useState(false);
+const AllAccountsView = () => {
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [editingAccount, setEditingAccount] = useState(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [selectedType, setSelectedType] = useState('all');
 
-    if (!isOpen) return null;
-
-    // Custom handler for APR (text input)
-    const handleAprChange = (e) => {
-        let value = e.target.value;
-
-        if (value === '') {
-            setFormData(prev => ({ ...prev, apr: '' }));
-            if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
-            return;
+  // Add style injection
+  useEffect(() => {
+    const styleId = "spin-animation-style";
+    
+    if (typeof document !== 'undefined' && !document.getElementById(styleId)) {
+      const styleSheet = document.createElement("style");
+      styleSheet.id = styleId;
+      styleSheet.textContent = `
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
         }
-
-        // Replace comma with period (European format)
-        value = value.replace(',', '.');
-
-        // Allow only digits and at most one decimal point
-        const regex = /^\d*\.?\d*$/;
-        if (regex.test(value)) {
-            setFormData(prev => ({ ...prev, apr: value }));
-            if (errors.apr) setErrors(prev => ({ ...prev, apr: undefined }));
+      `;
+      document.head.appendChild(styleSheet);
+    }
+    
+    return () => {
+      if (typeof document !== 'undefined') {
+        const existing = document.getElementById(styleId);
+        if (existing) {
+          document.head.removeChild(existing);
         }
+      }
     };
+  }, []);
 
-    const validateForm = () => {
-        const newErrors = {};
+  // Fetch all accounts
+  const fetchAccounts = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      console.log('📊 Fetching accounts...');
+      
+      // First get current user
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        console.error('❌ No user logged in');
+        setError('Please log in to view accounts');
+        setLoading(false);
+        return;
+      }
+      
+      const userId = userResult.data.id;
+      console.log('👤 User ID:', userId);
+      
+      // Get accounts summary
+      const result = await window.electronAPI.getAccountsSummary(userId);
+      console.log('📊 Accounts result:', result);
+      
+      if (result.success) {
+        const allAccounts = result.data || [];
+        console.log('✅ Loaded accounts:', allAccounts.length);
+        console.table(allAccounts.map(a => ({ id: a.id, name: a.name, type: a.type, balance: a.balance })));
+        setAccounts(allAccounts);
+      } else {
+        console.error('❌ Failed to load accounts:', result.error);
+        setError(result.error || 'Failed to load accounts');
+      }
+    } catch (err) {
+      console.error('❌ Error fetching accounts:', err);
+      setError('Failed to load accounts: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        if (!formData.accountNumber.trim()) {
-            newErrors.accountNumber = 'Account number is required';
-        } else {
-            const digits = formData.accountNumber.replace(/\s/g, '');
-            if (digits.length < 15) {
-                newErrors.accountNumber = 'Account number must be at least 15 digits';
-            } else if (digits.length > 16) {
-                newErrors.accountNumber = 'Account number cannot exceed 16 digits';
-            }
-        }
-
-        if (!formData.cardHolderName.trim()) {
-            newErrors.cardHolderName = 'Card holder name is required';
-        }
-
-        if (!formData.name.trim()) {
-            newErrors.name = 'Card name is required';
-        }
-
-        if (!formData.limit) {
-            newErrors.limit = 'Credit limit is required';
-        } else if (parseFloat(formData.limit) <= 0) {
-            newErrors.limit = 'Credit limit must be greater than 0';
-        }
-
-        if (!formData.dueDate) {
-            newErrors.dueDate = 'Due date is required';
-        }
-
-        // APR validation (optional, but if present must be between 0 and 100)
-        if (formData.apr && (parseFloat(formData.apr) < 0 || parseFloat(formData.apr) > 100)) {
-            newErrors.apr = 'APR must be between 0 and 100';
-        }
-
-        setErrors(newErrors);
-        return Object.keys(newErrors).length === 0;
+  useEffect(() => {
+    fetchAccounts();
+    
+    // Listen for account changes
+    const handleAccountsChanged = () => {
+      console.log('🔄 Accounts changed, refreshing...');
+      fetchAccounts();
     };
-
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-
-        if (!validateForm()) {
-            return;
-        }
-
-        setIsSubmitting(true);
-
-        try {
-            // Prepare data for saving - include ALL fields
-            const cardData = {
-                accountNumber: formData.accountNumber.replace(/\s/g, ''),
-                cardHolderName: formData.cardHolderName,
-                name: formData.name,
-                institution: formData.institution,
-                limit: parseFloat(formData.limit),
-                credit_limit: parseFloat(formData.limit), // Add both for compatibility
-                apr: formData.apr ? parseFloat(formData.apr) : 18.99,
-                interest_rate: formData.apr ? parseFloat(formData.apr) : 18.99, // Add both
-                dueDate: formData.dueDate,
-                due_date: formData.dueDate, // Add both
-                balance: formData.balance ? parseFloat(formData.balance) : 0,
-                notes: formData.notes,
-                type: 'credit'
-            };
-
-            console.log('📤 Sending card data from modal:', cardData); // Add debug log
-
-            await onSave(cardData);
-            onClose();
-
-            // Reset form
-            setFormData({
-                accountNumber: '',
-                cardHolderName: '',
-                name: '',
-                institution: '',
-                limit: '',
-                apr: '',
-                dueDate: '',
-                balance: '',
-                notes: ''
-            });
-        } catch (error) {
-            console.error('Error saving credit card:', error);
-            alert('Failed to save credit card');
-        } finally {
-            setIsSubmitting(false);
-        }
+    
+    window.addEventListener('accounts-changed', handleAccountsChanged);
+    window.addEventListener('accounts-updated', handleAccountsChanged);
+    
+    return () => {
+      window.removeEventListener('accounts-changed', handleAccountsChanged);
+      window.removeEventListener('accounts-updated', handleAccountsChanged);
     };
-    const handleChange = (e) => {
-        const { name, value } = e.target;
-        setFormData(prev => ({ ...prev, [name]: value }));
-        if (errors[name]) {
-            setErrors(prev => ({ ...prev, [name]: undefined }));
-        }
+  }, []);
+
+  // Handle saving new account
+  const handleSaveAccount = async (accountData) => {
+    try {
+      console.log('📝 Creating account with data:', accountData);
+      
+      // Get current user
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in to create an account');
+        return;
+      }
+      
+      const userId = userResult.data.id;
+      
+      // Prepare account data
+      const newAccountData = {
+        ...accountData,
+        user_id: userId,
+        balance: parseFloat(accountData.balance) || 0,
+        account_type_category: accountData.type === 'credit' ? 'credit' : 'budget'
+      };
+      
+      const result = await window.electronAPI.createAccount(newAccountData);
+      
+      if (result.success) {
+        console.log('✅ Account created successfully:', result.data);
+        await fetchAccounts();
+        setShowAddModal(false);
+        window.dispatchEvent(new Event('accounts-changed'));
+        alert('✅ Account created successfully!');
+      } else {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      console.error('❌ Error saving account:', error);
+      alert('Failed to save account: ' + error.message);
+    }
+  };
+
+  // Handle update account
+  const handleUpdateAccount = async (accountId, updates) => {
+    try {
+      console.log('📝 Updating account:', accountId, updates);
+      
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return;
+      }
+      
+      const userId = userResult.data.id;
+      
+      const result = await window.electronAPI.updateAccount(accountId, userId, updates);
+      
+      if (result.success) {
+        console.log('✅ Account updated successfully');
+        await fetchAccounts();
+        setEditingAccount(null);
+        window.dispatchEvent(new Event('accounts-updated'));
+        alert('✅ Account updated successfully!');
+      } else {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      console.error('❌ Error updating account:', error);
+      alert('Failed to update account: ' + error.message);
+    }
+  };
+
+  // Handle delete account
+  const handleDeleteAccount = async (accountId) => {
+    if (!confirm('Are you sure you want to delete this account? This will also delete all associated transactions.')) {
+      return;
+    }
+
+    try {
+      console.log('🗑️ Deleting account:', accountId);
+      
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return;
+      }
+      
+      const userId = userResult.data.id;
+      
+      const result = await window.electronAPI.deleteAccount(accountId, userId);
+      
+      if (result.success) {
+        console.log('✅ Account deleted successfully');
+        await fetchAccounts();
+        window.dispatchEvent(new Event('accounts-changed'));
+        alert('✅ Account deleted successfully');
+      } else {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      console.error('❌ Error deleting account:', error);
+      alert('Failed to delete account: ' + error.message);
+    }
+  };
+
+  // Handle edit button click
+  const handleEditClick = (account) => {
+    console.log('✏️ Editing account:', account);
+    setEditingAccount(account);
+    setShowEditModal(true);
+  };
+
+  // Handle save edit from modal
+  const handleSaveEdit = async (accountId, updatedData) => {
+    console.log('💾 Saving edit for account:', accountId, updatedData);
+    await handleUpdateAccount(accountId, updatedData);
+    setShowEditModal(false);
+    setEditingAccount(null);
+  };
+
+  // Format currency
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(Math.abs(amount || 0));
+  };
+
+  // Get account icon
+  const getAccountIcon = (type) => {
+    const icons = {
+      checking: '💳',
+      savings: '🏦',
+      credit: '💳',
+      loan: '📝',
+      investment: '📈',
+      cash: '💰',
+      other: '📦'
     };
+    return icons[type] || '💰';
+  };
 
-    const formatAccountNumber = (value) => {
-        // Remove all non-digits
-        const digits = value.replace(/\D/g, '');
-
-        // Limit to 16 digits (standard credit card length)
-        const limited = digits.slice(0, 16);
-
-        // Add space every 4 digits
-        const groups = limited.match(/.{1,4}/g);
-        return groups ? groups.join(' ') : limited;
+  // Get account color
+  const getAccountColor = (type) => {
+    const colors = {
+      checking: '#3B82F6',
+      savings: '#10B981',
+      credit: '#F59E0B',
+      loan: '#EF4444',
+      investment: '#8B5CF6',
+      cash: '#6B7280',
+      other: '#9CA3AF'
     };
+    return colors[type] || '#9CA3AF';
+  };
 
+  // Filter accounts
+  const filteredAccounts = selectedType === 'all'
+    ? accounts
+    : accounts.filter(acc => acc.type === selectedType);
+
+  // Calculate totals by type
+  const totals = accounts.reduce((sums, acc) => {
+    const balance = Math.abs(acc.balance || 0);
+    if (acc.type === 'checking') sums.checking = (sums.checking || 0) + balance;
+    if (acc.type === 'savings') sums.savings = (sums.savings || 0) + balance;
+    if (acc.type === 'credit') sums.credit = (sums.credit || 0) + balance;
+    if (acc.type === 'loan') sums.loan = (sums.loan || 0) + balance;
+    if (acc.type === 'investment') sums.investment = (sums.investment || 0) + balance;
+    sums.total += balance;
+    return sums;
+  }, { checking: 0, savings: 0, credit: 0, loan: 0, investment: 0, total: 0 });
+
+  if (loading) {
     return (
-        <div style={styles.modalOverlay} onClick={onClose}>
-            <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
-                <div style={styles.modalHeader}>
-                    <h2 style={styles.modalTitle}>Add Credit Card</h2>
-                    <button onClick={onClose} style={styles.closeButton}>×</button>
-                </div>
-
-                <form onSubmit={handleSubmit}>
-                    {/* Account Number */}
-                    <div style={styles.formGroup}>
-                        <label style={styles.label}>
-                            Account Number <span style={styles.required}>*</span>
-                        </label>
-                        <input
-                            type="text"
-                            name="accountNumber"
-                            value={formData.accountNumber}
-                            onChange={(e) => {
-                                const formatted = formatAccountNumber(e.target.value);
-                                setFormData(prev => ({ ...prev, accountNumber: formatted }));
-                            }}
-                            placeholder="1234 5678 9012 3456"
-                            maxLength="19"
-                            style={{
-                                ...styles.input,
-                                ...(errors.accountNumber ? styles.inputError : {})
-                            }}
-                        />
-                        {errors.accountNumber && (
-                            <div style={styles.fieldError}>{errors.accountNumber}</div>
-                        )}
-                        <div style={styles.hint}>
-                            {formData.accountNumber.replace(/\s/g, '').length} / 16 digits
-                        </div>
-                    </div>
-
-                    {/* Card Holder Name */}
-                    <div style={styles.formGroup}>
-                        <label style={styles.label}>
-                            Card Holder Name <span style={styles.required}>*</span>
-                        </label>
-                        <input
-                            type="text"
-                            name="cardHolderName"
-                            value={formData.cardHolderName}
-                            onChange={handleChange}
-                            placeholder="John Doe"
-                            style={{
-                                ...styles.input,
-                                ...(errors.cardHolderName ? styles.inputError : {})
-                            }}
-                        />
-                        {errors.cardHolderName && (
-                            <div style={styles.fieldError}>{errors.cardHolderName}</div>
-                        )}
-                    </div>
-
-                    {/* Card Name */}
-                    <div style={styles.formGroup}>
-                        <label style={styles.label}>
-                            Card Name <span style={styles.required}>*</span>
-                        </label>
-                        <input
-                            type="text"
-                            name="name"
-                            value={formData.name}
-                            onChange={handleChange}
-                            placeholder="e.g., Chase Sapphire Preferred"
-                            style={{
-                                ...styles.input,
-                                ...(errors.name ? styles.inputError : {})
-                            }}
-                        />
-                        {errors.name && (
-                            <div style={styles.fieldError}>{errors.name}</div>
-                        )}
-                    </div>
-
-                    {/* Institution */}
-                    <div style={styles.formGroup}>
-                        <label style={styles.label}>Institution</label>
-                        <input
-                            type="text"
-                            name="institution"
-                            value={formData.institution}
-                            onChange={handleChange}
-                            placeholder="e.g., Chase, Capital One"
-                            style={styles.input}
-                        />
-                    </div>
-
-                    {/* Two Column Layout */}
-                    <div style={styles.row}>
-                        {/* Credit Limit */}
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>
-                                Credit Limit <span style={styles.required}>*</span>
-                            </label>
-                            <div style={styles.inputWrapper}>
-                                <span style={styles.currencySymbol}>$</span>
-                                <input
-                                    type="number"
-                                    name="limit"
-                                    value={formData.limit}
-                                    onChange={handleChange}
-                                    placeholder="5000"
-                                    min="0"
-                                    step="100"
-                                    style={{
-                                        ...styles.inputWithSymbol,
-                                        ...(errors.limit ? styles.inputError : {})
-                                    }}
-                                />
-                            </div>
-                            {errors.limit && (
-                                <div style={styles.fieldError}>{errors.limit}</div>
-                            )}
-                        </div>
-
-                        {/* APR - now using text input with custom handler */}
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>APR (%)</label>
-                            <input
-                                type="text"
-                                name="apr"
-                                value={formData.apr}
-                                onChange={handleAprChange}
-                                placeholder="18.99"
-                                style={{
-                                    ...styles.input,
-                                    ...(errors.apr ? styles.inputError : {})
-                                }}
-                            />
-                            {errors.apr && (
-                                <div style={styles.fieldError}>{errors.apr}</div>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Two Column Layout */}
-                    <div style={styles.row}>
-                        {/* Due Date */}
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>
-                                Due Date <span style={styles.required}>*</span>
-                            </label>
-                            <input
-                                type="date"
-                                name="dueDate"
-                                value={formData.dueDate}
-                                onChange={handleChange}
-                                style={{
-                                    ...styles.input,
-                                    ...(errors.dueDate ? styles.inputError : {})
-                                }}
-                            />
-                            {errors.dueDate && (
-                                <div style={styles.fieldError}>{errors.dueDate}</div>
-                            )}
-                        </div>
-
-                        {/* Current Balance */}
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Current Balance</label>
-                            <div style={styles.inputWrapper}>
-                                <span style={styles.currencySymbol}>$</span>
-                                <input
-                                    type="number"
-                                    name="balance"
-                                    value={formData.balance}
-                                    onChange={handleChange}
-                                    placeholder="0.00"
-                                    min="0"
-                                    step="0.01"
-                                    style={styles.inputWithSymbol}
-                                />
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Notes */}
-                    <div style={styles.formGroup}>
-                        <label style={styles.label}>Notes (Optional)</label>
-                        <textarea
-                            name="notes"
-                            value={formData.notes}
-                            onChange={handleChange}
-                            placeholder="Add any notes about this card..."
-                            rows="3"
-                            style={styles.textarea}
-                        />
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div style={styles.modalActions}>
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            style={styles.cancelButton}
-                            disabled={isSubmitting}
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            style={styles.saveButton}
-                            disabled={isSubmitting}
-                        >
-                            {isSubmitting ? 'Saving...' : 'Add Credit Card'}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
+      <div style={styles.loadingContainer}>
+        <div style={styles.spinner}></div>
+        <p>Loading your accounts...</p>
+      </div>
     );
+  }
+
+  return (
+    <div style={styles.container}>
+      {/* Header */}
+      <div style={styles.header}>
+        <div>
+          <h1 style={styles.title}>💰 All Accounts</h1>
+          <p style={styles.subtitle}>Manage all your financial accounts in one place</p>
+        </div>
+        <button
+          onClick={() => setShowAddModal(true)}
+          style={styles.addButton}
+        >
+          + Add Account
+        </button>
+      </div>
+
+      {/* Summary Cards - FIXED: Added text overflow handling */}
+      <div style={styles.summaryGrid}>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryIcon}>💳</div>
+          <div style={styles.summaryContent}>
+            <span style={styles.summaryLabel}>Checking</span>
+            <span style={styles.summaryValue}>{formatCurrency(totals.checking)}</span>
+          </div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryIcon}>🏦</div>
+          <div style={styles.summaryContent}>
+            <span style={styles.summaryLabel}>Savings</span>
+            <span style={styles.summaryValue}>{formatCurrency(totals.savings)}</span>
+          </div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryIcon}>💳</div>
+          <div style={styles.summaryContent}>
+            <span style={styles.summaryLabel}>Credit Cards</span>
+            <span style={styles.summaryValue}>{formatCurrency(totals.credit)}</span>
+          </div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryIcon}>📝</div>
+          <div style={styles.summaryContent}>
+            <span style={styles.summaryLabel}>Loans</span>
+            <span style={styles.summaryValue}>{formatCurrency(totals.loan)}</span>
+          </div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryIcon}>📈</div>
+          <div style={styles.summaryContent}>
+            <span style={styles.summaryLabel}>Investments</span>
+            <span style={styles.summaryValue}>{formatCurrency(totals.investment)}</span>
+          </div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryIcon}>💰</div>
+          <div style={styles.summaryContent}>
+            <span style={styles.summaryLabel}>Total Assets</span>
+            <span style={styles.summaryValue}>{formatCurrency(totals.total)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Filter Tabs */}
+      <div style={styles.filterSection}>
+        <div style={styles.filterTabs}>
+          <button
+            onClick={() => setSelectedType('all')}
+            style={{
+              ...styles.filterTab,
+              ...(selectedType === 'all' ? styles.activeFilterTab : {})
+            }}
+          >
+            All ({accounts.length})
+          </button>
+          <button
+            onClick={() => setSelectedType('checking')}
+            style={{
+              ...styles.filterTab,
+              ...(selectedType === 'checking' ? styles.activeFilterTab : {})
+            }}
+          >
+            Checking ({accounts.filter(a => a.type === 'checking').length})
+          </button>
+          <button
+            onClick={() => setSelectedType('savings')}
+            style={{
+              ...styles.filterTab,
+              ...(selectedType === 'savings' ? styles.activeFilterTab : {})
+            }}
+          >
+            Savings ({accounts.filter(a => a.type === 'savings').length})
+          </button>
+          <button
+            onClick={() => setSelectedType('credit')}
+            style={{
+              ...styles.filterTab,
+              ...(selectedType === 'credit' ? styles.activeFilterTab : {})
+            }}
+          >
+            Credit Cards ({accounts.filter(a => a.type === 'credit').length})
+          </button>
+          <button
+            onClick={() => setSelectedType('loan')}
+            style={{
+              ...styles.filterTab,
+              ...(selectedType === 'loan' ? styles.activeFilterTab : {})
+            }}
+          >
+            Loans ({accounts.filter(a => a.type === 'loan').length})
+          </button>
+          <button
+            onClick={() => setSelectedType('investment')}
+            style={{
+              ...styles.filterTab,
+              ...(selectedType === 'investment' ? styles.activeFilterTab : {})
+            }}
+          >
+            Investments ({accounts.filter(a => a.type === 'investment').length})
+          </button>
+        </div>
+      </div>
+
+      {/* Accounts Table */}
+      {error ? (
+        <div style={styles.errorContainer}>
+          <p style={styles.errorText}>Error: {error}</p>
+          <button onClick={fetchAccounts} style={styles.retryButton}>Retry</button>
+        </div>
+      ) : filteredAccounts.length === 0 ? (
+        <div style={styles.emptyState}>
+          <div style={styles.emptyStateIcon}>🏦</div>
+          <h3 style={styles.emptyStateTitle}>No accounts found</h3>
+          <p style={styles.emptyStateText}>
+            {selectedType === 'all'
+              ? 'Add your first account to start tracking your finances'
+              : `No ${selectedType} accounts found. Add one to get started.`
+            }
+          </p>
+          <button
+            onClick={() => setShowAddModal(true)}
+            style={styles.emptyStateButton}
+          >
+            Add Your First Account
+          </button>
+        </div>
+      ) : (
+        <div style={styles.tableContainer}>
+          <table style={styles.table}>
+            <thead>
+              <tr style={styles.tableHeader}>
+                <th style={styles.th}>Account</th>
+                <th style={styles.th}>Type</th>
+                <th style={styles.th}>Institution</th>
+                <th style={styles.th}>Balance</th>
+                <th style={styles.th}>Details</th>
+                <th style={styles.th}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredAccounts.map(account => (
+                <tr key={account.id} style={styles.tableRow}>
+                  <td style={styles.td}>
+                    <div style={styles.accountNameCell}>
+                      <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
+                      <strong>{account.name}</strong>
+                    </div>
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{
+                      ...styles.typeBadge,
+                      background: `${getAccountColor(account.type)}20`,
+                      color: getAccountColor(account.type)
+                    }}>
+                      {account.type}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    {account.institution || '—'}
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{
+                      ...styles.balance,
+                      color: account.type === 'credit' || account.type === 'loan' ? '#EF4444' : '#4ADE80'
+                    }}>
+                      {formatCurrency(account.balance)}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    <div style={styles.detailsList}>
+                      {account.credit_limit && (
+                        <span style={styles.detailBadge}>
+                          Limit: {formatCurrency(account.credit_limit)}
+                        </span>
+                      )}
+                      {account.interest_rate && (
+                        <span style={styles.detailBadge}>
+                          {account.interest_rate}% APR
+                        </span>
+                      )}
+                      {account.due_date && (
+                        <span style={styles.detailBadge}>
+                          Due: {account.due_date}
+                        </span>
+                      )}
+                      {account.apr && !account.interest_rate && (
+                        <span style={styles.detailBadge}>
+                          {account.apr}% APR
+                        </span>
+                      )}
+                      {account.account_number && (
+                        <span style={styles.detailBadge}>
+                          Acct: ••••{account.account_number.slice(-4)}
+                        </span>
+                      )}
+                      {account.account_holder_name && (
+                        <span style={styles.detailBadge}>
+                          Holder: {account.account_holder_name}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td style={styles.td}>
+                    <div style={styles.actionButtons}>
+                      <button
+                        onClick={() => handleEditClick(account)}
+                        style={styles.editButton}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteAccount(account.id)}
+                        style={styles.deleteButton}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add Account Modal */}
+      <AddCreditCardModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onSave={handleSaveAccount}
+      />
+
+      {/* Edit Account Modal */}
+      <EditAccountModal
+        isOpen={showEditModal}
+        onClose={() => {
+          setShowEditModal(false);
+          setEditingAccount(null);
+        }}
+        onSave={handleSaveEdit}
+        onDelete={handleDeleteAccount}
+        account={editingAccount}
+      />
+    </div>
+  );
 };
 
 const styles = {
-    modalOverlay: {
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0, 0, 0, 0.7)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000
-    },
-    modalContent: {
-        background: '#1F2937',
-        borderRadius: '1rem',
-        padding: '2rem',
-        width: '90%',
-        maxWidth: '600px',
-        maxHeight: '90vh',
-        overflowY: 'auto'
-    },
-    modalHeader: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '1.5rem'
-    },
-    modalTitle: {
-        fontSize: '1.5rem',
-        fontWeight: 'bold',
-        color: 'white',
-        margin: 0
-    },
-    closeButton: {
-        background: 'none',
-        border: 'none',
-        color: '#9CA3AF',
-        fontSize: '2rem',
-        cursor: 'pointer',
-        lineHeight: 1,
-        padding: '0 0.5rem',
-        ':hover': {
-            color: 'white'
-        }
-    },
-    formGroup: {
-        marginBottom: '1.5rem',
-        flex: 1
-    },
-    row: {
-        display: 'flex',
-        gap: '1rem',
-        marginBottom: '0.5rem'
-    },
-    label: {
-        display: 'block',
-        marginBottom: '0.5rem',
-        color: '#9CA3AF',
-        fontSize: '0.875rem',
-        fontWeight: '500'
-    },
-    required: {
-        color: '#EF4444'
-    },
-    input: {
-        width: '100%',
-        padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
-        borderRadius: '0.5rem',
-        color: 'white',
-        fontSize: '1rem',
-        transition: 'all 0.2s',
-        ':focus': {
-            outline: 'none',
-            borderColor: '#3B82F6'
-        }
-    },
-    inputError: {
-        borderColor: '#EF4444'
-    },
-    inputWrapper: {
-        position: 'relative'
-    },
-    currencySymbol: {
-        position: 'absolute',
-        left: '0.75rem',
-        top: '50%',
-        transform: 'translateY(-50%)',
-        color: '#9CA3AF'
-    },
-    inputWithSymbol: {
-        width: '100%',
-        padding: '0.75rem 0.75rem 0.75rem 2rem',
-        background: '#111827',
-        border: '1px solid #374151',
-        borderRadius: '0.5rem',
-        color: 'white',
-        fontSize: '1rem'
-    },
-    textarea: {
-        width: '100%',
-        padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
-        borderRadius: '0.5rem',
-        color: 'white',
-        fontSize: '1rem',
-        fontFamily: 'inherit',
-        resize: 'vertical'
-    },
-    fieldError: {
-        color: '#EF4444',
-        fontSize: '0.75rem',
-        marginTop: '0.25rem'
-    },
-    hint: {
-        color: '#9CA3AF',
-        fontSize: '0.75rem',
-        marginTop: '0.25rem',
-        textAlign: 'right'
-    },
-    modalActions: {
-        display: 'flex',
-        gap: '1rem',
-        marginTop: '2rem'
-    },
-    saveButton: {
-        flex: 2,
-        padding: '0.75rem',
-        background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
-        color: 'white',
-        border: 'none',
-        borderRadius: '0.5rem',
-        fontSize: '1rem',
-        fontWeight: '600',
-        cursor: 'pointer',
-        transition: 'all 0.2s',
-        ':hover': {
-            transform: 'translateY(-2px)',
-            boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)'
-        },
-        ':disabled': {
-            opacity: 0.5,
-            cursor: 'not-allowed'
-        }
-    },
-    cancelButton: {
-        flex: 1,
-        padding: '0.75rem',
-        background: '#4B5563',
-        color: 'white',
-        border: 'none',
-        borderRadius: '0.5rem',
-        fontSize: '1rem',
-        fontWeight: '500',
-        cursor: 'pointer',
-        transition: 'all 0.2s',
-        ':hover': {
-            background: '#6B7280'
-        },
-        ':disabled': {
-            opacity: 0.5,
-            cursor: 'not-allowed'
-        }
+  container: {
+    padding: '2rem',
+    maxWidth: '1400px',
+    margin: '0 auto',
+    color: 'white'
+  },
+  loadingContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '400px',
+    color: '#9CA3AF'
+  },
+  spinner: {
+    width: '40px',
+    height: '40px',
+    border: '3px solid #374151',
+    borderTopColor: '#3B82F6',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+    marginBottom: '1rem'
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '2rem',
+    flexWrap: 'wrap',
+    gap: '1rem'
+  },
+  title: {
+    fontSize: '2rem',
+    fontWeight: 'bold',
+    margin: 0,
+    background: 'linear-gradient(135deg, #3B82F6, #10B981)',
+    WebkitBackgroundClip: 'text',
+    WebkitTextFillColor: 'transparent'
+  },
+  subtitle: {
+    fontSize: '0.875rem',
+    color: '#9CA3AF',
+    marginTop: '0.5rem'
+  },
+  addButton: {
+    padding: '0.75rem 1.5rem',
+    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    ':hover': {
+      transform: 'translateY(-2px)',
+      boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
     }
+  },
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gap: '1rem',
+    marginBottom: '2rem'
+  },
+  summaryCard: {
+    background: '#1F2937',
+    padding: '1.25rem',
+    borderRadius: '0.75rem',
+    border: '1px solid #374151',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '1rem',
+    minWidth: 0, // Allows flex item to shrink below content size
+    overflow: 'hidden' // Prevents overflow
+  },
+  summaryIcon: {
+    fontSize: '2rem',
+    flexShrink: 0 // Prevents icon from shrinking
+  },
+  summaryContent: {
+    flex: 1,
+    minWidth: 0, // Allows text truncation
+    overflow: 'hidden' // Prevents overflow
+  },
+  summaryLabel: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    marginBottom: '0.25rem',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    display: 'block',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+  },
+  summaryValue: {
+    fontSize: '1.25rem',
+    fontWeight: 'bold',
+    display: 'block',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+  },
+  filterSection: {
+    marginBottom: '2rem'
+  },
+  filterTabs: {
+    display: 'flex',
+    gap: '0.5rem',
+    borderBottom: '1px solid #374151',
+    paddingBottom: '0.5rem',
+    flexWrap: 'wrap'
+  },
+  filterTab: {
+    padding: '0.5rem 1rem',
+    background: 'none',
+    border: 'none',
+    color: '#9CA3AF',
+    cursor: 'pointer',
+    fontSize: '0.875rem',
+    fontWeight: '500',
+    borderRadius: '0.375rem',
+    transition: 'all 0.2s'
+  },
+  activeFilterTab: {
+    color: '#3B82F6',
+    background: 'rgba(59, 130, 246, 0.1)'
+  },
+  tableContainer: {
+    overflowX: 'auto',
+    background: '#1F2937',
+    borderRadius: '0.75rem',
+    border: '1px solid #374151'
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    minWidth: '800px'
+  },
+  tableHeader: {
+    borderBottom: '1px solid #374151',
+    background: '#111827'
+  },
+  th: {
+    padding: '1rem',
+    textAlign: 'left',
+    color: '#9CA3AF',
+    fontWeight: '600',
+    fontSize: '0.875rem'
+  },
+  tableRow: {
+    borderBottom: '1px solid #374151',
+    transition: 'background 0.2s',
+    ':hover': {
+      background: '#2D3748'
+    }
+  },
+  td: {
+    padding: '1rem',
+    verticalAlign: 'middle'
+  },
+  accountNameCell: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem'
+  },
+  accountIcon: {
+    fontSize: '1.25rem'
+  },
+  typeBadge: {
+    padding: '0.25rem 0.75rem',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
+    fontWeight: '600',
+    textTransform: 'capitalize',
+    display: 'inline-block'
+  },
+  balance: {
+    fontWeight: '600',
+    fontSize: '1rem',
+    whiteSpace: 'nowrap'
+  },
+  detailsList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem'
+  },
+  detailBadge: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    background: '#374151',
+    padding: '0.125rem 0.5rem',
+    borderRadius: '0.25rem',
+    display: 'inline-block',
+    width: 'fit-content',
+    whiteSpace: 'nowrap'
+  },
+  actionButtons: {
+    display: 'flex',
+    gap: '0.5rem'
+  },
+  editButton: {
+    padding: '0.25rem 0.75rem',
+    background: '#3B82F6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    cursor: 'pointer',
+    fontSize: '0.75rem',
+    transition: 'all 0.2s',
+    ':hover': {
+      background: '#2563EB'
+    }
+  },
+  deleteButton: {
+    padding: '0.25rem 0.75rem',
+    background: '#EF4444',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    cursor: 'pointer',
+    fontSize: '0.75rem',
+    transition: 'all 0.2s',
+    ':hover': {
+      background: '#DC2626'
+    }
+  },
+  editInput: {
+    padding: '0.25rem 0.5rem',
+    background: '#111827',
+    border: '1px solid #3B82F6',
+    borderRadius: '0.375rem',
+    color: 'white',
+    fontSize: '0.875rem',
+    outline: 'none'
+  },
+  emptyState: {
+    textAlign: 'center',
+    padding: '3rem',
+    background: '#1F2937',
+    borderRadius: '0.75rem',
+    border: '1px solid #374151'
+  },
+  emptyStateIcon: {
+    fontSize: '4rem',
+    marginBottom: '1rem'
+  },
+  emptyStateTitle: {
+    fontSize: '1.25rem',
+    fontWeight: '600',
+    margin: '0 0 0.5rem 0',
+    color: 'white'
+  },
+  emptyStateText: {
+    color: '#9CA3AF',
+    marginBottom: '1.5rem'
+  },
+  emptyStateButton: {
+    padding: '0.75rem 1.5rem',
+    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    cursor: 'pointer',
+    fontSize: '0.875rem',
+    fontWeight: '500'
+  },
+  errorContainer: {
+    textAlign: 'center',
+    padding: '2rem',
+    background: '#1F2937',
+    borderRadius: '0.75rem',
+    border: '1px solid #EF4444'
+  },
+  errorText: {
+    color: '#EF4444',
+    marginBottom: '1rem'
+  },
+  retryButton: {
+    padding: '0.5rem 1rem',
+    background: '#374151',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    cursor: 'pointer'
+  }
 };
 
-export default AddCreditCardModal;
+export default AllAccountsView;

@@ -231,6 +231,189 @@ async function getDatabase() {
     }
 }
 
+// ==================== TABLE CREATION HELPER (SURGICAL FIX) ====================
+async function ensureAllTablesExist(dbConnection) {
+    console.log('🔧 Ensuring all required tables exist...');
+    
+    await dbConnection.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            email TEXT UNIQUE,
+            full_name TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE TABLE IF NOT EXISTS category_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            is_hidden INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS categories (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            group_id TEXT,
+            assigned REAL DEFAULT 0,
+            activity REAL DEFAULT 0,
+            available REAL DEFAULT 0,
+            target_type TEXT,
+            target_amount REAL,
+            target_date DATE,
+            priority INTEGER DEFAULT 2,
+            last_month_assigned REAL DEFAULT 0,
+            average_spending REAL DEFAULT 0,
+            is_hidden INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            balance REAL DEFAULT 0,
+            cleared_balance REAL DEFAULT 0,
+            working_balance REAL DEFAULT 0,
+            account_type_category TEXT DEFAULT 'budget',
+            currency TEXT DEFAULT 'USD',
+            institution TEXT,
+            credit_limit REAL,
+            interest_rate REAL,
+            due_date DATE,
+            minimum_payment REAL,
+            original_balance REAL,
+            term_months INTEGER,
+            payment_amount REAL,
+            payment_frequency TEXT DEFAULT 'monthly',
+            next_payment_date DATE,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            date DATE NOT NULL,
+            description TEXT,
+            amount REAL NOT NULL,
+            category_id TEXT,
+            payee TEXT,
+            memo TEXT,
+            is_cleared INTEGER DEFAULT 0,
+            plaid_transaction_id TEXT UNIQUE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (account_id) REFERENCES accounts(id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (category_id) REFERENCES categories(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            description TEXT
+        );
+        
+        CREATE TABLE IF NOT EXISTS plaid_items (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            access_token TEXT NOT NULL,
+            institution_id TEXT,
+            institution_name TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            last_sync DATETIME,
+            cursor TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS plaid_accounts (
+            plaid_account_id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            account_id TEXT,
+            mask TEXT,
+            name TEXT,
+            official_name TEXT,
+            type TEXT,
+            subtype TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (item_id) REFERENCES plaid_items(id),
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS plaid_category_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            plaid_category TEXT NOT NULL,
+            category_id TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (category_id) REFERENCES categories(id),
+            UNIQUE(user_id, plaid_category)
+        );
+        
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            updated_at DATETIME,
+            PRIMARY KEY (user_id, key),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    `);
+    
+    // Insert demo data if tables are empty
+    const userCount = await dbConnection.get('SELECT COUNT(*) as count FROM users');
+    if (userCount.count === 0) {
+        console.log('📝 Inserting demo user...');
+        await dbConnection.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (2, 'demo', 'demo@example.com', 'Demo User')`);
+    }
+    
+    const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
+    if (groupCount.count === 0) {
+        console.log('📝 Inserting demo category groups...');
+        await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
+            (1, 2, 'Fixed Expenses', 1), 
+            (2, 2, 'Variable Expenses', 2)`);
+    }
+    
+    const catCount = await dbConnection.get('SELECT COUNT(*) as count FROM categories WHERE user_id = 2');
+    if (catCount.count === 0) {
+        console.log('📝 Inserting demo categories...');
+        await dbConnection.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
+            ('cat1', 2, 'Groceries', 2, 0), 
+            ('cat2', 2, 'Rent', 1, 1500), 
+            ('cat3', 2, 'Utilities', 1, 200),
+            ('cat4', 2, 'Dining Out', 2, 300), 
+            ('cat5', 2, 'Transportation', 2, 150)`);
+    }
+    
+    const accountCount = await dbConnection.get('SELECT COUNT(*) as count FROM accounts WHERE user_id = 2');
+    if (accountCount.count === 0) {
+        console.log('📝 Inserting demo accounts...');
+        await dbConnection.run(`INSERT OR IGNORE INTO accounts (id, user_id, name, type, balance, institution) VALUES 
+            ('test4', 2, 'Checking', 'checking', 3450.89, 'Chase'), 
+            ('1faa4471-bbd8-4fbb-9c06-716c9373eb75', 2, 'Savings', 'savings', 10000, 'Chase')`);
+    }
+    
+    console.log('✅ Tables verified and demo data seeded');
+}
+
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
     console.log('📦 Initializing database...');
@@ -239,153 +422,13 @@ async function initDatabase() {
     if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
     const dbExists = fs.existsSync(dbPath);
     console.log('📂 Database exists:', dbExists);
-    if ((app.isPackaged || !isDev) && !dbExists) {
-        console.log('📦 First run in production - creating new database...');
-        try {
-            const sqlite3 = require('sqlite3');
-            const { open } = require('sqlite');
-            db = await open({ filename: dbPath, driver: sqlite3.Database });
-            await db.exec(`
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE,
-                    email TEXT UNIQUE,
-                    full_name TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS category_groups (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    name TEXT NOT NULL,
-                    sort_order INTEGER DEFAULT 0,
-                    is_hidden INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                );
-                CREATE TABLE IF NOT EXISTS categories (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    group_id TEXT,
-                    assigned REAL DEFAULT 0,
-                    activity REAL DEFAULT 0,
-                    available REAL DEFAULT 0,
-                    target_type TEXT,
-                    target_amount REAL,
-                    target_date DATE,
-                    priority INTEGER DEFAULT 2,
-                    last_month_assigned REAL DEFAULT 0,
-                    average_spending REAL DEFAULT 0,
-                    is_hidden INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                );
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    balance REAL DEFAULT 0,
-                    cleared_balance REAL DEFAULT 0,
-                    working_balance REAL DEFAULT 0,
-                    account_type_category TEXT DEFAULT 'budget',
-                    currency TEXT DEFAULT 'USD',
-                    institution TEXT,
-                    credit_limit REAL,
-                    interest_rate REAL,
-                    due_date DATE,
-                    minimum_payment REAL,
-                    is_active INTEGER DEFAULT 1,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                );
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    account_id TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    date DATE NOT NULL,
-                    description TEXT,
-                    amount REAL NOT NULL,
-                    category_id TEXT,
-                    payee TEXT,
-                    memo TEXT,
-                    is_cleared INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (account_id) REFERENCES accounts(id),
-                    FOREIGN KEY (user_id) REFERENCES users(id),
-                    FOREIGN KEY (category_id) REFERENCES categories(id)
-                );
-                CREATE TABLE IF NOT EXISTS migrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS plaid_items (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    access_token TEXT NOT NULL,
-                    institution_id TEXT,
-                    institution_name TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME,
-                    last_sync DATETIME,
-                    cursor TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                );
-                CREATE TABLE IF NOT EXISTS plaid_accounts (
-                    plaid_account_id TEXT PRIMARY KEY,
-                    item_id TEXT NOT NULL,
-                    account_id TEXT,
-                    mask TEXT,
-                    name TEXT,
-                    official_name TEXT,
-                    type TEXT,
-                    subtype TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME,
-                    FOREIGN KEY (item_id) REFERENCES plaid_items(id),
-                    FOREIGN KEY (account_id) REFERENCES accounts(id)
-                );
-                CREATE TABLE IF NOT EXISTS plaid_category_mappings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    plaid_category TEXT NOT NULL,
-                    category_id TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME,
-                    FOREIGN KEY (user_id) REFERENCES users(id),
-                    FOREIGN KEY (category_id) REFERENCES categories(id),
-                    UNIQUE(user_id, plaid_category)
-                );
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    user_id INTEGER NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT,
-                    updated_at DATETIME,
-                    PRIMARY KEY (user_id, key),
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                );
-            `);
-            await db.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (2, 'demo', 'demo@example.com', 'Demo User')`);
-            await db.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES (1, 2, 'Fixed Expenses', 1), (2, 2, 'Variable Expenses', 2)`);
-            await db.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
-                ('cat1', 2, 'Groceries', 2, 0), ('cat2', 2, 'Rent', 1, 1500), ('cat3', 2, 'Utilities', 1, 200),
-                ('cat4', 2, 'Dining Out', 2, 300), ('cat5', 2, 'Transportation', 2, 150)`);
-            await db.run(`INSERT OR IGNORE INTO accounts (id, user_id, name, type, balance, institution) VALUES 
-                ('test4', 2, 'Checking', 'checking', 3450.89, 'Chase'), ('1faa4471-bbd8-4fbb-9c06-716c9373eb75', 2, 'Savings', 'savings', 10000, 'Chase')`);
-            await db.run(`INSERT OR IGNORE INTO transactions (account_id, user_id, date, description, amount, category_id, payee) VALUES 
-                ('test4', 2, date('now', '-5 days'), 'Grocery Store', -145.67, 'cat1', 'Walmart'),
-                ('test4', 2, date('now', '-10 days'), 'Electric Bill', -85.20, 'cat3', 'Power Company'),
-                ('test4', 2, date('now', '-15 days'), 'Restaurant', -45.99, 'cat4', 'Olive Garden')`);
-            console.log('✅ Created database with schema and sample data');
-            return db;
-        } catch (error) {
-            console.error('❌ Failed to create database:', error);
-            throw error;
-        }
-    }
+    
     try {
         const database = await getDatabase();
+        
+        // CRITICAL FIX: Always ensure all tables exist
+        await ensureAllTablesExist(database);
+        
         console.log('✅ Database initialized successfully');
         return database;
     } catch (error) {
