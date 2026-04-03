@@ -26,6 +26,7 @@ const PropertyMapView = () => {
     assigned: 0,
     groupId: null
   });
+  const [showHiddenCategories, setShowHiddenCategories] = useState(false);
 
   // Initialize BudgetEngine with empty data first
   const [budgetEngine] = useState(() => new BudgetEngine());
@@ -196,6 +197,46 @@ const PropertyMapView = () => {
     });
   };
 
+  // ==================== HIDE/UNHIDE CATEGORY ====================
+  const handleToggleHideCategory = async (category) => {
+    const newHiddenStatus = category.hidden ? 0 : 1;
+    const action = newHiddenStatus === 1 ? 'hide' : 'unhide';
+
+    if (action === 'hide') {
+      if (!confirm(`Hide "${category.name}"? It will no longer appear in your budget unless you show hidden categories.`)) {
+        return;
+      }
+    }
+
+    try {
+      console.log(`👁️ ${action}ing category:`, category.name);
+
+      // Update in database
+      const result = await window.electronAPI.updateCategory(category.id, {
+        hidden: newHiddenStatus
+      });
+
+      if (result && result.success) {
+        // Update local state
+        setBudgetData(prev => ({
+          ...prev,
+          categories: prev.categories.map(cat =>
+            cat.id === category.id
+              ? { ...cat, hidden: newHiddenStatus }
+              : cat
+          )
+        }));
+
+        alert(`✅ Category "${category.name}" is now ${action === 'hide' ? 'hidden' : 'visible'}.`);
+      } else {
+        alert('❌ Failed to update category: ' + (result?.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error toggling category visibility:', error);
+      alert('Error: ' + error.message);
+    }
+  };
+
   const getTotalUnderfunded = () => {
     let total = 0;
     budgetData.categories.forEach(cat => {
@@ -222,40 +263,36 @@ const PropertyMapView = () => {
   const calculateReadyToAssign = () => {
     const categories = budgetData.categories;
 
+    // Get all inflow transactions (income) from the inflow category
+    const getInflowTotal = async () => {
+      try {
+        const result = await window.electronAPI.getTransactions({
+          categoryId: 'inflow_ready_to_assign',
+          userId: userId,
+          startDate: new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).toISOString().split('T')[0]
+        });
+        if (result.success) {
+          return result.data.reduce((sum, t) => sum + (t.amount > 0 ? t.amount : 0), 0);
+        }
+      } catch (error) {
+        console.error('Error getting inflow transactions:', error);
+      }
+      return 0;
+    };
+
     // Total assigned (sum of all assigned amounts)
     const totalAssigned = categories.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
 
-    // Total activity (sum of all activity)
-    const totalActivity = categories.reduce((sum, cat) => sum + (cat.activity || 0), 0);
+    // Get inflow total for the current month
+    getInflowTotal().then(inflowTotal => {
+      let readyToAssign = totalCashInAccounts + inflowTotal - totalAssigned;
 
-    let readyToAssign = 0;
-
-    if (budgetEngine && typeof budgetEngine.calculateReadyToAssign === 'function') {
-      try {
-        readyToAssign = budgetEngine.calculateReadyToAssign(
-          totalCashInAccounts,
-          totalAssigned
-        );
-      } catch (error) {
-        console.error('Error calculating ready to assign with budgetEngine:', error);
-        readyToAssign = totalCashInAccounts - totalAssigned;
-      }
-    } else {
-      readyToAssign = totalCashInAccounts - totalAssigned;
-    }
-
-    setBudgetSummary({
-      totalAvailable: readyToAssign,
-      totalActivity,
-      totalAssigned,
-      unassigned: readyToAssign
-    });
-
-    console.log('📊 Budget Summary Calculated:', {
-      totalCashInAccounts,
-      totalAssigned,
-      readyToAssign,
-      totalActivity
+      setBudgetSummary({
+        totalAvailable: readyToAssign,
+        totalActivity: categories.reduce((sum, cat) => sum + (cat.activity || 0), 0),
+        totalAssigned: totalAssigned,
+        unassigned: readyToAssign
+      });
     });
   };
 
@@ -448,32 +485,71 @@ const PropertyMapView = () => {
   };
 
   // ==================== ADD INCOME FUNCTIONALITY ====================
-  const handleAddIncome = () => {
+  const handleAddIncome = async () => {
     const amount = parseFloat(incomeData.amount);
     if (isNaN(amount) || amount <= 0) {
       alert('Please enter a valid amount');
       return;
     }
 
-    // Add to total cash in accounts (increases Ready to Assign)
-    setTotalCashInAccounts(prev => prev + amount);
+    try {
+      // Get current user
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to add income');
+        return;
+      }
 
-    console.log('Income added to Ready to Assign:', {
-      amount,
-      date: incomeData.date,
-      memo: incomeData.memo,
-      newReadyToAssign: totalCashInAccounts + amount - budgetSummary.totalAssigned
-    });
+      // Get default account (first checking/savings account)
+      const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+      const defaultAccount = accountsResult?.data?.find(a => a.type === 'checking' || a.type === 'savings');
 
-    // Reset form and close modal
-    setIncomeData({
-      amount: '',
-      date: new Date().toISOString().split('T')[0],
-      memo: ''
-    });
-    setShowAddIncomeModal(false);
+      if (!defaultAccount) {
+        alert('No account found to record income to');
+        return;
+      }
 
-    alert(`✅ $${amount.toFixed(2)} added to Ready to Assign`);
+      // Create transaction for income
+      const transactionData = {
+        accountId: defaultAccount.id,
+        date: incomeData.date,
+        payee: incomeData.memo || 'Income',
+        description: incomeData.memo || 'Income',
+        amount: amount, // Positive amount for income
+        categoryId: 'inflow_ready_to_assign', // Special YNAB-style category
+        memo: incomeData.memo,
+        cleared: 1
+      };
+
+      console.log('📝 Creating income transaction:', transactionData);
+      const result = await window.electronAPI.addTransaction(transactionData);
+
+      if (result.success) {
+        // Add to total cash in accounts (increases Ready to Assign)
+        setTotalCashInAccounts(prev => prev + amount);
+
+        console.log('Income added to Ready to Assign:', {
+          amount,
+          date: incomeData.date,
+          memo: incomeData.memo
+        });
+
+        // Reset form and close modal
+        setIncomeData({
+          amount: '',
+          date: new Date().toISOString().split('T')[0],
+          memo: ''
+        });
+        setShowAddIncomeModal(false);
+
+        alert(`✅ $${amount.toFixed(2)} added to Ready to Assign`);
+      } else {
+        alert('❌ Error recording income: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Error adding income:', error);
+      alert('❌ Error adding income: ' + error.message);
+    }
   };
 
   // ==================== RECORD PAYMENT FUNCTIONALITY ====================
@@ -1051,7 +1127,8 @@ const PropertyMapView = () => {
             target_date: cat.target_date,
             progress: 0, // Will be calculated
             last_month_assigned: cat.last_month_assigned || 0,
-            average_spending: cat.average_spending || 0
+            average_spending: cat.average_spending || 0,
+            hidden: cat.hidden || 0 // IMPORTANT: Include hidden field
           }));
 
           console.log('📋 Transformed categories:', dbCategories.length);
@@ -1097,131 +1174,14 @@ const PropertyMapView = () => {
       console.log('📋 Category groups result:', JSON.stringify(result, null, 2));
 
       if (result.success && result.data && result.data.length > 0) {
-        // ===== PART 1: DELETE ALL EXISTING DUPLICATES =====
-        const groupNames = {};
-        const groupsToDelete = [];
-        const uniqueGroups = [];
+        // Process existing groups (keep your duplicate removal logic)
+        // ... your existing duplicate removal code ...
 
-        // First pass: organize groups by name (case insensitive)
-        result.data.forEach(group => {
-          const name = group.name.toUpperCase().trim();
-          if (!groupNames[name]) {
-            groupNames[name] = [];
-          }
-          groupNames[name].push(group);
-        });
-
-        // Second pass: keep ONE group per name, delete the rest
-        Object.keys(groupNames).forEach(name => {
-          const groups = groupNames[name];
-
-          if (groups.length > 1) {
-            console.log(`🧹 Found ${groups.length} duplicate groups for "${name}"`);
-
-            // Sort by creation date if available, or just keep the first one
-            const sortedGroups = groups.sort((a, b) => {
-              // If you have created_at field, use it
-              if (a.created_at && b.created_at) {
-                return new Date(a.created_at) - new Date(b.created_at);
-              }
-              return 0;
-            });
-
-            // Keep the first/oldest one
-            const [keep, ...toDelete] = sortedGroups;
-            uniqueGroups.push(keep);
-
-            console.log(`✅ Keeping one "${name}" group:`, keep.id);
-
-            // Mark rest for deletion
-            toDelete.forEach(group => {
-              groupsToDelete.push({
-                group: group,
-                keepId: keep.id,
-                name: name
-              });
-            });
-          } else {
-            // No duplicates, just keep the single group
-            uniqueGroups.push(groups[0]);
-          }
-        });
-
-        // Delete all duplicate groups
-        if (groupsToDelete.length > 0) {
-          console.log('🗑️ Deleting', groupsToDelete.length, 'duplicate groups...');
-
-          for (const item of groupsToDelete) {
-            try {
-              // Update any categories that reference this group to point to the kept group
-              if (window.electronAPI.updateCategoriesForGroup) {
-                await window.electronAPI.updateCategoriesForGroup(item.group.id, { group_id: item.keepId });
-                console.log(`🔄 Moved categories from ${item.group.id} to ${item.keepId}`);
-              }
-
-              // Delete the duplicate group
-              await window.electronAPI.deleteCategoryGroup(item.group.id, userId);
-              console.log(`✅ Deleted duplicate ${item.name} group: ${item.group.id}`);
-            } catch (e) {
-              console.log(`⚠️ Could not delete duplicate ${item.name} group:`, item.group.id, e);
-            }
-          }
-
-          // Fetch fresh data after cleanup
-          const freshResult = await window.electronAPI.getCategoryGroups(userId);
-          if (freshResult.success && freshResult.data) {
-            console.log('✅ Loaded groups after duplicate cleanup:', freshResult.data.length);
-            setCategoryGroups(freshResult.data);
-          } else {
-            setCategoryGroups(uniqueGroups);
-          }
-        } else {
-          // No duplicates found
-          console.log('✅ Loaded EXISTING groups from DB (no duplicates):', result.data.length);
-          setCategoryGroups(result.data);
-        }
-
-        // ===== PART 2: PREVENT FUTURE DUPLICATES =====
-        // Store unique group names in localStorage for quick reference
-        const uniqueGroupNames = uniqueGroups.map(g => g.name.toUpperCase().trim());
-        localStorage.setItem('uniqueGroupNames', JSON.stringify(uniqueGroupNames));
-
+        setCategoryGroups(result.data); // or uniqueGroups
       } else {
-        console.log('⚠️ No groups found in DB - creating defaults...');
-        // Only create defaults if absolutely no groups exist
-        console.log('Creating default groups as fallback...');
-
-        const defaultGroups = [
-          { name: 'Fixed Expenses', order: 0 },
-          { name: 'Variable Expenses', order: 1 },
-          { name: 'Savings Goals', order: 2 },
-          { name: 'Debt', order: 3 }
-        ];
-
-        const createdGroups = [];
-        for (const group of defaultGroups) {
-          try {
-            const createResult = await window.electronAPI.createCategoryGroup(
-              userId,
-              group.name,
-              group.order
-            );
-            if (createResult.success && createResult.data) {
-              createdGroups.push(createResult.data);
-            }
-          } catch (err) {
-            console.error('Error creating group:', group.name, err);
-          }
-        }
-
-        if (createdGroups.length > 0) {
-          setCategoryGroups(createdGroups);
-          // Store unique names
-          const uniqueGroupNames = createdGroups.map(g => g.name.toUpperCase().trim());
-          localStorage.setItem('uniqueGroupNames', JSON.stringify(uniqueGroupNames));
-        } else {
-          setCategoryGroups([]);
-        }
+        // DON'T auto-create - just set empty array
+        console.log('⚠️ No groups found in DB');
+        setCategoryGroups([]); // Just set empty array instead of creating defaults
       }
     } catch (error) {
       console.error('Error loading category groups:', error);
@@ -1312,6 +1272,141 @@ const PropertyMapView = () => {
       alert('Error running debug: ' + error.message);
     }
   };
+
+  // ==================== FORCE DISPLAY ALL HIDDEN CATEGORIES ====================
+  const showAllHiddenCategories = async () => {
+    try {
+      console.log('🔍 FORCE DISPLAY: Fetching ALL categories from database...');
+
+      // Get all groups first
+      const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+      const allGroups = groupsResult.data || [];
+
+      // Get ALL categories from database (including hidden ones)
+      const categoriesResult = await window.electronAPI.getCategories(userId);
+      const allCategories = categoriesResult.data || [];
+
+      console.log(`📊 Found ${allCategories.length} total categories in database`);
+
+      // Find categories with group_id that matches any group
+      const groupedCategories = allCategories.filter(c => c.group_id);
+      const ungroupedCategories = allCategories.filter(c => !c.group_id);
+
+      console.log(`📋 Grouped categories: ${groupedCategories.length}`);
+      console.log(`📋 Ungrouped categories: ${ungroupedCategories.length}`);
+
+      // Log all categories with their group info
+      console.log('\n🔍 ALL CATEGORIES IN DATABASE:');
+      allCategories.forEach(cat => {
+        const group = allGroups.find(g => g.id === cat.group_id);
+        console.log(`  - "${cat.name}" (ID: ${cat.id}) -> Group: "${group?.name || 'NO GROUP'}" (${cat.group_id || 'NULL'}), Hidden: ${cat.hidden || 0}`);
+      });
+
+      // Force update the UI to show ALL categories regardless of group
+      const allTransformedCategories = allCategories.map(cat => ({
+        id: cat.id,
+        name: cat.name,
+        assigned: cat.assigned || 0,
+        activity: cat.activity || 0,
+        available: cat.available || 0,
+        groupId: cat.group_id,
+        user_id: cat.user_id,
+        priority: cat.priority || 2,
+        target_amount: cat.target_amount,
+        target_type: cat.target_type || 'monthly',
+        target_date: cat.target_date,
+        progress: 0,
+        last_month_assigned: cat.last_month_assigned || 0,
+        average_spending: cat.average_spending || 0,
+        hidden: cat.hidden || 0
+      }));
+
+      // Update UI with ALL categories
+      setBudgetData(prev => ({
+        ...prev,
+        categories: allTransformedCategories
+      }));
+      setCategories(allTransformedCategories);
+
+      // Also create a temporary group for orphaned categories if needed
+      const orphanedCategories = allCategories.filter(c => !c.group_id);
+      if (orphanedCategories.length > 0) {
+        console.log(`⚠️ Found ${orphanedCategories.length} orphaned categories with no group!`);
+
+        // Check if "Orphaned Categories" group exists
+        let orphanGroup = allGroups.find(g => g.name === 'Orphaned Categories');
+
+        if (!orphanGroup) {
+          // Create a temporary group for orphaned categories
+          console.log('📝 Creating "Orphaned Categories" group to display ungrouped items...');
+          const newGroupResult = await window.electronAPI.createCategoryGroup(userId, 'Orphaned Categories', 999);
+          if (newGroupResult.success && newGroupResult.data) {
+            orphanGroup = newGroupResult.data;
+            setCategoryGroups(prev => [...prev, orphanGroup]);
+
+            // Update orphaned categories to use this group
+            for (const cat of orphanedCategories) {
+              await window.electronAPI.updateCategory(cat.id, { group_id: orphanGroup.id });
+              console.log(`  ✅ Moved "${cat.name}" to Orphaned Categories group`);
+            }
+
+            // Reload everything
+            await loadCategoryGroups();
+            await loadCategoriesFromDB();
+          }
+        }
+      }
+
+      alert(`✅ Loaded ${allCategories.length} total categories.\nCheck console for details.\n\nOrphaned categories: ${orphanedCategories.length}\nGrouped categories: ${groupedCategories.length}`);
+
+    } catch (error) {
+      console.error('Error showing all categories:', error);
+      alert('Error: ' + error.message);
+    }
+  };
+
+  // ==================== DELETE ORPHANED CATEGORIES ====================
+  const deleteOrphanedCategories = async () => {
+    if (!confirm('⚠️ WARNING: This will delete ALL categories that are not assigned to any group. Are you sure?')) {
+      return;
+    }
+
+    try {
+      console.log('🗑️ Deleting orphaned categories...');
+
+      const categoriesResult = await window.electronAPI.getCategories(userId);
+      const orphanedCategories = categoriesResult.data.filter(c => !c.group_id);
+
+      if (orphanedCategories.length === 0) {
+        alert('No orphaned categories found to delete.');
+        return;
+      }
+
+      console.log(`Found ${orphanedCategories.length} orphaned categories to delete:`, orphanedCategories.map(c => c.name));
+
+      let deletedCount = 0;
+      for (const cat of orphanedCategories) {
+        const result = await window.electronAPI.deleteCategory(cat.id);
+        if (result.success) {
+          deletedCount++;
+          console.log(`  ✅ Deleted "${cat.name}"`);
+        } else {
+          console.log(`  ❌ Failed to delete "${cat.name}":`, result.error);
+        }
+      }
+
+      // Refresh the UI
+      await loadCategoriesFromDB();
+      await loadCategoryGroups();
+
+      alert(`✅ Deleted ${deletedCount} orphaned categories successfully!`);
+
+    } catch (error) {
+      console.error('Error deleting orphaned categories:', error);
+      alert('Error: ' + error.message);
+    }
+  };
+
   // ===== PART 3: MODIFY THE CREATE GROUP FUNCTION TO PREVENT DUPLICATES =====
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return;
@@ -1500,7 +1595,12 @@ const PropertyMapView = () => {
   };
 
   const getCategoriesByGroup = (groupId) => {
-    const filtered = budgetData.categories.filter(c => c.groupId === groupId);
+    let filtered = budgetData.categories.filter(c => c.groupId === groupId);
+
+    // Filter out hidden categories unless showHiddenCategories is true
+    if (!showHiddenCategories) {
+      filtered = filtered.filter(c => !c.hidden);
+    }
 
     // Add debug specifically for Savings Goals
     if (groupId === '5edc8b38-30fc-46d4-b4d1-61d62c84e7e8' ||
@@ -1508,7 +1608,7 @@ const PropertyMapView = () => {
       groupId === '962a8a6c-9c79-42eb-aeb3-8307fe380663') {
       console.log(`🔍 getCategoriesByGroup for Savings Goals (${groupId}):`, {
         filteredCount: filtered.length,
-        categories: filtered.map(c => ({ id: c.id, name: c.name }))
+        categories: filtered.map(c => ({ id: c.id, name: c.name, hidden: c.hidden }))
       });
     }
 
@@ -1553,38 +1653,52 @@ const PropertyMapView = () => {
           </div>
           <div style={{ marginTop: '10px', padding: '10px', background: '#333' }}>
             <button
-              onClick={debugSavingsGroups}
-              style={{ background: 'purple', color: 'white', padding: '5px 10px', marginLeft: '10px' }}
+              onClick={showAllHiddenCategories}
+              style={{ background: '#F59E0B', color: 'white', padding: '5px 10px', marginLeft: '10px' }}
             >
-              DEBUG SAVINGS GROUPS
+              🔍 SHOW ALL HIDDEN CATEGORIES
             </button>
             <button
-              onClick={debugCategoryDisplay}
-              style={{ background: 'green', color: 'white', padding: '5px 10px' }}
+              onClick={deleteOrphanedCategories}
+              style={{ background: '#EF4444', color: 'white', padding: '5px 10px', marginLeft: '10px' }}
             >
-              DEBUG CATEGORY DISPLAY
+              🗑️ DELETE ORPHANED CATEGORIES
+            </button>
+            <button
+              onClick={() => setShowHiddenCategories(!showHiddenCategories)}
+              style={{
+                background: showHiddenCategories ? '#F59E0B' : '#374151',
+                color: 'white',
+                padding: '5px 10px',
+                marginLeft: '10px',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              {showHiddenCategories ? '👁️ Hide Hidden' : '👁️ Show Hidden'}
             </button>
           </div>
+        </div>
 
-          {/* Ready to Assign Card */}
-          <div style={styles.unassignedCard}>
-            <div style={styles.unassignedIcon}>💰</div>
-            <div style={styles.unassignedContent}>
-              <div style={styles.unassignedLabel}>Ready to Assign</div>
-              <div style={{
-                ...styles.unassignedValue,
-                color: budgetSummary.unassigned < 0 ? '#F87171' : 'white'
-              }}>
-                {formatCurrency(budgetSummary.unassigned)}
-              </div>
-              <div style={styles.unassignedSubtext}>
-                {budgetSummary.unassigned === 0
-                  ? "Every dollar has a job! 🎯"
-                  : budgetSummary.unassigned < 0
-                    ? `Overspent by ${formatCurrency(Math.abs(budgetSummary.unassigned))}`
-                    : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`
-                }
-              </div>
+        {/* Ready to Assign Card */}
+        <div style={styles.unassignedCard}>
+          <div style={styles.unassignedIcon}>💰</div>
+          <div style={styles.unassignedContent}>
+            <div style={styles.unassignedLabel}>Ready to Assign</div>
+            <div style={{
+              ...styles.unassignedValue,
+              color: budgetSummary.unassigned < 0 ? '#F87171' : 'white'
+            }}>
+              {formatCurrency(budgetSummary.unassigned)}
+            </div>
+            <div style={styles.unassignedSubtext}>
+              {budgetSummary.unassigned === 0
+                ? "Every dollar has a job! 🎯"
+                : budgetSummary.unassigned < 0
+                  ? `Overspent by ${formatCurrency(Math.abs(budgetSummary.unassigned))}`
+                  : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`
+              }
             </div>
           </div>
         </div>
@@ -1684,16 +1798,9 @@ const PropertyMapView = () => {
                 {categoryGroups.map((group) => {
                   const groupCategories = getCategoriesByGroup(group.id);
 
-                  // 🔍 CRITICAL DEBUG - shows what's happening for each group
-                  console.log(`🔴 RENDER CHECK for group "${group.name}" (${group.id}):`, {
-                    categoriesLength: groupCategories.length,
-                    willRender: groupCategories.length > 0 ? 'CATEGORIES' : 'EMPTY MESSAGE',
-                    categoryNames: groupCategories.map(c => c.name),
-                    groupId: group.id
-                  });
-
                   return (
                     <React.Fragment key={group.id}>
+                      {/* Category Group Header */}
                       {/* Category Group Header */}
                       <tr style={styles.categoryGroupRow}>
                         <td colSpan="6" style={styles.categoryGroupCell}>
@@ -1723,6 +1830,49 @@ const PropertyMapView = () => {
                               >
                                 ✕
                               </button>
+
+                              {/* Show Hidden Toggle Button - Inline with group actions */}
+                              <button
+                                onClick={() => setShowHiddenCategories(!showHiddenCategories)}
+                                style={{
+                                  ...styles.showHiddenButton,
+                                  background: showHiddenCategories
+                                    ? '#F59E0B'
+                                    : 'rgba(255, 255, 255, 0.1)',
+                                  border: 'none',
+                                  borderRadius: '30px',
+                                  padding: '4px 14px',
+                                  gap: '8px',
+                                  fontWeight: '500',
+                                  fontSize: '12px',
+                                  backdropFilter: 'blur(5px)',
+                                  transition: 'all 0.2s ease',
+                                  ':hover': {
+                                    background: showHiddenCategories
+                                      ? '#D97706'
+                                      : 'rgba(255, 255, 255, 0.2)',
+                                    transform: 'translateY(-1px)',
+                                  },
+                                  ':active': {
+                                    transform: 'translateY(1px)',
+                                  }
+                                }}
+                                title={showHiddenCategories ? "Hide hidden categories" : "Show hidden categories"}
+                              >
+                                {showHiddenCategories ? (
+                                  <>
+                                    <span>👁️</span>
+                                    <span>Showing All</span>
+                                    <span style={{ fontSize: '10px' }}>▼</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>🙈</span>
+                                    <span>Hidden</span>
+                                    <span style={{ fontSize: '10px' }}>▲</span>
+                                  </>
+                                )}
+                              </button>
                             </div>
                           </div>
                         </td>
@@ -1732,9 +1882,6 @@ const PropertyMapView = () => {
                       {groupCategories.length > 0 ? (
                         <>
                           {groupCategories.map((cat) => {
-                            // Debug inside category render
-                            console.log(`  📝 Rendering category: "${cat.name}" (ID: ${cat.id}) in group "${group.name}"`);
-
                             const targetInfo = getTargetInfo(cat);
                             const hasTarget = targetInfo.status !== 'no-target';
                             const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
@@ -1745,19 +1892,50 @@ const PropertyMapView = () => {
                               return (
                                 <tr key={cat.id} style={{ ...styles.categoryRow, background: '#1a3a5a' }}>
                                   <td style={styles.categoryCell}>
-                                    <input
-                                      type="text"
-                                      value={editCategoryData.name}
-                                      onChange={(e) => setEditCategoryData({ ...editCategoryData, name: e.target.value })}
-                                      onKeyPress={(e) => {
-                                        if (e.key === 'Enter') {
-                                          handleSaveCategoryEdit(cat.id);
-                                        }
-                                      }}
-                                      style={styles.editInput}
-                                      placeholder="Category name"
-                                      autoFocus
-                                    />
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                      <span style={styles.categoryName}>{cat.name}</span>
+                                      <div style={styles.categoryActions}>
+                                        <button
+                                          onClick={() => handleEditCategory(cat)}
+                                          style={styles.editCategoryButton}
+                                          title="Edit category"
+                                        >
+                                          ✏️
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteCategory(cat.id)}
+                                          style={styles.deleteCategoryButton}
+                                          title="Delete category"
+                                        >
+                                          🗑️
+                                        </button>
+                                        {hasTarget && (
+                                          <span
+                                            style={{
+                                              ...styles.targetIndicator,
+                                              color: targetInfo.status === 'funded' || targetInfo.status === 'completed'
+                                                ? '#10B981'
+                                                : targetInfo.status === 'partial' || targetInfo.status === 'in-progress'
+                                                  ? '#F59E0B'
+                                                  : '#9CA3AF'
+                                            }}
+                                            title={
+                                              targetInfo.status === 'funded'
+                                                ? 'Monthly target fully funded'
+                                                : targetInfo.status === 'completed'
+                                                  ? 'Goal completed!'
+                                                  : targetInfo.status === 'partial'
+                                                    ? `$${targetInfo.needed.toFixed(2)} more needed this month`
+                                                    : targetInfo.status === 'in-progress'
+                                                      ? `${targetInfo.progress.toFixed(0)}% toward goal`
+                                                      : 'Target not started'
+                                            }
+                                          >
+                                            {targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
                                   </td>
                                   <td style={styles.amountCell}>
                                     <input
@@ -1842,15 +2020,12 @@ const PropertyMapView = () => {
                                 </tr>
                               );
                             }
-
                             // Render view mode
                             return (
                               <tr key={cat.id} style={styles.categoryRow}>
                                 <td style={styles.categoryCell}>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                                     <span style={styles.categoryName}>{cat.name}</span>
-
-                                    {/* Add Edit/Delete buttons */}
                                     <div style={styles.categoryActions}>
                                       <button
                                         onClick={() => handleEditCategory(cat)}
@@ -1866,24 +2041,17 @@ const PropertyMapView = () => {
                                       >
                                         🗑️
                                       </button>
-                                    </div>
-
-                                    {/* Goal Link Indicator */}
-                                    {cat.linked_goal && (
-                                      <span
+                                      <button
+                                        onClick={() => handleToggleHideCategory(cat)}
                                         style={{
-                                          ...styles.goalBadge,
-                                          background: cat.linked_goal.progress >= 100 ? '#10B98120' : '#F59E0B20',
-                                          color: cat.linked_goal.progress >= 100 ? '#10B981' : '#F59E0B'
+                                          ...styles.hideCategoryButton,
+                                          color: cat.hidden ? '#10B981' : '#9CA3AF'
                                         }}
-                                        title={`Goal: ${formatCurrency(cat.linked_goal.target_amount)} - ${cat.linked_goal.progress.toFixed(0)}% complete`}
+                                        title={cat.hidden ? "Unhide category" : "Hide category"}
                                       >
-                                        🎯 Goal
-                                        {cat.linked_goal.target_type === 'monthly' && ' (Monthly)'}
-                                      </span>
-                                    )}
-
-                                    {/* Target Indicator */}
+                                        {cat.hidden ? '👁️' : '🙈'}
+                                      </button>
+                                    </div>
                                     {hasTarget && (
                                       <span
                                         style={{
@@ -1895,11 +2063,15 @@ const PropertyMapView = () => {
                                               : '#9CA3AF'
                                         }}
                                         title={
-                                          targetInfo.status === 'funded' ? 'Monthly target fully funded' :
-                                            targetInfo.status === 'completed' ? 'Goal completed!' :
-                                              targetInfo.status === 'partial' ? `$${targetInfo.needed.toFixed(2)} more needed this month` :
-                                                targetInfo.status === 'in-progress' ? `${targetInfo.progress.toFixed(0)}% toward goal` :
-                                                  'Target not started'
+                                          targetInfo.status === 'funded'
+                                            ? 'Monthly target fully funded'
+                                            : targetInfo.status === 'completed'
+                                              ? 'Goal completed!'
+                                              : targetInfo.status === 'partial'
+                                                ? `$${targetInfo.needed.toFixed(2)} more needed this month`
+                                                : targetInfo.status === 'in-progress'
+                                                  ? `${targetInfo.progress.toFixed(0)}% toward goal`
+                                                  : 'Target not started'
                                         }
                                       >
                                         {targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}
@@ -1907,7 +2079,6 @@ const PropertyMapView = () => {
                                     )}
                                   </div>
                                 </td>
-
                                 <td style={styles.amountCell}>
                                   {formatCurrency(cat.assigned || 0)}
                                   {isUnderfunded && (
@@ -1916,14 +2087,12 @@ const PropertyMapView = () => {
                                     </div>
                                   )}
                                 </td>
-
                                 <td style={{
                                   ...styles.amountCell,
                                   color: (cat.activity || 0) < 0 ? '#F87171' : '#4ADE80'
                                 }}>
                                   {formatCurrency(cat.activity || 0)}
                                 </td>
-
                                 <td style={{
                                   ...styles.amountCell,
                                   color: (cat.available || 0) < 0 ? '#F87171' : '#4ADE80'
@@ -1935,7 +2104,6 @@ const PropertyMapView = () => {
                                     </div>
                                   )}
                                 </td>
-
                                 <td style={styles.progressCell}>
                                   <div style={styles.progressBarContainer}>
                                     <div
@@ -1950,8 +2118,6 @@ const PropertyMapView = () => {
                                     </span>
                                   </div>
                                 </td>
-
-                                {/* Goal Progress Column */}
                                 <td style={styles.amountCell}>
                                   {cat.linked_goal ? (
                                     <div>
@@ -2056,7 +2222,6 @@ const PropertyMapView = () => {
           underfundedTotal={getTotalUnderfunded()}
           underfundedCategories={calculateUnderfundedCategories()}
         />
-
         <FutureMonthsView
           futureAssignments={2340.50}
           nextMonthTarget={5000}
@@ -2064,7 +2229,7 @@ const PropertyMapView = () => {
         />
       </div>
 
-      {/* Modals - Keep existing modal JSX */}
+      {/* Modals */}
       {showAddIncomeModal && (
         <div style={styles.modalOverlay} onClick={() => setShowAddIncomeModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -2102,18 +2267,8 @@ const PropertyMapView = () => {
               />
             </div>
             <div style={styles.modalActions}>
-              <button
-                style={styles.saveButton}
-                onClick={handleAddIncome}
-              >
-                Add Income
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => setShowAddIncomeModal(false)}
-              >
-                Cancel
-              </button>
+              <button style={styles.saveButton} onClick={handleAddIncome}>Add Income</button>
+              <button style={styles.cancelButton} onClick={() => setShowAddIncomeModal(false)}>Cancel</button>
             </div>
           </div>
         </div>
@@ -2181,18 +2336,8 @@ const PropertyMapView = () => {
               />
             </div>
             <div style={styles.modalActions}>
-              <button
-                style={styles.saveButton}
-                onClick={handleRecordPayment}
-              >
-                Record Payment
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => setShowRecordPaymentModal(false)}
-              >
-                Cancel
-              </button>
+              <button style={styles.saveButton} onClick={handleRecordPayment}>Record Payment</button>
+              <button style={styles.cancelButton} onClick={() => setShowRecordPaymentModal(false)}>Cancel</button>
             </div>
           </div>
         </div>
@@ -2236,22 +2381,12 @@ const PropertyMapView = () => {
               />
             </div>
             <div style={styles.modalActions}>
-              <button
-                style={styles.saveButton}
-                onClick={handleCreateCategory}
-              >
-                Create Category
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => {
-                  setShowAddCategoryModal(false);
-                  setSelectedGroupForCategory(null);
-                  setNewCategoryData({ name: '', assigned: 0, groupId: null });
-                }}
-              >
-                Cancel
-              </button>
+              <button style={styles.saveButton} onClick={handleCreateCategory}>Create Category</button>
+              <button style={styles.cancelButton} onClick={() => {
+                setShowAddCategoryModal(false);
+                setSelectedGroupForCategory(null);
+                setNewCategoryData({ name: '', assigned: 0, groupId: null });
+              }}>Cancel</button>
             </div>
           </div>
         </div>
@@ -2273,22 +2408,12 @@ const PropertyMapView = () => {
               />
             </div>
             <div style={styles.modalActions}>
-              <button
-                style={styles.saveButton}
-                onClick={handleUpdateGroup}
-              >
-                Update Group
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => {
-                  setShowEditGroupModal(false);
-                  setEditingGroup(null);
-                  setEditGroupName('');
-                }}
-              >
-                Cancel
-              </button>
+              <button style={styles.saveButton} onClick={handleUpdateGroup}>Update Group</button>
+              <button style={styles.cancelButton} onClick={() => {
+                setShowEditGroupModal(false);
+                setEditingGroup(null);
+                setEditGroupName('');
+              }}>Cancel</button>
             </div>
           </div>
         </div>
@@ -2310,21 +2435,11 @@ const PropertyMapView = () => {
               />
             </div>
             <div style={styles.modalActions}>
-              <button
-                style={styles.saveButton}
-                onClick={handleCreateGroup}
-              >
-                Create Group
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => {
-                  setShowAddGroupModal(false);
-                  setNewGroupName('');
-                }}
-              >
-                Cancel
-              </button>
+              <button style={styles.saveButton} onClick={handleCreateGroup}>Create Group</button>
+              <button style={styles.cancelButton} onClick={() => {
+                setShowAddGroupModal(false);
+                setNewGroupName('');
+              }}>Cancel</button>
             </div>
           </div>
         </div>
@@ -2382,18 +2497,8 @@ const PropertyMapView = () => {
               </select>
             </div>
             <div style={styles.modalActions}>
-              <button
-                style={styles.saveButton}
-                onClick={handleMoveMoney}
-              >
-                Move Money
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => setShowMoveMoneyModal(false)}
-              >
-                Cancel
-              </button>
+              <button style={styles.saveButton} onClick={handleMoveMoney}>Move Money</button>
+              <button style={styles.cancelButton} onClick={() => setShowMoveMoneyModal(false)}>Cancel</button>
             </div>
           </div>
         </div>
@@ -2403,14 +2508,6 @@ const PropertyMapView = () => {
 };
 
 const styles = {
-  categoryRow: {
-    borderBottom: '1px solid #000000',
-    display: 'table-row !important', // Force display
-    visibility: 'visible !important', // Force visibility
-    height: 'auto !important', // Force height
-    opacity: '1 !important', // Force opacity
-    backgroundColor: '#f0f0f0' // Bright background to make them stand out
-  },
   container: {
     display: 'flex',
     gap: '2rem',
@@ -2475,17 +2572,6 @@ const styles = {
     color: 'rgba(255,255,255,0.9)',
     marginTop: '0.25rem'
   },
-  assignButton: {
-    padding: '0.5rem 1rem',
-    background: 'white',
-    color: '#D97706',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '0.875rem',
-    fontWeight: '600',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap'
-  },
   controlsRow: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -2523,12 +2609,7 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.9rem',
     fontWeight: '500',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: '#10B981',
-      color: 'white'
-    }
+    cursor: 'pointer'
   },
   quickBudgetTools: {
     display: 'flex',
@@ -2541,12 +2622,7 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.85rem',
     fontWeight: '500',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      transform: 'translateY(-2px)',
-      boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
-    }
+    cursor: 'pointer'
   },
   tableContainer: {
     background: '#0047AB',
@@ -2601,12 +2677,7 @@ const styles = {
     fontWeight: 'bold',
     cursor: 'pointer',
     padding: '2px 8px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(255, 255, 255, 0.2)',
-      transform: 'scale(1.1)'
-    }
+    borderRadius: '4px'
   },
   editGroupButton: {
     background: 'none',
@@ -2615,12 +2686,7 @@ const styles = {
     fontSize: '1rem',
     cursor: 'pointer',
     padding: '2px 8px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(255, 255, 255, 0.2)',
-      transform: 'scale(1.1)'
-    }
+    borderRadius: '4px'
   },
   deleteGroupButton: {
     background: 'none',
@@ -2629,12 +2695,7 @@ const styles = {
     fontSize: '1rem',
     cursor: 'pointer',
     padding: '2px 8px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(255, 255, 255, 0.2)',
-      transform: 'scale(1.1)'
-    }
+    borderRadius: '4px'
   },
   categoryRow: {
     borderBottom: '1px solid #000000'
@@ -2666,8 +2727,7 @@ const styles = {
     position: 'absolute',
     top: 0,
     left: 0,
-    height: '100%',
-    transition: 'width 0.3s ease'
+    height: '100%'
   },
   progressText: {
     position: 'relative',
@@ -2760,8 +2820,7 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem',
-    transition: 'all 0.2s ease'
+    fontSize: '1rem'
   },
   select: {
     width: '100%',
@@ -2770,8 +2829,7 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem',
-    transition: 'all 0.2s ease'
+    fontSize: '1rem'
   },
   modalActions: {
     display: 'flex',
@@ -2787,16 +2845,7 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '1rem',
     fontWeight: '600',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      transform: 'translateY(-2px)',
-      boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
-    },
-    ':disabled': {
-      opacity: 0.5,
-      cursor: 'not-allowed'
-    }
+    cursor: 'pointer'
   },
   cancelButton: {
     flex: 1,
@@ -2807,57 +2856,13 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '1rem',
     fontWeight: '500',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: '#6B7280'
-    }
-  },
-  deleteSection: {
-    marginTop: '2rem',
-    borderTop: '1px solid #374151',
-    paddingTop: '1.5rem'
-  },
-  deleteDivider: {
-    marginBottom: '1rem'
-  },
-  deleteButton: {
-    width: '100%',
-    padding: '0.75rem',
-    background: 'transparent',
-    color: '#EF4444',
-    border: '1px solid #EF4444',
-    borderRadius: '0.5rem',
-    fontSize: '1rem',
-    fontWeight: '500',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '0.5rem',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: '#EF4444',
-      color: 'white'
-    }
-  },
-  deleteWarning: {
-    marginTop: '0.75rem',
-    fontSize: '0.8rem',
-    color: '#9CA3AF',
-    textAlign: 'center'
+    cursor: 'pointer'
   },
   targetIndicator: {
     fontSize: '1rem',
     cursor: 'help',
     width: '20px',
     display: 'inline-block'
-  },
-  goalBadge: {
-    fontSize: '0.75rem',
-    padding: '2px 6px',
-    borderRadius: '4px',
-    fontWeight: '500'
   },
   groupTotalRow: {
     background: '#0A2472',
@@ -2876,7 +2881,6 @@ const styles = {
     fontSize: '0.9rem',
     fontWeight: 'bold'
   },
-  // New styles for category editing
   categoryActions: {
     display: 'flex',
     gap: '4px',
@@ -2889,12 +2893,7 @@ const styles = {
     fontSize: '0.9rem',
     cursor: 'pointer',
     padding: '2px 4px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(255, 255, 255, 0.1)',
-      color: 'white'
-    }
+    borderRadius: '4px'
   },
   deleteCategoryButton: {
     background: 'none',
@@ -2903,12 +2902,15 @@ const styles = {
     fontSize: '0.9rem',
     cursor: 'pointer',
     padding: '2px 4px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(239, 68, 68, 0.2)',
-      color: '#EF4444'
-    }
+    borderRadius: '4px'
+  },
+  hideCategoryButton: {
+    background: 'none',
+    border: 'none',
+    fontSize: '0.9rem',
+    cursor: 'pointer',
+    padding: '2px 4px',
+    borderRadius: '4px'
   },
   editInput: {
     width: '100%',
@@ -2940,12 +2942,7 @@ const styles = {
     fontSize: '1.2rem',
     cursor: 'pointer',
     padding: '4px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(16, 185, 129, 0.2)',
-      transform: 'scale(1.1)'
-    }
+    borderRadius: '4px'
   },
   cancelEditButton: {
     background: 'none',
@@ -2953,12 +2950,7 @@ const styles = {
     fontSize: '1.2rem',
     cursor: 'pointer',
     padding: '4px',
-    borderRadius: '4px',
-    transition: 'all 0.2s ease',
-    ':hover': {
-      background: 'rgba(239, 68, 68, 0.2)',
-      transform: 'scale(1.1)'
-    }
+    borderRadius: '4px'
   }
 };
 

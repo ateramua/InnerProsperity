@@ -7,14 +7,14 @@ export default function CreditCardPlanner({
   onPaymentPlanned,
   onMoveMoney,
   onViewCard,
-  onViewDashboard
+  onViewDashboard,
+  monthlyBudget = 1000
 }) {
   const [selectedCard, setSelectedCard] = useState(null);
   const [paymentPlan, setPaymentPlan] = useState(null);
-  const [optimizationStrategy, setOptimizationStrategy] = useState('avalanche'); // 'avalanche' or 'snowball'
-  const [showAllCards, setShowAllCards] = useState(true);
+  const [optimizationStrategy, setOptimizationStrategy] = useState('avalanche'); // 'avalanche', 'snowball', 'zero-interest'
+  const [targetMonths, setTargetMonths] = useState(12); // for zero-interest strategy
 
-  // Calculate payment strategies for all cards
   // Calculate payment strategies for all cards
   const calculatePaymentStrategy = (card) => {
     // Find the credit card payment category in budget
@@ -25,9 +25,10 @@ export default function CreditCardPlanner({
     );
 
     const reservedFunds = paymentCategory?.available || 0;
+    const balance = Math.abs(card.balance);
 
     // Safely handle due date
-    let daysUntilDue = 999; // Default large number if no due date
+    let daysUntilDue = 999;
     let isOverdue = false;
     let isUrgent = false;
     let optimalDate = null;
@@ -38,13 +39,11 @@ export default function CreditCardPlanner({
         const dueDate = new Date(card.dueDate);
         const today = new Date();
 
-        // Check if date is valid
         if (!isNaN(dueDate.getTime())) {
           daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
           isOverdue = daysUntilDue < 0;
           isUrgent = daysUntilDue <= 7 && daysUntilDue > 0;
 
-          // Calculate optimal payment date (3 days before due date to be safe)
           optimalDate = new Date(dueDate);
           optimalDate.setDate(optimalDate.getDate() - 3);
           optimalDateString = optimalDate.toISOString().split('T')[0];
@@ -54,25 +53,56 @@ export default function CreditCardPlanner({
       }
     }
 
-    const canPayInFull = reservedFunds >= Math.abs(card.balance);
-    const shortfall = Math.abs(card.balance) - reservedFunds;
+    const canPayInFull = reservedFunds >= balance;
+    const shortfall = balance - reservedFunds;
 
     // Calculate interest if not paid in full
     const monthlyInterestRate = (card.apr || 18.99) / 100 / 12;
-    const estimatedInterest = canPayInFull ? 0 : (Math.abs(card.balance) * monthlyInterestRate);
+    const estimatedInterest = canPayInFull ? 0 : (balance * monthlyInterestRate);
 
     // Calculate payoff timeline with minimum payments
-    const minPayment = card.minimumPayment || Math.max(25, Math.abs(card.balance) * 0.02);
-    const monthsToPayoff = Math.ceil(Math.abs(card.balance) / minPayment);
-    const totalInterest = Array.from({ length: monthsToPayoff }).reduce((acc, _, i) => {
-      const remainingBalance = Math.abs(card.balance) - (minPayment * i);
-      return acc + (remainingBalance * monthlyInterestRate);
-    }, 0);
+    const minPayment = card.minimumPayment || Math.max(25, balance * 0.02);
+    
+    let monthsToPayoff = 0;
+    let totalInterest = 0;
+    
+    if (monthlyInterestRate === 0) {
+      monthsToPayoff = Math.ceil(balance / minPayment);
+      totalInterest = 0;
+    } else {
+      if (minPayment > balance * monthlyInterestRate) {
+        monthsToPayoff = Math.ceil(
+          -Math.log(1 - (balance * monthlyInterestRate) / minPayment) / Math.log(1 + monthlyInterestRate)
+        );
+      } else {
+        monthsToPayoff = Infinity;
+      }
+      totalInterest = monthsToPayoff * minPayment - balance;
+    }
+
+    // Calculate zero-interest accelerator payment
+    let targetPayment = null;
+    let targetTotalInterest = null;
+    let interestSaved = null;
+    
+    if (targetMonths > 0) {
+      if (monthlyInterestRate > 0) {
+        const r = monthlyInterestRate;
+        const n = targetMonths;
+        targetPayment = (r * balance) / (1 - Math.pow(1 + r, -n));
+        if (targetPayment < minPayment) targetPayment = minPayment;
+        targetTotalInterest = targetPayment * targetMonths - balance;
+      } else {
+        targetPayment = balance / targetMonths;
+        targetTotalInterest = 0;
+      }
+      interestSaved = totalInterest - targetTotalInterest;
+    }
 
     return {
       cardId: card.id,
       cardName: card.name,
-      balance: Math.abs(card.balance),
+      balance: balance,
       statementBalance: Math.abs(card.lastStatementBalance || card.balance),
       reservedFunds,
       canPayInFull,
@@ -81,39 +111,52 @@ export default function CreditCardPlanner({
       isUrgent,
       isOverdue,
       optimalPaymentDate: optimalDateString,
-      recommendedPayment: canPayInFull ? Math.abs(card.balance) : reservedFunds,
+      recommendedPayment: canPayInFull ? balance : reservedFunds,
       estimatedInterest,
       minimumPayment: minPayment,
       monthsToPayoff: canPayInFull ? 0 : monthsToPayoff,
       totalInterestIfMinimum: totalInterest,
       apr: card.apr || 18.99,
-      utilization: (Math.abs(card.balance) / (card.limit || 1000)) * 100,
+      utilization: (balance / (card.limit || 1000)) * 100,
       status: canPayInFull ? 'safe' : shortfall > 0 ? 'danger' : 'warning',
-      suggestions: canPayInFull
-        ? ['✅ You have enough reserved to pay in full!']
-        : [
-          `⚠️ Need $${shortfall.toFixed(2)} more to pay in full`,
-          `💰 Pay at least $${minPayment.toFixed(2)} by ${optimalDateString || 'the due date'} to avoid late fees`,
-          ...getSuggestionsForCategories(categories, shortfall)
-        ]
+      // Zero-interest accelerator fields
+      targetPayment,
+      targetTotalInterest,
+      interestSaved,
+      suggestions: getSuggestionsForCategories(categories, shortfall, canPayInFull, totalInterest, targetPayment, minPayment, interestSaved)
     };
   };
 
-  const getSuggestionsForCategories = (categories, neededAmount) => {
+  const getSuggestionsForCategories = (categories, neededAmount, canPayInFull, totalInterest, targetPayment, minPayment, interestSaved) => {
+    const suggestions = [];
+    
+    if (canPayInFull) {
+      suggestions.push('✅ You have enough reserved to pay in full!');
+    } else {
+      suggestions.push(`⚠️ Need $${neededAmount.toFixed(2)} more to pay in full`);
+    }
+    
+    if (targetPayment && targetPayment > minPayment) {
+      suggestions.push(`⚡ Zero-Interest Accelerator: Pay $${targetPayment.toFixed(2)}/month to pay off in ${targetMonths} months`);
+      if (interestSaved > 0) {
+        suggestions.push(`💰 Save $${interestSaved.toFixed(2)} in interest with accelerated payments`);
+      }
+    } else if (minPayment) {
+      suggestions.push(`💰 Pay at least $${minPayment.toFixed(2)} to avoid late fees`);
+    }
+    
     // Find categories with available funds
     const availableCategories = categories
       .filter(c => (c.available || 0) > 0 && c.category_type !== 'debt')
       .sort((a, b) => (b.available || 0) - (a.available || 0))
       .slice(0, 3);
 
-    if (availableCategories.length === 0) {
-      return ['Consider reducing discretionary spending this month'];
+    if (availableCategories.length > 0 && neededAmount > 0) {
+      suggestions.push(`Move from: ${availableCategories.map(c => c.name).join(', ')}`);
+      suggestions.push(`Total available: $${availableCategories.reduce((sum, c) => sum + (c.available || 0), 0).toFixed(2)}`);
     }
-
-    return [
-      `Move from: ${availableCategories.map(c => c.name).join(', ')}`,
-      `Total available: $${availableCategories.reduce((sum, c) => sum + (c.available || 0), 0).toFixed(2)}`
-    ];
+    
+    return suggestions;
   };
 
   // Calculate overall strategy
@@ -127,9 +170,14 @@ export default function CreditCardPlanner({
     if (optimizationStrategy === 'avalanche') {
       // Highest interest first
       return cardsWithStrategy.sort((a, b) => (b.apr || 0) - (a.apr || 0));
-    } else {
+    } else if (optimizationStrategy === 'snowball') {
       // Smallest balance first
       return cardsWithStrategy.sort((a, b) => Math.abs(a.balance) - Math.abs(b.balance));
+    } else {
+      // Zero-interest accelerator: highest interest cost first (balance * APR)
+      return cardsWithStrategy.sort((a, b) => 
+        (Math.abs(b.balance) * (b.apr || 0)) - (Math.abs(a.balance) * (a.apr || 0))
+      );
     }
   };
 
@@ -139,14 +187,14 @@ export default function CreditCardPlanner({
     setPaymentPlan(plan);
   };
 
-  const handleSchedulePayment = () => {
+  const handleSchedulePayment = (amount) => {
     if (!paymentPlan) return;
 
     if (onPaymentPlanned) {
       onPaymentPlanned({
         ...paymentPlan,
         date: paymentPlan.optimalPaymentDate,
-        amount: paymentPlan.recommendedPayment
+        amount: amount || paymentPlan.recommendedPayment
       });
     }
   };
@@ -161,10 +209,15 @@ export default function CreditCardPlanner({
 
   const prioritizedCards = calculateOverallStrategy();
   const totalBalance = creditCards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0);
+  const totalMinimum = creditCards.reduce((sum, c) => {
+    const minPayment = c.minimumPayment || Math.max(25, Math.abs(c.balance) * 0.02);
+    return sum + minPayment;
+  }, 0);
   const totalUrgent = creditCards.filter(c => {
     const days = Math.ceil((new Date(c.dueDate) - new Date()) / (1000 * 60 * 60 * 24));
     return days <= 7 && days > 0;
   }).length;
+  const extraCapacity = Math.max(0, monthlyBudget - totalMinimum);
 
   return (
     <div style={styles.container}>
@@ -195,6 +248,15 @@ export default function CreditCardPlanner({
           >
             Snowball (Small Balance First)
           </button>
+          <button
+            onClick={() => setOptimizationStrategy('zero-interest')}
+            style={{
+              ...styles.strategyButton,
+              ...(optimizationStrategy === 'zero-interest' ? styles.activeStrategy : {})
+            }}
+          >
+            ⚡ Zero‑Interest Accelerator
+          </button>
         </div>
       </div>
 
@@ -205,24 +267,47 @@ export default function CreditCardPlanner({
           <div style={styles.summaryValue}>${totalBalance.toFixed(2)}</div>
         </div>
         <div style={styles.summaryCard}>
-          <div style={styles.summaryLabel}>Cards Needing Attention</div>
-          <div style={styles.summaryValue}>{totalUrgent}</div>
+          <div style={styles.summaryLabel}>Minimum Monthly</div>
+          <div style={styles.summaryValue}>${totalMinimum.toFixed(2)}</div>
         </div>
         <div style={styles.summaryCard}>
-          <div style={styles.summaryLabel}>Optimization Strategy</div>
-          <div style={styles.summaryValue}>
-            {optimizationStrategy === 'avalanche' ? '📉 Avalanche' : '❄️ Snowball'}
-          </div>
+          <div style={styles.summaryLabel}>Monthly Budget</div>
+          <div style={styles.summaryValue}>${monthlyBudget.toFixed(2)}</div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryLabel}>Extra Capacity</div>
+          <div style={styles.summaryValue}>${extraCapacity.toFixed(2)}</div>
+        </div>
+        <div style={styles.summaryCard}>
+          <div style={styles.summaryLabel}>Cards Needing Attention</div>
+          <div style={styles.summaryValue}>{totalUrgent}</div>
         </div>
       </div>
 
       {/* Priority List */}
       <div style={styles.prioritySection}>
         <h3 style={styles.sectionTitle}>
-          {optimizationStrategy === 'avalanche'
-            ? '🎯 Pay These First (Highest Interest)'
-            : '🎯 Pay These First (Smallest Balance)'}
+          {optimizationStrategy === 'avalanche' && '🎯 Attack Highest Interest First'}
+          {optimizationStrategy === 'snowball' && '❄️ Knock Out Smallest Balances First'}
+          {optimizationStrategy === 'zero-interest' && `⚡ Zero‑Interest Accelerator (${targetMonths} Month Target)`}
         </h3>
+        
+        {optimizationStrategy === 'zero-interest' && (
+          <div style={styles.targetSliderContainer}>
+            <label style={styles.sliderLabel}>
+              Target Payoff Months: {targetMonths}
+              <input
+                type="range"
+                min="1"
+                max="60"
+                value={targetMonths}
+                onChange={(e) => setTargetMonths(Number(e.target.value))}
+                style={styles.slider}
+              />
+            </label>
+          </div>
+        )}
+        
         <div style={styles.cardList}>
           {prioritizedCards.map((card, index) => {
             const strategy = card.strategy || calculatePaymentStrategy(card);
@@ -236,7 +321,7 @@ export default function CreditCardPlanner({
                   ...(isSelected ? styles.selectedCard : {}),
                   borderLeft: `4px solid ${strategy.isOverdue ? '#EF4444' :
                       strategy.isUrgent ? '#F59E0B' :
-                        strategy.canPayInFull ? '#10B981' : '#3B82F6'
+                      strategy.canPayInFull ? '#10B981' : '#3B82F6'
                     }`
                 }}
                 onClick={() => handleCardSelect(card)}
@@ -260,14 +345,14 @@ export default function CreditCardPlanner({
                       color: strategy.isOverdue ? '#EF4444' :
                         strategy.isUrgent ? '#F59E0B' : 'white'
                     }}>
-                      {new Date(card.dueDate).toLocaleDateString()}
+                      {card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'No due date'}
                       {strategy.isOverdue ? ' (OVERDUE)' :
                         strategy.isUrgent ? ` (${strategy.daysUntilDue} days)` : ''}
                     </strong>
                   </div>
                 </div>
 
-                {/* Progress Bar */}
+                {/* Progress Bar - Reserved vs Balance */}
                 <div style={styles.progressSection}>
                   <div style={styles.progressLabel}>
                     <span>Reserved: ${strategy.reservedFunds.toFixed(2)}</span>
@@ -284,6 +369,23 @@ export default function CreditCardPlanner({
                   </div>
                 </div>
 
+                {/* Zero-Interest Accelerator Progress Bar */}
+                {optimizationStrategy === 'zero-interest' && strategy.targetPayment && (
+                  <div style={styles.progressSection}>
+                    <div style={styles.progressLabel}>
+                      <span>Min Payment: ${strategy.minimumPayment.toFixed(2)}</span>
+                      <span>Target: ${strategy.targetPayment.toFixed(2)}</span>
+                    </div>
+                    <div style={styles.progressBar}>
+                      <div style={{
+                        ...styles.progressFill,
+                        width: `${Math.min(100, (strategy.minimumPayment / strategy.targetPayment) * 100)}%`,
+                        background: '#8B5CF6'
+                      }} />
+                    </div>
+                  </div>
+                )}
+
                 {/* Quick Stats */}
                 <div style={styles.cardStats}>
                   <div style={styles.stat}>
@@ -292,7 +394,7 @@ export default function CreditCardPlanner({
                   </div>
                   <div style={styles.stat}>
                     <span>Payoff Time</span>
-                    <strong>{strategy.monthsToPayoff} months</strong>
+                    <strong>{strategy.monthsToPayoff === Infinity ? '∞' : strategy.monthsToPayoff} mo</strong>
                   </div>
                   <div style={styles.stat}>
                     <span>Interest</span>
@@ -300,6 +402,12 @@ export default function CreditCardPlanner({
                       ${strategy.estimatedInterest.toFixed(2)}/mo
                     </strong>
                   </div>
+                  {optimizationStrategy === 'zero-interest' && strategy.interestSaved > 0 && (
+                    <div style={styles.stat}>
+                      <span>Save</span>
+                      <strong style={{ color: '#10B981' }}>${strategy.interestSaved.toFixed(2)}</strong>
+                    </div>
+                  )}
                 </div>
 
                 {strategy.isUrgent && !isSelected && (
@@ -339,12 +447,41 @@ export default function CreditCardPlanner({
               <div style={styles.planValue}>{paymentPlan.apr}%</div>
             </div>
             <div style={styles.planItem}>
-              <div style={styles.planLabel}>Due Date</div>
-              <div style={styles.planValue}>
-                {new Date(selectedCard.dueDate).toLocaleDateString()}
-              </div>
+              <div style={styles.planLabel}>Minimum Payment</div>
+              <div style={styles.planValue}>${paymentPlan.minimumPayment.toFixed(2)}</div>
             </div>
           </div>
+
+          {/* Zero-Interest Accelerator Detailed Plan */}
+          {optimizationStrategy === 'zero-interest' && paymentPlan.targetPayment && (
+            <div style={styles.zeroPlanContainer}>
+              <h4 style={styles.zeroPlanTitle}>⚡ Zero‑Interest Accelerator Plan</h4>
+              <div style={styles.zeroPlanGrid}>
+                <div style={styles.zeroPlanItem}>
+                  <div style={styles.zeroPlanLabel}>Target Monthly Payment</div>
+                  <div style={styles.zeroPlanValue}>${paymentPlan.targetPayment.toFixed(2)}</div>
+                </div>
+                <div style={styles.zeroPlanItem}>
+                  <div style={styles.zeroPlanLabel}>Payoff Time</div>
+                  <div style={styles.zeroPlanValue}>{targetMonths} months</div>
+                </div>
+                <div style={styles.zeroPlanItem}>
+                  <div style={styles.zeroPlanLabel}>Total Interest</div>
+                  <div style={styles.zeroPlanValue}>${paymentPlan.targetTotalInterest.toFixed(2)}</div>
+                </div>
+                <div style={styles.zeroPlanItem}>
+                  <div style={styles.zeroPlanLabel}>Interest Saved</div>
+                  <div style={{ ...styles.zeroPlanValue, color: '#10B981' }}>
+                    ${paymentPlan.interestSaved.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+              <div style={styles.strategyNote}>
+                💡 Pay an extra ${(paymentPlan.targetPayment - paymentPlan.minimumPayment).toFixed(2)} each month 
+                to save ${paymentPlan.interestSaved.toFixed(2)} in interest and pay off {targetMonths} months faster!
+              </div>
+            </div>
+          )}
 
           {/* Status Message */}
           <div style={{
@@ -380,42 +517,32 @@ export default function CreditCardPlanner({
             </div>
           </div>
 
-          {/* Comparison: Pay in Full vs Minimum */}
-          <div style={styles.comparisonGrid}>
-            <div style={styles.comparisonCard}>
-              <h4 style={styles.comparisonTitle}>Pay in Full</h4>
-              <div style={styles.comparisonAmount}>
-                ${paymentPlan.balance.toFixed(2)}
-              </div>
-              <div style={styles.comparisonBenefit}>
-                Save ${paymentPlan.estimatedInterest.toFixed(2)} in interest
-              </div>
+          {/* Action Buttons */}
+          <div style={styles.actionButtons}>
+            {paymentPlan.canPayInFull && (
               <button
-                onClick={handleSchedulePayment}
+                onClick={() => handleSchedulePayment(paymentPlan.balance)}
                 style={styles.primaryButton}
-                disabled={!paymentPlan.canPayInFull}
               >
-                Schedule Full Payment
+                Schedule Full Payment (${paymentPlan.balance.toFixed(2)})
               </button>
-            </div>
-            <div style={styles.comparisonCard}>
-              <h4 style={styles.comparisonTitle}>Minimum Payment</h4>
-              <div style={styles.comparisonAmount}>
-                ${paymentPlan.minimumPayment.toFixed(2)}
-              </div>
-              <div style={styles.comparisonBenefit}>
-                Pay off in {paymentPlan.monthsToPayoff} months
-              </div>
+            )}
+            {optimizationStrategy === 'zero-interest' && paymentPlan.targetPayment && (
               <button
-                onClick={() => handleSchedulePayment()}
-                style={styles.secondaryButton}
+                onClick={() => handleSchedulePayment(paymentPlan.targetPayment)}
+                style={styles.zeroInterestButton}
               >
-                Pay Minimum
+                ⚡ Schedule Accelerated Payment (${paymentPlan.targetPayment.toFixed(2)})
               </button>
-            </div>
+            )}
+            <button
+              onClick={() => handleSchedulePayment(paymentPlan.minimumPayment)}
+              style={styles.secondaryButton}
+            >
+              Pay Minimum (${paymentPlan.minimumPayment.toFixed(2)})
+            </button>
           </div>
 
-          {/* Action Buttons */}
           <div style={styles.actionButtons}>
             {paymentPlan.shortfall > 0 && (
               <button
@@ -491,11 +618,7 @@ const styles = {
     fontSize: '1rem',
     cursor: 'pointer',
     padding: '0.5rem 1rem',
-    borderRadius: '0.5rem',
-    ':hover': {
-      background: '#374151',
-      color: 'white'
-    }
+    borderRadius: '0.5rem'
   },
   title: {
     fontSize: '1.75rem',
@@ -528,7 +651,7 @@ const styles = {
   },
   summaryGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
     gap: '1rem',
     marginBottom: '2rem'
   },
@@ -556,6 +679,23 @@ const styles = {
     fontWeight: '600',
     marginBottom: '1rem',
     color: 'white'
+  },
+  targetSliderContainer: {
+    marginBottom: '1rem',
+    padding: '1rem',
+    background: '#1F2937',
+    borderRadius: '0.75rem'
+  },
+  sliderLabel: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    color: '#9CA3AF',
+    fontSize: '0.875rem'
+  },
+  slider: {
+    width: '200px',
+    marginLeft: '1rem'
   },
   cardList: {
     display: 'flex',
@@ -638,7 +778,7 @@ const styles = {
   },
   cardStats: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, 1fr)',
+    gridTemplateColumns: 'repeat(4, 1fr)',
     gap: '1rem',
     marginBottom: '0.5rem'
   },
@@ -686,6 +826,45 @@ const styles = {
     fontWeight: 'bold',
     color: 'white'
   },
+  zeroPlanContainer: {
+    background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1))',
+    padding: '1.5rem',
+    borderRadius: '0.75rem',
+    marginBottom: '1.5rem',
+    border: '1px solid rgba(139, 92, 246, 0.3)'
+  },
+  zeroPlanTitle: {
+    fontSize: '1rem',
+    fontWeight: '600',
+    margin: '0 0 1rem 0',
+    color: '#8B5CF6'
+  },
+  zeroPlanGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+    gap: '1rem',
+    marginBottom: '1rem'
+  },
+  zeroPlanItem: {
+    textAlign: 'center'
+  },
+  zeroPlanLabel: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    marginBottom: '0.25rem'
+  },
+  zeroPlanValue: {
+    fontSize: '1.125rem',
+    fontWeight: 'bold',
+    color: 'white'
+  },
+  strategyNote: {
+    fontSize: '0.875rem',
+    color: '#10B981',
+    textAlign: 'center',
+    paddingTop: '0.75rem',
+    borderTop: '1px solid #374151'
+  },
   statusMessage: {
     display: 'flex',
     gap: '1rem',
@@ -708,37 +887,13 @@ const styles = {
     color: '#D1D5DB',
     fontSize: '0.875rem'
   },
-  comparisonGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, 1fr)',
+  actionButtons: {
+    display: 'flex',
     gap: '1rem',
-    marginBottom: '1.5rem'
-  },
-  comparisonCard: {
-    background: '#111827',
-    padding: '1.5rem',
-    borderRadius: '0.75rem',
-    textAlign: 'center'
-  },
-  comparisonTitle: {
-    fontSize: '1rem',
-    fontWeight: '600',
-    margin: '0 0 1rem 0',
-    color: '#9CA3AF'
-  },
-  comparisonAmount: {
-    fontSize: '1.5rem',
-    fontWeight: 'bold',
-    color: 'white',
-    marginBottom: '0.5rem'
-  },
-  comparisonBenefit: {
-    fontSize: '0.875rem',
-    color: '#10B981',
     marginBottom: '1rem'
   },
   primaryButton: {
-    width: '100%',
+    flex: 1,
     padding: '0.75rem',
     background: 'linear-gradient(135deg, #10B981, #059669)',
     color: 'white',
@@ -746,14 +901,21 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     fontWeight: '600',
-    cursor: 'pointer',
-    ':disabled': {
-      opacity: 0.5,
-      cursor: 'not-allowed'
-    }
+    cursor: 'pointer'
+  },
+  zeroInterestButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #8B5CF6, #6D28D9)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.875rem',
+    fontWeight: '600',
+    cursor: 'pointer'
   },
   secondaryButton: {
-    width: '100%',
+    flex: 1,
     padding: '0.75rem',
     background: '#4B5563',
     color: 'white',
@@ -761,11 +923,6 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     cursor: 'pointer'
-  },
-  actionButtons: {
-    display: 'flex',
-    gap: '1rem',
-    marginBottom: '1rem'
   },
   moveMoneyButton: {
     flex: 1,
@@ -825,4 +982,4 @@ const styles = {
     fontSize: '1rem',
     cursor: 'pointer'
   }
-}; 
+};

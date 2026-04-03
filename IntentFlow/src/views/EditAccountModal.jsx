@@ -1,4 +1,3 @@
-// src/views/EditAccountModal.jsx
 import React, { useState, useEffect } from 'react';
 
 const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = 'edit' }) => {
@@ -11,18 +10,29 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     due_date: '',
     institution: '',
     account_number: '',
+    routing_number: '',
     account_holder_name: '',
     notes: '',
     // Loan-specific fields
     original_balance: '',
     term_months: '',
     monthly_payment: '',
-    loan_type: ''
+    loan_type: '',
+    // Debit card specific
+    daily_withdrawal_limit: '',
+    rewards_program: '',
+    // Savings card specific
+    transfer_limit: '',
+    linked_savings_account: ''
   });
 
   // For displaying masked account number
   const [displayAccountNumber, setDisplayAccountNumber] = useState('');
   const [isEditingAccountNumber, setIsEditingAccountNumber] = useState(false);
+
+  // For displaying masked routing number
+  const [displayRoutingNumber, setDisplayRoutingNumber] = useState('');
+  const [isEditingRoutingNumber, setIsEditingRoutingNumber] = useState(false);
 
   // Helper function to mask account number safely
   const maskAccountNumber = (number) => {
@@ -34,6 +44,14 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     return asterisks + number.slice(-4);
   };
 
+  // Helper to mask routing number (show last 4 digits only)
+  const maskRoutingNumber = (number) => {
+    if (!number || number.length === 0) return '';
+    if (number.length <= 4) return number;
+    const asterisks = '•'.repeat(Math.min(number.length - 4, 5));
+    return asterisks + number.slice(-4);
+  };
+
   useEffect(() => {
     console.log('🔍 EditAccountModal - account prop:', account);
     console.log('🔍 EditAccountModal - account type:', account?.type);
@@ -41,30 +59,38 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     if (account && isOpen) {
       // For new accounts (id === 'new'), set default values
       if (account.id === 'new') {
-        const isLoan = account.type === 'loan';
         setFormData({
           name: account.name || '',
-          type: account.type || 'credit',
+          type: account.type || 'credit',  // Default type
           balance: '',
           credit_limit: account.credit_limit || account.limit || '',
           interest_rate: account.interest_rate || account.apr || '',
           due_date: account.due_date || account.dueDate || '',
           institution: account.institution || '',
           account_number: '',
+          routing_number: '',
           account_holder_name: account.account_holder_name || '',
           notes: account.notes || '',
           // Loan-specific defaults
           original_balance: '',
           term_months: '',
           monthly_payment: '',
-          loan_type: account.loan_type || 'personal'
+          loan_type: account.loan_type || 'personal',
+          // Debit card defaults
+          daily_withdrawal_limit: '',
+          rewards_program: '',
+          // Savings card defaults
+          transfer_limit: '',
+          linked_savings_account: ''
         });
         setDisplayAccountNumber('');
+        setDisplayRoutingNumber('');
         setIsEditingAccountNumber(true);
+        setIsEditingRoutingNumber(true);
       } else {
         // For existing accounts
-        const isLoan = account.type === 'loan';
         const fullNumber = account.account_number || '';
+        const fullRoutingNumber = account.routing_number || '';
         const balanceValue = account.balance !== undefined && account.balance !== null 
           ? Math.abs(account.balance).toString() 
           : '';
@@ -78,18 +104,27 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
           due_date: account.due_date || account.dueDate || '',
           institution: account.institution || '',
           account_number: fullNumber,
+          routing_number: fullRoutingNumber,
           account_holder_name: account.account_holder_name || '',
           notes: account.notes || '',
           // Loan-specific fields
           original_balance: account.original_balance ? Math.abs(account.original_balance).toString() : '',
           term_months: account.term_months || '',
           monthly_payment: account.monthly_payment || account.payment_amount || '',
-          loan_type: account.loan_type || account.type || 'personal'
+          loan_type: account.loan_type || account.type || 'personal',
+          // Debit card fields
+          daily_withdrawal_limit: account.daily_withdrawal_limit || '',
+          rewards_program: account.rewards_program || '',
+          // Savings card fields
+          transfer_limit: account.transfer_limit || '',
+          linked_savings_account: account.linked_savings_account || ''
         });
         
         // Mask the account number for display
         setDisplayAccountNumber(maskAccountNumber(fullNumber));
+        setDisplayRoutingNumber(maskRoutingNumber(fullRoutingNumber));
         setIsEditingAccountNumber(false);
+        setIsEditingRoutingNumber(false);
       }
     }
   }, [account, isOpen]);
@@ -117,10 +152,29 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     setDisplayAccountNumber(maskAccountNumber(value));
   };
 
+  // Handle routing number change
+  const handleRoutingNumberChange = (e) => {
+    let value = e.target.value;
+    // Remove any non-digit characters
+    value = value.replace(/\D/g, '');
+    // Limit to 9 digits (standard US routing number)
+    if (value.length > 9) {
+      value = value.slice(0, 9);
+    }
+    setFormData(prev => ({ ...prev, routing_number: value }));
+    setDisplayRoutingNumber(maskRoutingNumber(value));
+  };
+
   // Toggle edit mode for account number
   const handleEditAccountNumberClick = () => {
     setIsEditingAccountNumber(true);
     setDisplayAccountNumber('');
+  };
+
+  // Toggle edit mode for routing number
+  const handleEditRoutingNumberClick = () => {
+    setIsEditingRoutingNumber(true);
+    setDisplayRoutingNumber('');
   };
 
   const handleSubmit = async (e) => {
@@ -128,30 +182,49 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     
     // Prepare data for save based on account type
     const isLoan = formData.type === 'loan';
+    const isChecking = formData.type === 'checking';
+    const isSavings = formData.type === 'savings';
+    const isDebitCard = formData.type === 'debit_card';
+    const isSavingsCard = formData.type === 'savings_card';
+    const isCreditCard = formData.type === 'credit';
     
-   const saveData = {
-  name: formData.name,
-  type: formData.type,
-  balance: formData.balance === '' ? 0 : parseFloat(formData.balance),
-  credit_limit: formData.credit_limit === '' ? null : parseFloat(formData.credit_limit),
-  interest_rate: formData.interest_rate === '' ? null : parseFloat(formData.interest_rate),
-  due_date: formData.due_date || null,
-  institution: formData.institution || null,
-  account_number: formData.account_number,        // ← Must be included
-  account_holder_name: formData.account_holder_name || null, // ← Must be included
-  notes: formData.notes || null,
-  // Loan-specific fields
-  ...(formData.type === 'loan' && {
-    original_balance: formData.original_balance === '' ? null : parseFloat(formData.original_balance),
-    term_months: formData.term_months === '' ? null : parseInt(formData.term_months),
-    monthly_payment: formData.monthly_payment === '' ? null : parseFloat(formData.monthly_payment),
-    loan_type: formData.loan_type
-  })
-};
+    const saveData = {
+      name: formData.name,
+      type: formData.type,
+      balance: formData.balance === '' ? 0 : parseFloat(formData.balance),
+      credit_limit: formData.credit_limit === '' ? null : parseFloat(formData.credit_limit),
+      interest_rate: formData.interest_rate === '' ? null : parseFloat(formData.interest_rate),
+      due_date: formData.due_date || null,
+      institution: formData.institution || null,
+      account_number: formData.account_number || null,
+      routing_number: (isChecking || isSavings || isDebitCard || isSavingsCard) ? (formData.routing_number || null) : null,
+      account_holder_name: formData.account_holder_name || null,
+      notes: formData.notes || null,
+      // Loan-specific fields
+      ...(isLoan && {
+        original_balance: formData.original_balance === '' ? null : parseFloat(formData.original_balance),
+        term_months: formData.term_months === '' ? null : parseInt(formData.term_months),
+        monthly_payment: formData.monthly_payment === '' ? null : parseFloat(formData.monthly_payment),
+        loan_type: formData.loan_type
+      }),
+      // Debit card specific fields
+      ...(isDebitCard && {
+        daily_withdrawal_limit: formData.daily_withdrawal_limit === '' ? null : parseFloat(formData.daily_withdrawal_limit),
+        rewards_program: formData.rewards_program || null
+      }),
+      // Savings card specific fields
+      ...(isSavingsCard && {
+        daily_withdrawal_limit: formData.daily_withdrawal_limit === '' ? null : parseFloat(formData.daily_withdrawal_limit),
+        transfer_limit: formData.transfer_limit === '' ? null : parseFloat(formData.transfer_limit),
+        linked_savings_account: formData.linked_savings_account || null,
+        rewards_program: formData.rewards_program || null
+      })
+    };
     
     console.log('📤 Submitting save data:', saveData);
     console.log('📤 Account number being saved:', saveData.account_number);
-    console.log('📤 Is loan:', isLoan);
+    console.log('📤 Routing number being saved:', saveData.routing_number);
+    console.log('📤 Account type:', formData.type);
     
     const accountId = account?.id === 'new' ? 'new' : account?.id;
     await onSave(accountId, saveData);
@@ -167,14 +240,50 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
 
   const isNewCard = account?.id === 'new';
   const isLoan = formData.type === 'loan';
-  const title = isNewCard 
-    ? (isLoan ? 'Add New Loan' : 'Add Credit Card')
-    : (isLoan ? 'Edit Loan' : 'Edit Credit Card');
+  const isChecking = formData.type === 'checking';
+  const isSavings = formData.type === 'savings';
+  const isDebitCard = formData.type === 'debit_card';
+  const isSavingsCard = formData.type === 'savings_card';
+  const isCreditCard = formData.type === 'credit';
+  
+  // Check if routing number should be shown
+  const showRoutingNumber = isChecking || isSavings || isDebitCard || isSavingsCard;
+  
+  const getTitle = () => {
+    if (isNewCard) {
+      if (isLoan) return 'Add New Loan';
+      if (isChecking) return 'Add Checking Account';
+      if (isSavings) return 'Add Savings Account';
+      if (isDebitCard) return 'Add Debit Card';
+      if (isSavingsCard) return 'Add Savings Card';
+      return 'Add Credit Card';
+    } else {
+      if (isLoan) return 'Edit Loan';
+      if (isChecking) return 'Edit Checking Account';
+      if (isSavings) return 'Edit Savings Account';
+      if (isDebitCard) return 'Edit Debit Card';
+      if (isSavingsCard) return 'Edit Savings Card';
+      return 'Edit Credit Card';
+    }
+  };
+
+  const getBalanceHint = () => {
+    if (isLoan) return 'Enter the remaining loan balance';
+    if (isChecking || isSavings || isSavingsCard) return 'Enter the current account balance';
+    if (isDebitCard || isCreditCard) return 'Enter the current amount owed (positive number)';
+    return 'Enter the current balance';
+  };
+
+  const getAccountNumberHint = () => {
+    if (isChecking || isSavings || isSavingsCard) return 'Enter your account number (up to 16 digits)';
+    if (isDebitCard) return 'Enter your debit card number (up to 16 digits)';
+    return 'Enter account number (up to 16 digits)';
+  };
 
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
       <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
-        <h2 style={styles.modalTitle}>{title}</h2>
+        <h2 style={styles.modalTitle}>{getTitle()}</h2>
         
         <form onSubmit={handleSubmit}>
           <div style={styles.formGroup}>
@@ -187,13 +296,31 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
               value={formData.name}
               onChange={handleChange}
               style={styles.input}
-              placeholder={isLoan ? "e.g., Auto Loan, Student Loan" : "e.g., Chase Sapphire"}
+              placeholder={getPlaceholderByType(formData.type)}
               required
             />
           </div>
 
-          {/* Account Type - Hidden but preserved */}
-          <input type="hidden" name="type" value={formData.type} />
+          {/* Account Type Selector */}
+          <div style={styles.formGroup}>
+            <label style={styles.label}>
+              Account Type <span style={styles.required}>*</span>
+            </label>
+            <select
+              name="type"
+              value={formData.type}
+              onChange={handleChange}
+              style={styles.select}
+              required
+            >
+              <option value="credit">💳 Credit Card</option>
+              <option value="debit_card">💳 Debit Card</option>
+              <option value="savings_card">💳 Savings Card</option>
+              <option value="checking">🏦 Checking Account</option>
+              <option value="savings">🏦 Savings Account</option>
+              <option value="loan">📉 Loan</option>
+            </select>
+          </div>
 
           {/* Balance Field */}
           <div style={styles.formGroup}>
@@ -227,9 +354,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
                 placeholder="0.00"
               />
             </div>
-            <small style={styles.hint}>
-              {isLoan ? 'Enter the remaining loan balance' : 'Enter the current amount owed (positive number)'}
-            </small>
+            <small style={styles.hint}>{getBalanceHint()}</small>
           </div>
 
           {/* Loan-specific fields */}
@@ -301,7 +426,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
           )}
 
           {/* Credit Card specific fields */}
-          {!isLoan && (
+          {isCreditCard && (
             <div style={styles.formGroup}>
               <label style={styles.label}>Credit Limit</label>
               <div style={styles.inputWrapper}>
@@ -316,10 +441,109 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
                   placeholder="0.00"
                 />
               </div>
+              <small style={styles.hint}>Maximum credit available</small>
             </div>
           )}
 
-          {/* Common fields for both */}
+          {/* Debit Card specific fields */}
+          {isDebitCard && (
+            <>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Daily Withdrawal Limit</label>
+                <div style={styles.inputWrapper}>
+                  <span style={styles.currencySymbol}>$</span>
+                  <input
+                    type="number"
+                    name="daily_withdrawal_limit"
+                    value={formData.daily_withdrawal_limit}
+                    onChange={handleChange}
+                    style={styles.modalInput}
+                    step="0.01"
+                    placeholder="0.00"
+                  />
+                </div>
+                <small style={styles.hint}>Maximum amount you can withdraw daily</small>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Rewards Program</label>
+                <input
+                  type="text"
+                  name="rewards_program"
+                  value={formData.rewards_program}
+                  onChange={handleChange}
+                  style={styles.input}
+                  placeholder="e.g., Cashback, Points, None"
+                />
+              </div>
+            </>
+          )}
+
+          {/* Savings Card specific fields */}
+          {isSavingsCard && (
+            <>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Daily Withdrawal Limit</label>
+                <div style={styles.inputWrapper}>
+                  <span style={styles.currencySymbol}>$</span>
+                  <input
+                    type="number"
+                    name="daily_withdrawal_limit"
+                    value={formData.daily_withdrawal_limit}
+                    onChange={handleChange}
+                    style={styles.modalInput}
+                    step="0.01"
+                    placeholder="0.00"
+                  />
+                </div>
+                <small style={styles.hint}>Maximum amount you can withdraw daily</small>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Transfer Limit</label>
+                <div style={styles.inputWrapper}>
+                  <span style={styles.currencySymbol}>$</span>
+                  <input
+                    type="number"
+                    name="transfer_limit"
+                    value={formData.transfer_limit}
+                    onChange={handleChange}
+                    style={styles.modalInput}
+                    step="0.01"
+                    placeholder="0.00"
+                  />
+                </div>
+                <small style={styles.hint}>Maximum amount you can transfer per day</small>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Linked Savings Account</label>
+                <input
+                  type="text"
+                  name="linked_savings_account"
+                  value={formData.linked_savings_account}
+                  onChange={handleChange}
+                  style={styles.input}
+                  placeholder="e.g., Primary Savings Account"
+                />
+                <small style={styles.hint}>Optional: Link to a savings account</small>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Rewards Program</label>
+                <input
+                  type="text"
+                  name="rewards_program"
+                  value={formData.rewards_program}
+                  onChange={handleChange}
+                  style={styles.input}
+                  placeholder="e.g., Cashback, Points, None"
+                />
+              </div>
+            </>
+          )}
+
+          {/* Common fields for all types */}
           <div style={styles.formGroup}>
             <label style={styles.label}>Interest Rate (APR %)</label>
             <input
@@ -329,12 +553,15 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
               onChange={handleChange}
               style={styles.input}
               step="0.01"
-              placeholder={isLoan ? "e.g., 5.99" : "e.g., 18.99"}
+              placeholder={isLoan ? "e.g., 5.99" : (isChecking || isSavings || isSavingsCard ? "e.g., 0.50" : "e.g., 18.99")}
             />
+            <small style={styles.hint}>
+              {isLoan ? 'Annual interest rate on loan' : (isChecking || isSavings || isSavingsCard ? 'Annual percentage yield (APY)' : 'Annual percentage rate (APR)')}
+            </small>
           </div>
 
           <div style={styles.formGroup}>
-            <label style={styles.label}>Due Date</label>
+            <label style={styles.label}>Due Date / Statement Date</label>
             <input
               type="date"
               name="due_date"
@@ -343,26 +570,26 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
               style={styles.input}
             />
             <small style={styles.hint}>
-              {isLoan ? 'Monthly payment due date' : 'Credit card statement due date'}
+              {isLoan ? 'Monthly payment due date' : (isChecking || isSavings || isSavingsCard ? 'Statement closing date' : 'Credit card statement due date')}
             </small>
           </div>
 
           <div style={styles.formGroup}>
-            <label style={styles.label}>Institution / Lender</label>
+            <label style={styles.label}>Institution / Bank</label>
             <input
               type="text"
               name="institution"
               value={formData.institution}
               onChange={handleChange}
               style={styles.input}
-              placeholder={isLoan ? "e.g., Wells Fargo, Sallie Mae" : "e.g., Chase Bank"}
+              placeholder={isLoan ? "e.g., Wells Fargo, Sallie Mae" : "e.g., Chase Bank, Bank of America"}
             />
           </div>
 
-          {/* Account Number Field - Same for both */}
+          {/* Account Number Field - For ALL account types */}
           <div style={styles.formGroup}>
             <label style={styles.label}>Account Number</label>
-            {!isEditingAccountNumber && displayAccountNumber && !isNewCard ? (
+            {!isEditingAccountNumber && displayAccountNumber && !isNewCard && formData.account_number ? (
               <div style={styles.maskedDisplay}>
                 <span style={styles.maskedValue}>{displayAccountNumber}</span>
                 <button 
@@ -378,17 +605,16 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
                 <input
                   type="text"
                   name="account_number"
-                  value={isEditingAccountNumber || isNewCard ? formData.account_number : displayAccountNumber}
+                  value={formData.account_number}
                   onChange={handleAccountNumberChange}
                   style={styles.accountNumberInput}
-                  placeholder="Enter up to 16 digits"
+                  placeholder={getAccountNumberHint()}
                   maxLength="16"
-                  autoFocus={isNewCard}
                 />
               </div>
             )}
             <small style={styles.hint}>
-              Enter full account number (up to 16 digits). Only the last 4 digits will be visible after saving.
+              {getAccountNumberHint()} Only the last 4 digits will be visible after saving.
             </small>
             {formData.account_number && formData.account_number.length > 0 && (
               <div style={styles.maskedPreview}>
@@ -400,7 +626,49 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
             )}
           </div>
 
-          {/* Account Holder Name - Same for both */}
+          {/* Routing Number Field - For Checking, Savings, Debit Card, and Savings Card */}
+          {showRoutingNumber && (
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Routing Number</label>
+              {!isEditingRoutingNumber && displayRoutingNumber && !isNewCard && formData.routing_number ? (
+                <div style={styles.maskedDisplay}>
+                  <span style={styles.maskedValue}>{displayRoutingNumber}</span>
+                  <button 
+                    type="button"
+                    onClick={handleEditRoutingNumberClick}
+                    style={styles.editMaskedButton}
+                  >
+                    Edit
+                  </button>
+                </div>
+              ) : (
+                <div style={styles.inputWrapper}>
+                  <input
+                    type="text"
+                    name="routing_number"
+                    value={formData.routing_number}
+                    onChange={handleRoutingNumberChange}
+                    style={styles.accountNumberInput}
+                    placeholder="9-digit routing number"
+                    maxLength="9"
+                  />
+                </div>
+              )}
+              <small style={styles.hint}>
+                Enter the 9-digit routing number for this account. Only the last 4 digits will be visible after saving.
+              </small>
+              {formData.routing_number && formData.routing_number.length > 0 && (
+                <div style={styles.maskedPreview}>
+                  <span style={styles.maskedLabel}>Will be stored as:</span>
+                  <span style={styles.maskedValue}>
+                    {maskRoutingNumber(formData.routing_number)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Account Holder Name - Same for all types */}
           <div style={styles.formGroup}>
             <label style={styles.label}>Account Holder Name</label>
             <input
@@ -434,11 +702,11 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
 
           <div style={styles.modalActions}>
             <button type="submit" style={styles.saveButton}>
-              {isNewCard ? (isLoan ? 'Create Loan' : 'Create Card') : 'Save Changes'}
+              {isNewCard ? 'Create Account' : 'Save Changes'}
             </button>
             {!isNewCard && onDelete && (
               <button type="button" onClick={handleDelete} style={styles.deleteButton}>
-                Delete {isLoan ? 'Loan' : 'Card'}
+                Delete Account
               </button>
             )}
             <button type="button" onClick={onClose} style={styles.cancelButton}>
@@ -450,6 +718,18 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     </div>
   );
 };
+
+// Helper function for placeholders
+function getPlaceholderByType(type) {
+  switch(type) {
+    case 'loan': return "e.g., Auto Loan, Student Loan";
+    case 'checking': return "e.g., Chase Checking";
+    case 'savings': return "e.g., High Yield Savings";
+    case 'debit_card': return "e.g., Wells Fargo Debit";
+    case 'savings_card': return "e.g., Savings Access Card";
+    default: return "e.g., Chase Sapphire";
+  }
+}
 
 const styles = {
   modalOverlay: {

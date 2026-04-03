@@ -384,24 +384,31 @@ async function ensureAllTablesExist(dbConnection) {
         await dbConnection.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (2, 'demo', 'demo@example.com', 'Demo User')`);
     }
     
-    const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
-    if (groupCount.count === 0) {
-        console.log('📝 Inserting demo category groups...');
-        await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
-            (1, 2, 'Fixed Expenses', 1), 
-            (2, 2, 'Variable Expenses', 2)`);
-    }
-    
-    const catCount = await dbConnection.get('SELECT COUNT(*) as count FROM categories WHERE user_id = 2');
-    if (catCount.count === 0) {
-        console.log('📝 Inserting demo categories...');
-        await dbConnection.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
-            ('cat1', 2, 'Groceries', 2, 0), 
-            ('cat2', 2, 'Rent', 1, 1500), 
-            ('cat3', 2, 'Utilities', 1, 200),
-            ('cat4', 2, 'Dining Out', 2, 300), 
-            ('cat5', 2, 'Transportation', 2, 150)`);
-    }
+// Replace lines 389-400 with this:
+const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
+// Only insert demo groups if NO groups exist AND we want to seed
+const SKIP_DEMO_SEEDING = true; // Set to false to re-enable demo data
+if (groupCount.count === 0 && !SKIP_DEMO_SEEDING) {
+    console.log('📝 Inserting demo category groups...');
+    await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
+        (1, 2, 'Fixed Expenses', 1), 
+        (2, 2, 'Variable Expenses', 2)`);
+} else {
+    console.log('✅ Demo group seeding disabled or groups already exist');
+}
+
+const catCount = await dbConnection.get('SELECT COUNT(*) as count FROM categories WHERE user_id = 2');
+if (catCount.count === 0 && !SKIP_DEMO_SEEDING) {
+    console.log('📝 Inserting demo categories...');
+    await dbConnection.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
+        ('cat1', 2, 'Groceries', 2, 0), 
+        ('cat2', 2, 'Rent', 1, 1500), 
+        ('cat3', 2, 'Utilities', 1, 200),
+        ('cat4', 2, 'Dining Out', 2, 300), 
+        ('cat5', 2, 'Transportation', 2, 150)`);
+} else {
+    console.log('✅ Demo category seeding disabled or categories already exist');
+}
     
     const accountCount = await dbConnection.get('SELECT COUNT(*) as count FROM accounts WHERE user_id = 2');
     if (accountCount.count === 0) {

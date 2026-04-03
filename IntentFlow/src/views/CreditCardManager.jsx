@@ -15,6 +15,11 @@ function CreditCardManager({
   const [filter, setFilter] = useState('all');
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
+  
+  // New state for Zero Interest Accelerator
+  const [showAccelerator, setShowAccelerator] = useState(false);
+  const [targetMonths, setTargetMonths] = useState(12);
+  const [acceleratorPlan, setAcceleratorPlan] = useState(null);
 
   // Debug: log cards when they change
   useEffect(() => {
@@ -30,6 +35,109 @@ function CreditCardManager({
       })));
     }
   }, [cards]);
+
+  // Calculate Zero Interest Accelerator plan for a card
+  const calculateAcceleratorPlan = (card) => {
+    const balance = Math.abs(card.balance || 0);
+    const aprValue = card.interest_rate ?? card.apr ?? 18.99;
+    const monthlyRate = aprValue / 100 / 12;
+    const minPayment = card.minimum_payment || card.minimumPayment || Math.max(25, balance * 0.02);
+    
+    // Calculate months to payoff with minimum payment
+    let monthsWithMin = 0;
+    let totalInterestMin = 0;
+    let remainingBalance = balance;
+    
+    if (monthlyRate === 0) {
+      monthsWithMin = Math.ceil(balance / minPayment);
+      totalInterestMin = 0;
+    } else {
+      if (minPayment > balance * monthlyRate) {
+        monthsWithMin = Math.ceil(
+          -Math.log(1 - (balance * monthlyRate) / minPayment) / Math.log(1 + monthlyRate)
+        );
+      } else {
+        monthsWithMin = Infinity;
+      }
+      totalInterestMin = monthsWithMin * minPayment - balance;
+    }
+    
+    // Calculate accelerated payment for target months
+    let targetPayment = null;
+    let targetTotalInterest = null;
+    let canAchieve = true;
+    
+    if (targetMonths > 0 && monthlyRate > 0) {
+      const r = monthlyRate;
+      const n = targetMonths;
+      targetPayment = (r * balance) / (1 - Math.pow(1 + r, -n));
+      if (targetPayment < minPayment) {
+        targetPayment = minPayment;
+        canAchieve = false;
+      }
+      targetTotalInterest = targetPayment * n - balance;
+    } else if (targetMonths > 0) {
+      targetPayment = balance / targetMonths;
+      targetTotalInterest = 0;
+      if (targetPayment < minPayment) canAchieve = false;
+    }
+    
+    const interestSaved = totalInterestMin - targetTotalInterest;
+    const extraPerMonth = targetPayment ? targetPayment - minPayment : 0;
+    const monthsSaved = monthsWithMin - targetMonths;
+    
+    return {
+      balance,
+      minPayment,
+      monthsWithMin: isFinite(monthsWithMin) ? monthsWithMin : 999,
+      totalInterestMin: isFinite(totalInterestMin) ? totalInterestMin : 999999,
+      targetPayment,
+      targetTotalInterest,
+      interestSaved: Math.max(0, interestSaved),
+      extraPerMonth: Math.max(0, extraPerMonth),
+      monthsSaved: Math.max(0, monthsSaved),
+      canAchieve,
+      aprValue
+    };
+  };
+
+  // Handle card selection and calculate accelerator plan
+  const handleCardSelect = (card) => {
+    setSelectedCard(selectedCard === card.id ? null : card.id);
+    if (selectedCard !== card.id) {
+      const plan = calculateAcceleratorPlan(card);
+      setAcceleratorPlan(plan);
+    }
+  };
+
+  // Handle opening accelerator for a card
+  const handleOpenAccelerator = (e, card) => {
+    e.stopPropagation();
+    const plan = calculateAcceleratorPlan(card);
+    setAcceleratorPlan(plan);
+    setSelectedCard(card.id);
+    setShowAccelerator(true);
+  };
+
+  // Handle applying accelerator payment
+  const handleApplyAccelerator = async (card) => {
+    if (!acceleratorPlan || !acceleratorPlan.targetPayment) return;
+    
+    if (onMakePayment) {
+      const result = await onMakePayment({
+        cardId: card.id,
+        amount: acceleratorPlan.targetPayment,
+        date: new Date().toISOString().split('T')[0],
+        accountId: card.id,
+        isAccelerated: true
+      });
+      if (result?.success) {
+        setShowAccelerator(false);
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        alert(`✅ Accelerated payment of $${acceleratorPlan.targetPayment.toFixed(2)} scheduled! You'll save $${acceleratorPlan.interestSaved.toFixed(2)} in interest.`);
+      }
+    }
+  };
 
   // Handle adding a new card (opens EditAccountModal in "add" mode)
   const handleAddNewCard = () => {
@@ -423,6 +531,7 @@ function CreditCardManager({
           {filteredCards.map(card => {
             const stats = calculateCardStats(card);
             const isSelected = selectedCard === card.id;
+            const accelerator = calculateAcceleratorPlan(card);
 
             return (
               <div
@@ -432,7 +541,7 @@ function CreditCardManager({
                   ...(isSelected ? styles.selectedCard : {}),
                   borderLeft: `4px solid ${stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : stats.utilizationColor}`
                 }}
-                onClick={() => setSelectedCard(isSelected ? null : card.id)}
+                onClick={() => handleCardSelect(card)}
               >
                 {/* Edit Button - Positioned at top right */}
                 <button
@@ -492,6 +601,13 @@ function CreditCardManager({
                   <div style={styles.stat}><span>Interest</span><strong style={{ color: '#F59E0B' }}>{formatCurrency(stats.interestIfNotPaid)}/mo</strong></div>
                 </div>
 
+                {/* Zero Interest Accelerator Badge */}
+                {accelerator.targetPayment && accelerator.targetPayment > stats.minPayment && (
+                  <div style={styles.acceleratorBadge}>
+                    ⚡ Save {formatCurrency(accelerator.interestSaved)} by paying {formatCurrency(accelerator.extraPerMonth)} more/month
+                  </div>
+                )}
+
                 {/* Action Buttons */}
                 <div style={styles.cardActions}>
                   <button
@@ -499,6 +615,12 @@ function CreditCardManager({
                     style={styles.paymentButton}
                   >
                     💰 Make Payment
+                  </button>
+                  <button
+                    onClick={(e) => handleOpenAccelerator(e, card)}
+                    style={styles.acceleratorButton}
+                  >
+                    ⚡ Zero Interest
                   </button>
                   <button
                     onClick={(e) => {
@@ -533,15 +655,75 @@ function CreditCardManager({
                         </div>
                       </div>
                       <div style={styles.strategyCard}>
-                        <div style={styles.strategyLabel}>Payoff Time</div>
+                        <div style={styles.strategyLabel}>Payoff Time (Min)</div>
                         <div style={styles.strategyValue}>
-                          {Math.ceil(Math.abs(card.balance) / stats.minPayment)} months
+                          {accelerator.monthsWithMin} months
                         </div>
                         <div style={styles.strategyNote}>
                           with minimum payments
                         </div>
                       </div>
+                      {accelerator.targetPayment && (
+                        <div style={styles.strategyCard}>
+                          <div style={styles.strategyLabel}>⚡ Accelerated Payoff</div>
+                          <div style={styles.strategyValue}>
+                            {targetMonths} months
+                          </div>
+                          <div style={styles.strategyNote}>
+                            Save {formatCurrency(accelerator.interestSaved)} in interest
+                          </div>
+                        </div>
+                      )}
                     </div>
+
+                    {/* Zero Interest Accelerator Detailed View */}
+                    {showAccelerator && selectedCard === card.id && (
+                      <div style={styles.acceleratorPlan}>
+                        <h4 style={styles.expandedTitle}>⚡ Zero Interest Accelerator Plan</h4>
+                        <div style={styles.acceleratorControls}>
+                          <label style={styles.acceleratorLabel}>
+                            Target Payoff Time:
+                            <input
+                              type="range"
+                              min="1"
+                              max="60"
+                              value={targetMonths}
+                              onChange={(e) => {
+                                setTargetMonths(Number(e.target.value));
+                                setAcceleratorPlan(calculateAcceleratorPlan(card));
+                              }}
+                              style={styles.acceleratorSlider}
+                            />
+                            <span style={styles.acceleratorValue}>{targetMonths} months</span>
+                          </label>
+                        </div>
+                        
+                        <div style={styles.acceleratorGrid}>
+                          <div style={styles.acceleratorItem}>
+                            <div style={styles.acceleratorLabel}>Current Payment</div>
+                            <div style={styles.acceleratorAmount}>{formatCurrency(accelerator.minPayment)}/mo</div>
+                            <div style={styles.acceleratorNote}>Payoff: {accelerator.monthsWithMin} months</div>
+                          </div>
+                          <div style={styles.acceleratorItem}>
+                            <div style={styles.acceleratorLabel}>⚡ Accelerated Payment</div>
+                            <div style={styles.acceleratorAmount} style={{ color: '#10B981' }}>{formatCurrency(accelerator.targetPayment)}/mo</div>
+                            <div style={styles.acceleratorNote}>+{formatCurrency(accelerator.extraPerMonth)} more per month</div>
+                          </div>
+                          <div style={styles.acceleratorItem}>
+                            <div style={styles.acceleratorLabel}>Interest Saved</div>
+                            <div style={styles.acceleratorAmount} style={{ color: '#10B981', fontSize: '1.25rem' }}>{formatCurrency(accelerator.interestSaved)}</div>
+                            <div style={styles.acceleratorNote}>Pay off {accelerator.monthsSaved} months sooner</div>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleApplyAccelerator(card)}
+                          style={styles.applyAcceleratorButton}
+                        >
+                          ⚡ Apply Accelerated Payment Plan
+                        </button>
+                      </div>
+                    )}
 
                     {/* Recent Transactions Preview */}
                     {transactions.filter(t => t.account_id === card.id).length > 0 && (
@@ -744,7 +926,7 @@ const styles = {
   },
   cardsGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))',
     gap: '1.5rem'
   },
   cardItem: {
@@ -879,6 +1061,16 @@ const styles = {
     fontSize: '0.75rem',
     color: '#9CA3AF'
   },
+  acceleratorBadge: {
+    background: 'linear-gradient(135deg, #F59E0B20, #D9770620)',
+    border: '1px solid #F59E0B',
+    borderRadius: '0.5rem',
+    padding: '0.5rem',
+    marginBottom: '1rem',
+    fontSize: '0.75rem',
+    textAlign: 'center',
+    color: '#F59E0B'
+  },
   cardActions: {
     display: 'flex',
     gap: '0.5rem'
@@ -891,6 +1083,17 @@ const styles = {
     border: 'none',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
+    fontWeight: '600',
+    cursor: 'pointer'
+  },
+  acceleratorButton: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'linear-gradient(135deg, #F59E0B, #D97706)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    fontSize: '0.7rem',
     fontWeight: '600',
     cursor: 'pointer'
   },
@@ -917,7 +1120,7 @@ const styles = {
   },
   strategyGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, 1fr)',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
     gap: '0.75rem',
     marginBottom: '1rem'
   },
@@ -941,6 +1144,64 @@ const styles = {
   strategyNote: {
     fontSize: '0.625rem',
     color: '#10B981'
+  },
+  acceleratorPlan: {
+    background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
+    padding: '1rem',
+    borderRadius: '0.75rem',
+    marginBottom: '1rem'
+  },
+  acceleratorControls: {
+    marginBottom: '1rem'
+  },
+  acceleratorSlider: {
+    width: '100%',
+    margin: '0.5rem 0'
+  },
+  acceleratorValue: {
+    display: 'inline-block',
+    marginLeft: '0.5rem',
+    fontWeight: 'bold',
+    color: '#F59E0B'
+  },
+  acceleratorGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: '0.75rem',
+    marginBottom: '1rem'
+  },
+  acceleratorItem: {
+    textAlign: 'center',
+    padding: '0.5rem',
+    background: 'rgba(0,0,0,0.3)',
+    borderRadius: '0.5rem'
+  },
+  acceleratorLabel: {
+    fontSize: '0.7rem',
+    color: '#9CA3AF',
+    marginBottom: '0.25rem'
+  },
+  acceleratorAmount: {
+    fontSize: '1rem',
+    fontWeight: 'bold',
+    color: 'white'
+  },
+  acceleratorNote: {
+    fontSize: '0.6rem',
+    color: '#6B7280',
+    marginTop: '0.25rem'
+  },
+  applyAcceleratorButton: {
+    width: '100%',
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #10B981, #059669)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.875rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    marginTop: '0.5rem'
   },
   recentTransactions: {
     background: '#111827',
