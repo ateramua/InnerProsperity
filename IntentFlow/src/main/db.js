@@ -8,7 +8,9 @@ let db = null;
 
 async function getDatabase() {
   if (db) return db;
-  
+   const dbPath = getDatabasePath();
+    console.log('📂 CURRENT DATABASE PATH:', dbPath);
+    console.log('📂 Database file exists:', fs.existsSync(dbPath));
   const dbPath = app.isPackaged
     ? path.join(app.getPath('userData'), 'money-manager.db')
     : path.join(__dirname, '../../db/data/app.db');

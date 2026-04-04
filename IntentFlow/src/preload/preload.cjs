@@ -33,7 +33,7 @@ try {
     addTransaction: (transaction) =>
       ipcRenderer.invoke('addTransaction', transaction),
     getAutoSyncSetting: () => ipcRenderer.invoke('get-auto-sync-setting'),
-setAutoSyncSetting: (enabled) => ipcRenderer.invoke('set-auto-sync-setting', enabled),
+    setAutoSyncSetting: (enabled) => ipcRenderer.invoke('set-auto-sync-setting', enabled),
 
     createTransaction: (data) =>
       ipcRenderer.invoke('createTransaction', data), // ⚠️ No handler in main process – remove if not used
@@ -114,6 +114,18 @@ setAutoSyncSetting: (enabled) => ipcRenderer.invoke('set-auto-sync-setting', ena
     deleteCategoryGroup: (id, userId) =>
       ipcRenderer.invoke('categoryGroups:delete', id, userId),
 
+    // ==================== CATEGORY HIDE/ARCHIVE ====================
+    toggleHideCategory: (categoryId, userId) =>
+      ipcRenderer.invoke('category:toggleHide', categoryId, userId),
+
+    archiveCategory: (categoryId, userId) =>
+      ipcRenderer.invoke('category:archive', categoryId, userId),
+
+    restoreCategory: (categoryId, userId) =>
+      ipcRenderer.invoke('category:restore', categoryId, userId),
+
+    getArchivedCategories: (userId) =>
+      ipcRenderer.invoke('category:getArchived', userId),
     // ==================== FORECAST ====================
     generateForecast: (userId, options) =>
       ipcRenderer.invoke('forecast:generate', userId, options),

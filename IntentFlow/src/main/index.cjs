@@ -234,7 +234,7 @@ async function getDatabase() {
 // ==================== TABLE CREATION HELPER (SURGICAL FIX) ====================
 async function ensureAllTablesExist(dbConnection) {
     console.log('🔧 Ensuring all required tables exist...');
-    
+
     await dbConnection.exec(`
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -376,40 +376,40 @@ async function ensureAllTablesExist(dbConnection) {
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     `);
-    
+
     // Insert demo data if tables are empty
     const userCount = await dbConnection.get('SELECT COUNT(*) as count FROM users');
     if (userCount.count === 0) {
         console.log('📝 Inserting demo user...');
         await dbConnection.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (2, 'demo', 'demo@example.com', 'Demo User')`);
     }
-    
-// Replace lines 389-400 with this:
-const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
-// Only insert demo groups if NO groups exist AND we want to seed
-const SKIP_DEMO_SEEDING = true; // Set to false to re-enable demo data
-if (groupCount.count === 0 && !SKIP_DEMO_SEEDING) {
-    console.log('📝 Inserting demo category groups...');
-    await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
+
+    // Replace lines 389-400 with this:
+    const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
+    // Only insert demo groups if NO groups exist AND we want to seed
+    const SKIP_DEMO_SEEDING = true; // Set to false to re-enable demo data
+    if (groupCount.count === 0 && !SKIP_DEMO_SEEDING) {
+        console.log('📝 Inserting demo category groups...');
+        await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
         (1, 2, 'Fixed Expenses', 1), 
         (2, 2, 'Variable Expenses', 2)`);
-} else {
-    console.log('✅ Demo group seeding disabled or groups already exist');
-}
+    } else {
+        console.log('✅ Demo group seeding disabled or groups already exist');
+    }
 
-const catCount = await dbConnection.get('SELECT COUNT(*) as count FROM categories WHERE user_id = 2');
-if (catCount.count === 0 && !SKIP_DEMO_SEEDING) {
-    console.log('📝 Inserting demo categories...');
-    await dbConnection.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
+    const catCount = await dbConnection.get('SELECT COUNT(*) as count FROM categories WHERE user_id = 2');
+    if (catCount.count === 0 && !SKIP_DEMO_SEEDING) {
+        console.log('📝 Inserting demo categories...');
+        await dbConnection.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
         ('cat1', 2, 'Groceries', 2, 0), 
         ('cat2', 2, 'Rent', 1, 1500), 
         ('cat3', 2, 'Utilities', 1, 200),
         ('cat4', 2, 'Dining Out', 2, 300), 
         ('cat5', 2, 'Transportation', 2, 150)`);
-} else {
-    console.log('✅ Demo category seeding disabled or categories already exist');
-}
-    
+    } else {
+        console.log('✅ Demo category seeding disabled or categories already exist');
+    }
+
     const accountCount = await dbConnection.get('SELECT COUNT(*) as count FROM accounts WHERE user_id = 2');
     if (accountCount.count === 0) {
         console.log('📝 Inserting demo accounts...');
@@ -417,7 +417,7 @@ if (catCount.count === 0 && !SKIP_DEMO_SEEDING) {
             ('test4', 2, 'Checking', 'checking', 3450.89, 'Chase'), 
             ('1faa4471-bbd8-4fbb-9c06-716c9373eb75', 2, 'Savings', 'savings', 10000, 'Chase')`);
     }
-    
+
     console.log('✅ Tables verified and demo data seeded');
 }
 
@@ -429,13 +429,13 @@ async function initDatabase() {
     if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
     const dbExists = fs.existsSync(dbPath);
     console.log('📂 Database exists:', dbExists);
-    
+
     try {
         const database = await getDatabase();
-        
+
         // CRITICAL FIX: Always ensure all tables exist
         await ensureAllTablesExist(database);
-        
+
         console.log('✅ Database initialized successfully');
         return database;
     } catch (error) {
@@ -1293,9 +1293,21 @@ function setupIpcHandlers() {
         try {
             const db = await getDatabase();
             const groups = await db.all(
-                'SELECT * FROM category_groups WHERE user_id = ? ORDER BY sort_order',
+                'SELECT * FROM category_groups WHERE user_id = ? ORDER BY sort_order ASC',
                 [userId]
             );
+            console.log(`✅ Found ${groups.length} groups for user ${userId}`);
+
+            // Also get category counts for each group (helpful for UI)
+            for (const group of groups) {
+                const count = await db.get(
+                    'SELECT COUNT(*) as count FROM categories WHERE group_id = ?',
+                    [String(group.id)]
+                );
+                group.category_count = count.count;
+                console.log(`📊 Group "${group.name}" has ${group.category_count} categories`);
+            }
+
             return { success: true, data: groups };
         } catch (error) {
             console.error('❌ Error in categoryGroups:getAll:', error);
@@ -1359,27 +1371,80 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('categoryGroups:delete', async (event, groupId, userId) => {
-        console.log('📞 IPC: categoryGroups:delete called', { groupId, userId });
+        console.log('🚨🚨🚨 DELETE HANDLER TRIGGERED 🚨🚨🚨');
+        console.log('📞 categoryGroups:delete called with:', {
+            groupId,
+            userId,
+            groupIdType: typeof groupId,
+            userIdType: typeof userId
+        });
+
         try {
             const db = await getDatabase();
-            const categoriesInGroup = await db.get(
-                'SELECT COUNT(*) as count FROM categories WHERE group_id = ?',
-                [groupId]
+            console.log('✅ Database connection obtained');
+
+            // Check if group exists first
+            const group = await db.get(
+                'SELECT * FROM category_groups WHERE id = ? AND user_id = ?',
+                [groupId, userId]
             );
-            if (categoriesInGroup.count > 0) {
+
+            if (!group) {
+                console.log('❌ Group not found:', { groupId, userId });
                 return {
                     success: false,
-                    error: 'Cannot delete group that contains categories. Move or delete the categories first.'
+                    error: `Category group with ID ${groupId} not found for user ${userId}`
                 };
             }
-            await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
-            return { success: true, data: { id: groupId } };
+
+            console.log('✅ Group found:', group);
+
+            // Check for categories
+            const categoriesInGroup = await db.get(
+                'SELECT COUNT(*) as count FROM categories WHERE group_id = ?',
+                [String(groupId)]
+            );
+
+            console.log(`📊 Found ${categoriesInGroup.count} categories in group`);
+
+            if (categoriesInGroup.count > 0) {
+                // Get category names for better error message
+                const categories = await db.all(
+                    'SELECT name FROM categories WHERE group_id = ? LIMIT 5',
+                    [String(groupId)]
+                );
+                const categoryNames = categories.map(c => c.name).join(', ');
+
+                return {
+                    success: false,
+                    error: `Cannot delete "${group.name}" because it contains ${categoriesInGroup.count} categories (${categoryNames}${categoriesInGroup.count > 5 ? '...' : ''}). Please delete or move all categories from this group first.`
+                };
+            }
+
+            // Delete the group
+            const result = await db.run(
+                'DELETE FROM category_groups WHERE id = ? AND user_id = ?',
+                [groupId, userId]
+            );
+
+            console.log('✅ Delete result:', result);
+
+            if (result.changes === 0) {
+                return {
+                    success: false,
+                    error: `Failed to delete category group ${groupId}`
+                };
+            }
+
+            console.log(`✅ Successfully deleted category group ${groupId} (${group.name})`);
+            return { success: true, data: { id: groupId, name: group.name } };
+
         } catch (error) {
             console.error('❌ Error in categoryGroups:delete:', error);
+            console.error('❌ Stack trace:', error.stack);
             return { success: false, error: error.message };
         }
     });
-
     // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
     ipcMain.handle('accounts:getAll', async (event, userId) => {
         console.log('\x1b[32m%s\x1b[0m', '💚💚💚💚💚💚💚💚💚💚💚💚💚💚💚');
@@ -1932,6 +1997,182 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+    // ==================== ARCHIVE/RESTORE CATEGORY ====================
+ipcMain.handle('category:archive', async (event, categoryId, userId) => {
+    console.log('📦 Archive category:', { categoryId, userId });
+    try {
+        const db = await getDatabase();
+        
+        // Check if category exists and belongs to user
+        const category = await db.get(
+            'SELECT * FROM categories WHERE id = ? AND user_id = ?',
+            [categoryId, userId]
+        );
+        
+        if (!category) {
+            return { success: false, error: 'Category not found' };
+        }
+        
+        if (category.archived) {
+            return { success: false, error: 'Category is already archived' };
+        }
+        
+        // Archive the category
+        await db.run(`
+            UPDATE categories 
+            SET archived = 1, 
+                archived_at = datetime("now"),
+                updated_at = datetime("now")
+            WHERE id = ? AND user_id = ?
+        `, [categoryId, userId]);
+        
+        console.log(`✅ Category ${categoryId} archived`);
+        return { 
+            success: true, 
+            data: { 
+                id: categoryId, 
+                archived: true,
+                message: 'Category archived successfully'
+            } 
+        };
+    } catch (error) {
+        console.error('❌ Error archiving category:', error);
+        return { success: false, error: error.message };
+    }
+});
+ipcMain.handle('category:restore', async (event, categoryId, userId) => {
+    console.log('🔄 Restore category:', { categoryId, userId });
+    try {
+        const db = await getDatabase();
+        
+        // Check if category exists and belongs to user
+        const category = await db.get(
+            'SELECT * FROM categories WHERE id = ? AND user_id = ?',
+            [categoryId, userId]
+        );
+        
+        if (!category) {
+            return { success: false, error: 'Category not found' };
+        }
+        
+        if (!category.archived) {
+            return { success: false, error: 'Category is not archived' };
+        }
+        
+        // Check if original group still exists
+        let targetGroupId = category.group_id;
+        if (targetGroupId) {
+            const groupExists = await db.get(
+                'SELECT id FROM category_groups WHERE id = ? AND user_id = ?',
+                [targetGroupId, userId]
+            );
+            
+            if (!groupExists) {
+                // Find or create default "Uncategorized" group
+                let defaultGroup = await db.get(
+                    'SELECT id FROM category_groups WHERE name = "Uncategorized" AND user_id = ?',
+                    [userId]
+                );
+                
+                if (!defaultGroup) {
+                    const result = await db.run(`
+                        INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at)
+                        VALUES (?, "Uncategorized", 999, datetime("now"), datetime("now"))
+                    `, [userId]);
+                    targetGroupId = result.lastID;
+                } else {
+                    targetGroupId = defaultGroup.id;
+                }
+                
+                console.log(`📁 Original group deleted, using default group: ${targetGroupId}`);
+            }
+        }
+        
+        // Restore the category
+        await db.run(`
+            UPDATE categories 
+            SET archived = 0,
+                group_id = ?,
+                restored_at = datetime("now"),
+                updated_at = datetime("now")
+            WHERE id = ? AND user_id = ?
+        `, [targetGroupId, categoryId, userId]);
+        
+        console.log(`✅ Category ${categoryId} restored to group ${targetGroupId}`);
+        return { 
+            success: true, 
+            data: { 
+                id: categoryId, 
+                archived: false,
+                group_id: targetGroupId,
+                message: 'Category restored successfully'
+            } 
+        };
+    } catch (error) {
+        console.error('❌ Error restoring category:', error);
+        return { success: false, error: error.message };
+    }
+});
+ipcMain.handle('category:getArchived', async (event, userId) => {
+    console.log('📋 Get archived categories for user:', userId);
+    try {
+        const db = await getDatabase();
+        
+        const archivedCategories = await db.all(`
+            SELECT 
+                c.*,
+                cg.name as group_name,
+                cg.sort_order as group_sort_order
+            FROM categories c
+            LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id
+            WHERE c.user_id = ? AND c.archived = 1
+            ORDER BY c.archived_at DESC
+        `, [userId]);
+        
+        console.log(`✅ Found ${archivedCategories.length} archived categories`);
+        return { success: true, data: archivedCategories };
+    } catch (error) {
+        console.error('❌ Error getting archived categories:', error);
+        return { success: false, error: error.message, data: [] };
+    }
+});
+    // ==================== HIDE/UNHIDE CATEGORY ====================
+ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
+    console.log('👁️ Toggle hide category:', { categoryId, userId });
+    try {
+        const db = await getDatabase();
+        
+        // Get current hidden status
+        const category = await db.get(
+            'SELECT hidden FROM categories WHERE id = ? AND user_id = ?',
+            [categoryId, userId]
+        );
+        
+        if (!category) {
+            return { success: false, error: 'Category not found' };
+        }
+        
+        const newHiddenStatus = category.hidden ? 0 : 1;
+        
+        await db.run(
+            'UPDATE categories SET hidden = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?',
+            [newHiddenStatus, categoryId, userId]
+        );
+        
+        console.log(`✅ Category ${categoryId} hidden status: ${newHiddenStatus}`);
+        return { 
+            success: true, 
+            data: { 
+                id: categoryId, 
+                hidden: newHiddenStatus,
+                message: newHiddenStatus ? 'Category hidden' : 'Category unhidden'
+            } 
+        };
+    } catch (error) {
+        console.error('❌ Error toggling category hide:', error);
+        return { success: false, error: error.message };
+    }
+});
 
     ipcMain.handle('getCategories', async (event, userId) => {
         console.log('📞 IPC: getCategories called with userId:', userId);
@@ -1939,14 +2180,37 @@ function setupIpcHandlers() {
             const dbConnection = await getDatabase();
             let targetUserId = userId;
             if (!targetUserId) targetUserId = userService.getCurrentUser()?.id;
-            if (!targetUserId) return { success: true, data: [] };
+            if (!targetUserId) {
+                console.log('⚠️ No user ID found, returning empty array');
+                return { success: true, data: [] };
+            }
+
+            // Get all categories with their group names
             const categories = await dbConnection.all(`
-                SELECT id, name, group_id, assigned, activity, available,
-                target_type, target_amount, target_date, priority,
-                last_month_assigned, average_spending
-                FROM categories WHERE user_id = ?
-            `, [targetUserId]);
+            SELECT 
+                c.*,
+                cg.name as group_name,
+                cg.sort_order as group_sort_order
+            FROM categories c
+            LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id
+            WHERE c.user_id = ?
+            ORDER BY cg.sort_order ASC, c.name ASC
+        `, [targetUserId]);
+
+            console.log(`✅ Found ${categories.length} categories for user ${targetUserId}`);
+
+            // Debug: Log categories by group
+            const grouped = categories.reduce((acc, cat) => {
+                const groupName = cat.group_name || 'Uncategorized';
+                if (!acc[groupName]) acc[groupName] = [];
+                acc[groupName].push(cat.name);
+                return acc;
+            }, {});
+
+            console.log('📊 Categories by group:', Object.keys(grouped).map(g => `${g}: ${grouped[g].length}`));
+
             return { success: true, data: categories };
+
         } catch (error) {
             console.error('❌ Error in getCategories:', error);
             return { success: false, error: error.message, data: [] };
