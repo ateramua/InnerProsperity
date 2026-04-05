@@ -1050,6 +1050,21 @@ const PropertyMapView = () => {
     };
     initializeData();
   }, [userId]);
+  const getInflowTotal = async () => {
+  try {
+    const result = await window.electronAPI.getTransactions({
+      categoryId: 'inflow_ready_to_assign',
+      userId: userId,
+      startDate: new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).toISOString().split('T')[0]
+    });
+    if (result.success) {
+      return result.data.reduce((sum, t) => sum + (t.amount > 0 ? t.amount : 0), 0);
+    }
+  } catch (error) {
+    console.error('Error getting inflow transactions:', error);
+  }
+  return 0; // ← Already handles this
+};
 
   useEffect(() => {
     let isFirstRun = true;
