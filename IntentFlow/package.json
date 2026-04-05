@@ -7,9 +7,13 @@
   "scripts": {
     "clean": "rimraf .next out release dist",
     "build": "next build",
+    "seed:db": "node src/db/scripts/seed-database.js",
+    "prebuild": "npm run seed:db",
+    "predist": "npm run seed:db",
     "dist": "npm run clean && npm run build && electron-builder",
     "start": "NODE_ENV=production electron .",
-    "dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\""
+    "dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "postinstall": "electron-builder install-app-deps"
   },
   "build": {
     "appId": "com.intentflow.moneymanager",
@@ -17,8 +21,11 @@
     "directories": {
       "output": "release"
     },
+    "asar": true,
     "asarUnpack": [
-      "**/*.node"
+      "**/*.node",
+      "src/db/db-config.cjs",
+      "src/db/database.config.js"
     ],
     "files": [
       "out/**/*",
@@ -36,12 +43,29 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "src/db/data/production-seed.db",
+        "to": "db/production-seed.db",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
       "target": "dmg",
       "icon": "build/icon.icns",
-      "category": "public.app-category.finance"
+      "category": "public.app-category.finance",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "build/icon.png"
     }
   },
   "dependencies": {

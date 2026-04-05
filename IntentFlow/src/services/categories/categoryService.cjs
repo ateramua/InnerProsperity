@@ -188,21 +188,7 @@ class CategoryService {
         }
     }
 
-    async getCategoriesByGroup(groupId, userId) {
-        const db = await this.getDb();
-        try {
-            const categories = await db.all(`
-                SELECT * FROM categories 
-                WHERE group_id = ? AND user_id = ?
-                ORDER BY name ASC
-            `, [groupId, userId]);
-            return categories;
-        } finally {
-            if (!this.dbProvider && db && typeof db.close === 'function') {
-                await db.close();
-            }
-        }
-    }
+  
 
     async getCategoriesWithTargets(userId) {
         const db = await this.getDb();

@@ -38,6 +38,10 @@ try {
     createTransaction: (data) =>
       ipcRenderer.invoke('createTransaction', data), // ⚠️ No handler in main process – remove if not used
 
+    // Add these to your electronAPI object
+debugTestDatabaseWrite: () => ipcRenderer.invoke('debug:test-database-write'),
+debugGetDatabaseInfo: () => ipcRenderer.invoke('debug:get-database-info'),
+debugTestGroupDelete: (groupId, userId) => ipcRenderer.invoke('debug:test-group-delete', groupId, userId),
     updateTransaction: (id, updates) =>
       ipcRenderer.invoke('updateTransaction', id, updates),
 
@@ -52,7 +56,6 @@ try {
 
     reconcileAccount: (accountId, statementBalance, transactionsToClear) =>
       ipcRenderer.invoke('reconcileAccount', accountId, statementBalance, transactionsToClear),
-    createUpdateLinkToken: (itemId) => ipcRenderer.invoke('plaid-create-update-link-token', itemId),
 
     // ==================== ACCOUNTS ====================
     getAccounts: () => ipcRenderer.invoke('getAccounts'),
@@ -126,6 +129,7 @@ try {
 
     getArchivedCategories: (userId) =>
       ipcRenderer.invoke('category:getArchived', userId),
+
     // ==================== FORECAST ====================
     generateForecast: (userId, options) =>
       ipcRenderer.invoke('forecast:generate', userId, options),
@@ -156,6 +160,22 @@ try {
     saveSettings: (settings) =>
       ipcRenderer.invoke('save-settings', settings),
 
+    saveUserSetting: (key, value) =>
+      ipcRenderer.invoke('save-user-setting', key, value),
+
+    getUserSetting: (key, defaultValue) =>
+      ipcRenderer.invoke('get-user-setting', key, defaultValue),
+
+    // ==================== DEBUG ====================
+    debugDbPath: () =>
+      ipcRenderer.invoke('debug-db-path'),
+
+    debugCategorySchema: () =>
+      ipcRenderer.invoke('debug-category-schema'),
+
+    debugAccountCreation: (accountData) =>
+      ipcRenderer.invoke('debug-account-creation', accountData),
+
     // ==================== NAVIGATION ====================
     send: (channel, data) => {
       const validChannels = ['navigation-changed', 'navigate-to'];
@@ -163,7 +183,9 @@ try {
         ipcRenderer.send(channel, data);
       }
     },
-
+debugDbPath: () => {
+  return ipcRenderer.invoke('debug-db-path'); // Ensure main/index.cjs has handle
+},
     // ==================== EVENTS ====================
     subscribeToEvent: (eventType, callback) => {
       const listener = (_, data) => callback(data);

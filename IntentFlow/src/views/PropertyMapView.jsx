@@ -263,21 +263,19 @@ const PropertyMapView = () => {
       setLoading(true);
       const result = await window.electronAPI.getCategories(userId);
 
-      if (result && result.success && result.data) {
-        if (result.data.length === 0 && retryCount < 3) {
-          setTimeout(() => {
-            loadCategoriesFromDB(retryCount + 1);
-          }, 300);
-          return;
-        }
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📊 LOAD CATEGORIES RESULT:');
+      console.log('Success:', result.success);
+      console.log('Data length:', result.data?.length);
 
+      if (result && result.success && result.data) {
         const dbCategories = result.data.map(cat => ({
           id: cat.id,
           name: cat.name,
-          assigned: cat.assigned || 0,
-          activity: cat.activity || 0,
-          available: cat.available || 0,
-          groupId: cat.group_id,
+          assigned: Number(cat.assigned) || 0,
+          activity: Number(cat.activity) || 0,
+          available: Number(cat.available) || 0,
+          groupId: Number(cat.group_id),
           user_id: cat.user_id,
           priority: cat.priority || 2,
           target_amount: cat.target_amount,
@@ -286,15 +284,26 @@ const PropertyMapView = () => {
           progress: 0,
           last_month_assigned: cat.last_month_assigned || 0,
           average_spending: cat.average_spending || 0,
-          archived: cat.archived === 1 || cat.hidden === 1,
+          archived: cat.archived === 1,
+          is_hidden: cat.is_hidden === 1 || cat.hidden === 1,
           original_group_id: cat.original_group_id || cat.group_id
         }));
+
+        console.log('✅ Mapped categories:', dbCategories.map(c => ({
+          name: c.name,
+          groupId: c.groupId,
+          groupIdType: typeof c.groupId
+        })));
 
         setBudgetData(prev => ({
           ...prev,
           categories: dbCategories
         }));
         setCategories(dbCategories);
+
+        setTimeout(() => {
+          loadCategoryGroups();
+        }, 100);
       }
     } catch (error) {
       console.error('❌ Error loading categories:', error);
@@ -305,11 +314,16 @@ const PropertyMapView = () => {
 
   const loadArchivedCategories = async () => {
     try {
-      const archived = budgetData.categories.filter(cat => cat.archived === true);
-      setArchivedCategories(archived);
-      console.log(`📋 Loaded ${archived.length} archived categories`);
+      const result = await window.electronAPI.getArchivedCategories(userId);
+      if (result && result.success) {
+        setArchivedCategories(result.data);
+        console.log(`📋 Loaded ${result.data.length} archived categories from API`);
+      } else {
+        setArchivedCategories([]);
+      }
     } catch (error) {
       console.error('Error loading archived categories:', error);
+      setArchivedCategories([]);
     }
   };
 
@@ -332,15 +346,15 @@ const PropertyMapView = () => {
     try {
       const result = await window.electronAPI.archiveCategory(category.id, userId);
       if (result && result.success) {
+        // Update local state - remove from active categories
         setBudgetData(prev => ({
           ...prev,
-          categories: prev.categories.map(cat =>
-            cat.id === category.id 
-              ? { ...cat, archived: true, original_group_id: cat.groupId }
-              : cat
-          )
+          categories: prev.categories.filter(cat => cat.id !== category.id)
         }));
+
+        // Refresh archived categories list
         await loadArchivedCategories();
+
         alert(`✅ Category "${category.name}" has been archived.`);
       } else {
         alert('❌ Failed to archive category: ' + (result?.error || 'Unknown error'));
@@ -358,16 +372,11 @@ const PropertyMapView = () => {
     try {
       const result = await window.electronAPI.restoreCategory(category.id, userId);
       if (result && result.success) {
-        setBudgetData(prev => ({
-          ...prev,
-          categories: prev.categories.map(cat =>
-            cat.id === category.id 
-              ? { ...cat, archived: false, groupId: category.original_group_id || category.groupId }
-              : cat
-          )
-        }));
+        // Refresh both active categories and archived list
+        await loadCategoriesFromDB();
         await loadCategoryGroups();
         await loadArchivedCategories();
+
         alert(`✅ Category "${category.name}" has been restored.`);
       } else {
         alert('❌ Failed to restore category: ' + (result?.error || 'Unknown error'));
@@ -379,6 +388,7 @@ const PropertyMapView = () => {
   };
 
   const handleEditCategory = (category) => {
+    console.log('✏️ EDIT CATEGORY CLICKED:', category);
     setEditingCategory(category.id);
     setEditCategoryData({
       name: category.name,
@@ -389,33 +399,47 @@ const PropertyMapView = () => {
   };
 
   const handleSaveCategoryEdit = async (categoryId) => {
-    if (!editCategoryData.name.trim()) return;
+    console.log('💾 SAVE EDIT CALLED for category:', categoryId);
+    console.log('Current edit data:', editCategoryData);
+
+    if (!editCategoryData.name.trim()) {
+      alert('Please enter a category name');
+      return;
+    }
+
     try {
+      const updates = {
+        name: editCategoryData.name.trim(),
+        assigned: Number(editCategoryData.assigned) || 0,
+        target_amount: Number(editCategoryData.target_amount) || 0,
+        target_type: editCategoryData.target_type
+      };
+
+      console.log('Sending updates:', updates);
+      const result = await window.electronAPI.updateCategory(categoryId, updates);
+      console.log('Update result:', result);
+
+      if (!result.success) {
+        alert('Failed to update category: ' + (result.error || 'Unknown error'));
+        return;
+      }
+
       setBudgetData(prev => ({
         ...prev,
         categories: prev.categories.map(cat =>
           cat.id === categoryId
             ? {
               ...cat,
-              name: editCategoryData.name,
-              assigned: editCategoryData.assigned,
-              target_amount: editCategoryData.target_amount,
-              target_type: editCategoryData.target_type,
-              available: editCategoryData.assigned - (cat.activity || 0),
+              name: updates.name,
+              assigned: updates.assigned,
+              target_amount: updates.target_amount,
+              target_type: updates.target_type,
+              available: updates.assigned - (cat.activity || 0)
             }
             : cat
         )
       }));
 
-      if (window.electronAPI?.updateCategory) {
-        const updates = {
-          name: editCategoryData.name,
-          assigned: editCategoryData.assigned,
-          target_amount: editCategoryData.target_amount,
-          target_type: editCategoryData.target_type
-        };
-        await window.electronAPI.updateCategory(categoryId, updates);
-      }
       setEditingCategory(null);
       setEditCategoryData({
         name: '',
@@ -423,13 +447,19 @@ const PropertyMapView = () => {
         target_amount: 0,
         target_type: 'monthly'
       });
+
+      await loadCategoriesFromDB();
+      alert('✅ Category updated successfully!');
+
     } catch (error) {
-      console.error('❌ Error updating category:', error);
+      console.error('❌ Error saving category:', error);
+      alert('Error: ' + error.message);
       setEditingCategory(null);
     }
   };
 
   const handleCancelEdit = () => {
+    console.log('❌ Cancel edit');
     setEditingCategory(null);
     setEditCategoryData({
       name: '',
@@ -869,7 +899,7 @@ const PropertyMapView = () => {
     let allocations = [];
     let remainingFunds = budgetSummary.unassigned;
     const activeCategories = budgetData.categories.filter(cat => !cat.archived);
-    
+
     switch (method) {
       case 'underfunded':
         const overspent = activeCategories.filter(c => (c.available || 0) < 0);
@@ -965,10 +995,14 @@ const PropertyMapView = () => {
 
   // ==================== UI HELPER FUNCTIONS ====================
   const getCategoriesByGroup = (groupId) => {
-    const groupIdStr = String(groupId);
-    let filtered = budgetData.categories.filter(c => 
-      String(c.groupId) === groupIdStr && !c.archived
-    );
+    const targetId = Number(groupId);
+    const filtered = budgetData.categories.filter(c => {
+      const catGroupId = Number(c.groupId);
+      return catGroupId === targetId && !c.archived;
+    });
+    if (filtered.length > 0) {
+      console.log(`✅ Group ${groupId} has ${filtered.length} categories:`, filtered.map(c => c.name));
+    }
     return filtered;
   };
 
@@ -1000,28 +1034,14 @@ const PropertyMapView = () => {
   useEffect(() => {
     const initializeData = async () => {
       if (!userId) return;
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      setBudgetData({ categories: [] });
+      setCategoryGroups([]);
+      await new Promise(resolve => setTimeout(resolve, 500));
       try {
         setLoading(true);
         await loadCategoryGroups();
         await loadCategoriesFromDB();
-        await loadArchivedCategories();
-        try {
-          const userResult = await window.electronAPI.getCurrentUser();
-          if (userResult?.success && userResult?.data) {
-            const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
-            if (accountsResult?.success) {
-              const totalCash = accountsResult.data
-                .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-                .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-              setTotalCashInAccounts(totalCash);
-            }
-          }
-        } catch (error) {
-          console.error('Error fetching account balances:', error);
-          setTotalCashInAccounts(5400);
-        }
-        setInitialLoadComplete(true);
+        await loadArchivedCategories();  // ← Make sure this is here
       } catch (error) {
         console.error('❌ Error during initialization:', error);
       } finally {
@@ -1095,7 +1115,6 @@ const PropertyMapView = () => {
   // ==================== RENDER ====================
   return (
     <div style={styles.container}>
-      {/* Left side - Budget Table */}
       <div style={styles.budgetTableContainer}>
         <div style={styles.header}>
           <div style={styles.titleSection}>
@@ -1157,6 +1176,20 @@ const PropertyMapView = () => {
           <button style={styles.addGroupButton} onClick={() => setShowAddGroupModal(true)}>
             + Add Category Group
           </button>
+          <button
+            onClick={async () => {
+              console.log('🔍 FORCE REFRESHING CATEGORIES...');
+              await loadCategoriesFromDB();
+              await loadCategoryGroups();
+              setTimeout(() => {
+                console.log('Final budgetData.categories:', budgetData.categories);
+                console.log('Final categoryGroups:', categoryGroups);
+              }, 500);
+            }}
+            style={{ background: '#10B981', color: 'white', padding: '8px', margin: '8px' }}
+          >
+            🔄 FORCE REFRESH CATEGORIES
+          </button>
           {budgetSummary.unassigned > 0 && (
             <div style={styles.quickBudgetTools}>
               <button onClick={() => handleQuickAssign('underfunded')} style={{
@@ -1196,10 +1229,12 @@ const PropertyMapView = () => {
                 </tr>
               </thead>
               <tbody>
-                {categoryGroups.map((group) => {
+                {categoryGroups.map((group, groupIndex) => {
                   const groupCategories = getCategoriesByGroup(group.id);
+                  const uniqueGroupKey = `group-${group.id}-${groupIndex}`;
+
                   return (
-                    <React.Fragment key={group.id}>
+                    <React.Fragment key={uniqueGroupKey}>
                       <tr style={styles.categoryGroupRow}>
                         <td colSpan="6" style={styles.categoryGroupCell}>
                           <div style={styles.groupHeader}>
@@ -1214,10 +1249,8 @@ const PropertyMapView = () => {
                                   cursor: 'pointer',
                                   padding: '4px 8px',
                                   borderRadius: '4px',
-                                  transition: 'transform 0.2s ease',
                                   transform: collapsedGroups[group.id] ? 'rotate(-90deg)' : 'rotate(0deg)'
                                 }}
-                                title={collapsedGroups[group.id] ? "Expand group" : "Collapse group"}
                               >▼</button>
                               <span style={styles.categoryGroupName}>{group.name}</span>
                               <span style={{
@@ -1229,160 +1262,154 @@ const PropertyMapView = () => {
                               }}>{groupCategories.length} categories</span>
                             </div>
                             <div style={styles.groupActions}>
-                              <button onClick={() => handleAddCategory(group)} style={styles.addCategoryButton} title="Add category to this group">+</button>
-                              <button onClick={() => handleEditGroup(group)} style={styles.editGroupButton} title="Edit group">✏️</button>
-                              <button onClick={() => handleDeleteGroup(group.id)} style={styles.deleteGroupButton} title="Delete group">✕</button>
+                              <button onClick={() => handleAddCategory(group)} style={styles.addCategoryButton}>+</button>
+                              <button onClick={() => handleEditGroup(group)} style={styles.editGroupButton}>✏️</button>
+                              <button onClick={() => handleDeleteGroup(group.id)} style={styles.deleteGroupButton}>✕</button>
                             </div>
                           </div>
                         </td>
                       </tr>
-                      {!collapsedGroups[group.id] && groupCategories.length > 0 && (
-                        <>
-                          {groupCategories.map((cat) => {
-                            const targetInfo = getTargetInfo(cat);
-                            const hasTarget = targetInfo.status !== 'no-target';
-                            const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
-                            const isEditing = editingCategory === cat.id;
 
-                            if (isEditing) {
+                      {!collapsedGroups[group.id] && (
+                        <React.Fragment key={`content-${uniqueGroupKey}`}>
+                          {groupCategories.length > 0 ? (
+                            groupCategories.map((cat, catIndex) => {
+                              const targetInfo = getTargetInfo(cat);
+                              const hasTarget = targetInfo.status !== 'no-target';
+                              const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
+                              const isEditing = editingCategory === cat.id;
+                              const categoryKey = `cat-${cat.id}-${groupIndex}-${catIndex}`;
+
+                              // EDIT MODE
+                              if (isEditing) {
+                                return (
+                                  <tr key={`${categoryKey}-edit`} style={{ ...styles.categoryRow, background: '#1a3a5a' }}>
+                                    <td style={styles.categoryCell}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                        <span style={styles.categoryName}>{cat.name}</span>
+                                        <div style={styles.categoryActions}>
+                                          <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton}>📦</button>
+                                          <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton}>🗑️</button>
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td style={styles.amountCell}>
+                                      <input
+                                        type="number"
+                                        value={editCategoryData.assigned === 0 ? '' : editCategoryData.assigned}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setEditCategoryData({
+                                            ...editCategoryData,
+                                            assigned: value === '' ? 0 : parseFloat(value)
+                                          });
+                                        }}
+                                        style={styles.editInput}
+                                        step="0.01"
+                                        min="0"
+                                        placeholder="0.00"
+                                      />
+                                    </td>
+                                    <td style={styles.amountCell}>{formatCurrency(cat.activity || 0)}</td>
+                                    <td style={styles.amountCell}>{formatCurrency(cat.available || 0)}</td>
+                                    <td style={styles.progressCell}>
+                                      <select
+                                        value={editCategoryData.target_type}
+                                        onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
+                                        style={styles.editSelect}
+                                      >
+                                        <option value="monthly">Monthly</option>
+                                        <option value="balance">Balance</option>
+                                        <option value="by_date">By Date</option>
+                                      </select>
+                                      <input
+                                        type="number"
+                                        value={editCategoryData.target_amount === 0 ? '' : editCategoryData.target_amount}
+                                        onChange={(e) => setEditCategoryData({
+                                          ...editCategoryData,
+                                          target_amount: e.target.value === '' ? 0 : parseFloat(e.target.value)
+                                        })}
+                                        style={{ ...styles.editInput, marginTop: '4px' }}
+                                        placeholder="Target amount"
+                                        step="0.01"
+                                        min="0"
+                                      />
+                                    </td>
+                                    <td style={styles.amountCell}>
+                                      <div style={styles.editActions}>
+                                        <button onClick={() => handleSaveCategoryEdit(cat.id)} style={styles.saveEditButton} title="Save">✅</button>
+                                        <button onClick={handleCancelEdit} style={styles.cancelEditButton} title="Cancel">❌</button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
+                              // NORMAL VIEW
                               return (
-                                <tr key={cat.id} style={{ ...styles.categoryRow, background: '#1a3a5a' }}>
+                                <tr key={categoryKey} style={styles.categoryRow}>
                                   <td style={styles.categoryCell}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                                       <span style={styles.categoryName}>{cat.name}</span>
                                       <div style={styles.categoryActions}>
-                                        <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton} title="Archive category (remove from budget)">📦</button>
-                                        <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton} title="Delete category permanently">🗑️</button>
+                                        <button onClick={() => handleEditCategory(cat)} style={styles.editCategoryButton} title="Edit category">✏️</button>
+                                        <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton} title="Archive category">📦</button>
+                                        <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton} title="Delete category">🗑️</button>
                                       </div>
+                                      {hasTarget && (
+                                        <span style={styles.targetIndicator}>
+                                          {targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}
+                                        </span>
+                                      )}
                                     </div>
                                   </td>
                                   <td style={styles.amountCell}>
-                                    <input
-                                      type="number"
-                                      value={editCategoryData.assigned === 0 ? '' : editCategoryData.assigned}
-                                      onChange={(e) => {
-                                        const value = e.target.value;
-                                        if (value === '') {
-                                          setEditCategoryData({ ...editCategoryData, assigned: 0 });
-                                        } else {
-                                          const numValue = parseFloat(value);
-                                          if (!isNaN(numValue)) {
-                                            setEditCategoryData({ ...editCategoryData, assigned: numValue });
-                                          }
-                                        }
-                                      }}
-                                      onKeyPress={(e) => { if (e.key === 'Enter') handleSaveCategoryEdit(cat.id); }}
-                                      style={styles.editInput}
-                                      step="0.01"
-                                      min="0"
-                                      placeholder="0.00"
-                                    />
+                                    {formatCurrency(cat.assigned || 0)}
+                                    {isUnderfunded && <div style={{ fontSize: '11px', color: '#F59E0B' }}>Need ${targetInfo.needed?.toFixed(0)}</div>}
                                   </td>
-                                  <td style={styles.amountCell}>{formatCurrency(cat.activity || 0)}</td>
-                                  <td style={styles.amountCell}>{formatCurrency(cat.available || 0)}</td>
+                                  <td style={{ ...styles.amountCell, color: (cat.activity || 0) < 0 ? '#F87171' : '#4ADE80' }}>
+                                    {formatCurrency(cat.activity || 0)}
+                                  </td>
+                                  <td style={{ ...styles.amountCell, color: (cat.available || 0) < 0 ? '#F87171' : '#4ADE80' }}>
+                                    {formatCurrency(cat.available || 0)}
+                                  </td>
                                   <td style={styles.progressCell}>
-                                    <select
-                                      value={editCategoryData.target_type}
-                                      onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
-                                      onKeyPress={(e) => { if (e.key === 'Enter') handleSaveCategoryEdit(cat.id); }}
-                                      style={styles.editSelect}
-                                    >
-                                      <option value="monthly">Monthly</option>
-                                      <option value="balance">Balance</option>
-                                      <option value="by_date">By Date</option>
-                                    </select>
-                                    <input
-                                      type="number"
-                                      value={editCategoryData.target_amount}
-                                      onChange={(e) => setEditCategoryData({ ...editCategoryData, target_amount: parseFloat(e.target.value) || 0 })}
-                                      onKeyPress={(e) => { if (e.key === 'Enter') handleSaveCategoryEdit(cat.id); }}
-                                      style={{ ...styles.editInput, marginTop: '4px' }}
-                                      placeholder="Target amount"
-                                      step="0.01"
-                                      min="0"
-                                    />
-                                   </td>
-                                  <td style={styles.amountCell}>
-                                    <div style={styles.editActions}>
-                                      <button onClick={() => handleSaveCategoryEdit(cat.id)} style={styles.saveEditButton} title="Save">✅</button>
-                                      <button onClick={handleCancelEdit} style={styles.cancelEditButton} title="Cancel">❌</button>
+                                    <div style={styles.progressBarContainer}>
+                                      <div style={{ ...styles.progressBarFill, width: `${cat.progress || 0}%` }} />
+                                      <span style={styles.progressText}>{cat.progress || 0}%</span>
                                     </div>
-                                   </td>
-                                 </tr>
+                                  </td>
+                                  <td style={styles.amountCell}>—</td>
+                                </tr>
                               );
-                            }
-                            return (
-                              <tr key={cat.id} style={styles.categoryRow}>
-                                <td style={styles.categoryCell}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                    <span style={styles.categoryName}>{cat.name}</span>
-                                    <div style={styles.categoryActions}>
-                                      <button onClick={() => handleEditCategory(cat)} style={styles.editCategoryButton} title="Edit category">✏️</button>
-                                      <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton} title="Archive category">📦</button>
-                                      <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton} title="Delete category">🗑️</button>
-                                    </div>
-                                    {hasTarget && (
-                                      <span
-                                        style={{
-                                          ...styles.targetIndicator,
-                                          color: targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '#10B981' : targetInfo.status === 'partial' || targetInfo.status === 'in-progress' ? '#F59E0B' : '#9CA3AF'
-                                        }}
-                                        title={targetInfo.status === 'funded' ? 'Monthly target fully funded' : targetInfo.status === 'completed' ? 'Goal completed!' : targetInfo.status === 'partial' ? `$${targetInfo.needed.toFixed(2)} more needed this month` : targetInfo.status === 'in-progress' ? `${targetInfo.progress.toFixed(0)}% toward goal` : 'Target not started'}
-                                      >{targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}</span>
-                                    )}
-                                  </div>
-                                 </td>
-                                <td style={styles.amountCell}>
-                                  {formatCurrency(cat.assigned || 0)}
-                                  {isUnderfunded && <div style={{ fontSize: '11px', color: '#F59E0B', marginTop: '2px' }}>Need ${targetInfo.needed.toFixed(0)} more</div>}
-                                 </td>
-                                <td style={{ ...styles.amountCell, color: (cat.activity || 0) < 0 ? '#F87171' : '#4ADE80' }}>{formatCurrency(cat.activity || 0)}</td>
-                                <td style={{ ...styles.amountCell, color: (cat.available || 0) < 0 ? '#F87171' : '#4ADE80' }}>
-                                  {formatCurrency(cat.available || 0)}
-                                  {cat.target_type === 'balance' && targetInfo.progress > 0 && <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '2px' }}>{targetInfo.progress.toFixed(0)}% of goal</div>}
-                                 </td>
-                                <td style={styles.progressCell}>
-                                  <div style={styles.progressBarContainer}>
-                                    <div style={{ ...styles.progressBarFill, width: `${cat.progress || 0}%`, backgroundColor: cat.progress >= 100 ? '#10B981' : '#3B82F6' }} />
-                                    <span style={styles.progressText}>{cat.progress || 0}%</span>
-                                  </div>
-                                 </td>
-                                <td style={styles.amountCell}>
-                                  {cat.linked_goal ? (
-                                    <div>
-                                      <div style={{ fontSize: '13px', fontWeight: 'bold' }}>{formatCurrency(cat.linked_goal.current_amount)} / {formatCurrency(cat.linked_goal.target_amount)}</div>
-                                      <div style={{ width: '80px', height: '4px', background: '#374151', borderRadius: '2px', marginTop: '4px', overflow: 'hidden' }}>
-                                        <div style={{ width: `${Math.min(cat.linked_goal.progress, 100)}%`, height: '100%', background: cat.linked_goal.progress >= 100 ? '#10B981' : '#3B82F6' }} />
-                                      </div>
-                                    </div>
-                                  ) : (<span style={{ color: '#6B7280', fontSize: '12px' }}>—</span>)}
-                                 </td>
-                               </tr>
-                            );
-                          })}
-                          <tr style={styles.groupTotalRow}>
-                            <td style={styles.groupTotalCell}><strong>{group.name} Total</strong></td>
-                            <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).assigned)}</strong></td>
-                            <td style={styles.groupTotalAmount}><strong style={{ color: getGroupTotals(group.id).activity < 0 ? '#F87171' : '#4ADE80' }}>{formatCurrency(getGroupTotals(group.id).activity)}</strong></td>
-                            <td style={styles.groupTotalAmount}><strong style={{ color: getGroupTotals(group.id).available < 0 ? '#F87171' : '#4ADE80' }}>{formatCurrency(getGroupTotals(group.id).available)}</strong></td>
-                            <td style={styles.groupTotalCell}><strong>{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</strong></td>
-                            <td style={styles.groupTotalCell}>—</td>
-                           </tr>
-                        </>
-                      )}
-                      {!collapsedGroups[group.id] && groupCategories.length === 0 && (
-                        <tr style={styles.emptyGroupRow}>
-                          <td colSpan="6" style={styles.emptyGroupCell}>No categories in this group</td>
-                        </tr>
+                            })
+                          ) : (
+                            <tr key={`empty-${group.id}-${groupIndex}`} style={styles.emptyGroupRow}>
+                              <td colSpan="6" style={styles.emptyGroupCell}>No categories in this group</td>
+                            </tr>
+                          )}
+
+                          {groupCategories.length > 0 && (
+                            <tr key={`total-${group.id}-${groupIndex}`} style={styles.groupTotalRow}>
+                              <td style={styles.groupTotalCell}><strong>{group.name} Total</strong></td>
+                              <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).assigned)}</strong></td>
+                              <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).activity)}</strong></td>
+                              <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).available)}</strong></td>
+                              <td style={styles.groupTotalCell}><strong>{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</strong></td>
+                              <td style={styles.groupTotalCell}>—</td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       )}
                     </React.Fragment>
                   );
                 })}
+
                 <tr style={styles.totalRow}>
-                  <td style={styles.totalCell}>Total</td>
-                  <td style={styles.totalAmount}>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.assigned || 0), 0))}</td>
-                  <td style={styles.totalAmount}>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.activity || 0), 0))}</td>
-                  <td style={styles.totalAmount}>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.available || 0), 0))}</td>
+                  <td style={styles.totalCell}><strong>Total</strong></td>
+                  <td style={styles.totalAmount}><strong>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.assigned || 0), 0))}</strong></td>
+                  <td style={styles.totalAmount}><strong>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.activity || 0), 0))}</strong></td>
+                  <td style={styles.totalAmount}><strong>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.available || 0), 0))}</strong></td>
                   <td style={styles.totalCell}>—</td>
                   <td style={styles.totalCell}>—</td>
                 </tr>
@@ -1392,7 +1419,6 @@ const PropertyMapView = () => {
         </div>
       </div>
 
-      {/* Right side - Summary View */}
       <div style={styles.rightColumn}>
         <SummaryView
           totalAvailable={budgetSummary.totalAvailable}
@@ -1423,7 +1449,7 @@ const PropertyMapView = () => {
                     <div>
                       <div style={{ fontWeight: 'bold', color: 'white' }}>{cat.name}</div>
                       <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
-                        Original group: {categoryGroups.find(g => g.id === cat.original_group_id)?.name || 'Unknown'} 
+                        Original group: {categoryGroups.find(g => g.id === cat.original_group_id)?.name || 'Unknown'}
                         | Archived: {new Date(cat.archived_at || Date.now()).toLocaleDateString()}
                       </div>
                     </div>
@@ -1763,7 +1789,7 @@ const styles = {
     justifyContent: 'center'
   },
   editGroupButton: {
-    backgroundColor: '1E3A8A',
+    backgroundColor: '#1E3A8A',
     border: 'none',
     color: 'white',
     width: '24px',

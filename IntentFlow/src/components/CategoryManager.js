@@ -35,7 +35,7 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
 
     try {
       console.log('Creating category:', newCategory);
-      
+
       const result = await window.electronAPI.createCategory({
         name: newCategory.name,
         category_group_id: parseInt(newCategory.groupId),
@@ -61,9 +61,14 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
   };
 
   const handleEditCategory = (category) => {
-    setEditingId(category.id);
-    // Implement modal or inline edit if needed
-    console.log('Edit category:', category);
+    console.log('✏️ Editing category:', category);
+    setEditingCategory(category.id);
+    setEditCategoryData({
+      name: category.name,
+      assigned: category.assigned || 0,
+      target_amount: category.target_amount || 0,
+      target_type: category.target_type || 'monthly'
+    });
   };
 
   const handleDeleteCategory = async (categoryId) => {
@@ -133,7 +138,7 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
             width: '90%'
           }}>
             <h3 style={{ marginTop: 0 }}>Add New Category</h3>
-            
+
             <div style={{ marginBottom: '15px' }}>
               <label style={{ display: 'block', marginBottom: '5px', color: '#9CA3AF' }}>
                 Category Name *
@@ -141,7 +146,7 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
               <input
                 type="text"
                 value={newCategory.name}
-                onChange={(e) => setNewCategory({...newCategory, name: e.target.value})}
+                onChange={(e) => setNewCategory({ ...newCategory, name: e.target.value })}
                 placeholder="e.g., YouTube Premium"
                 style={{
                   width: '100%',
@@ -161,7 +166,7 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
               </label>
               <select
                 value={newCategory.groupId}
-                onChange={(e) => setNewCategory({...newCategory, groupId: e.target.value})}
+                onChange={(e) => setNewCategory({ ...newCategory, groupId: e.target.value })}
                 style={{
                   width: '100%',
                   background: '#111827',
@@ -184,7 +189,7 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
               </label>
               <select
                 value={newCategory.type}
-                onChange={(e) => setNewCategory({...newCategory, type: e.target.value})}
+                onChange={(e) => setNewCategory({ ...newCategory, type: e.target.value })}
                 style={{
                   width: '100%',
                   background: '#111827',
@@ -205,7 +210,7 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
                 <input
                   type="checkbox"
                   checked={newCategory.hidden}
-                  onChange={(e) => setNewCategory({...newCategory, hidden: e.target.checked})}
+                  onChange={(e) => setNewCategory({ ...newCategory, hidden: e.target.checked })}
                 />
                 <span>Hidden by default</span>
               </label>
@@ -272,8 +277,8 @@ export default function CategoryManager({ categories, groups, onUpdate }) {
                   <td style={{ padding: '10px', textAlign: 'right', color: '#EF4444' }}>
                     {formatCurrency(Math.abs(cat.activity || 0))}
                   </td>
-                  <td style={{ 
-                    padding: '10px', 
+                  <td style={{
+                    padding: '10px',
                     textAlign: 'right',
                     color: cat.available >= 0 ? '#10B981' : '#EF4444'
                   }}>

@@ -6,6 +6,35 @@ const fs = require('fs');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 
+// ==================== DATABASE CONFIGURATION ====================
+// WITH this (use requireModule to find it properly):
+const dbConfig = requireModule('../db/database.config.js');
+let getConfiguredDatabasePath = dbConfig?.getDatabasePath;
+let ensureDatabaseDirectory = dbConfig?.ensureDatabaseDirectory;
+
+// ✅ FIXED: Proper fallback assignment (no shadowing)
+if (!getConfiguredDatabasePath || !ensureDatabaseDirectory) {
+    console.error('❌ Database config module not loaded! Using fallback paths.');
+
+    getConfiguredDatabasePath = () => {
+        if (app.isPackaged) {
+            return path.join(app.getPath('userData'), 'money-manager.db');
+        }
+        return path.join(__dirname, '../../src/db/data/app.db');
+    };
+
+    ensureDatabaseDirectory = () => {
+        const dbPath = getConfiguredDatabasePath();
+        const dbDir = path.dirname(dbPath);
+
+        if (!fs.existsSync(dbDir)) {
+            fs.mkdirSync(dbDir, { recursive: true });
+        }
+
+        return dbPath;
+    };
+}
+
 // ==================== CONSTANTS ====================
 const PRELOAD_PATH = path.join(__dirname, '../preload/preload.cjs');
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -163,18 +192,12 @@ let nativeServer = null;
 let ipcHandlersRegistered = false;
 let backgroundSyncInterval = null;
 
-// ==================== DATABASE PATH HELPER ====================
+// ==================== DATABASE PATH HELPER (UPDATED) ====================
+// This function now delegates to the centralized database configuration
 function getDatabasePath() {
-    if (app.isPackaged || !isDev) {
-        const userDataPath = app.getPath('userData');
-        const dbPath = path.join(userDataPath, 'money-manager.db');
-        console.log('📦 Production - using userData path:', dbPath);
-        return dbPath;
-    }
-    const projectRoot = path.resolve(__dirname, '../..');
-    const devDbPath = path.join(projectRoot, 'src/db/data/app.db');
-    console.log('🛠️ Development - using project path:', devDbPath);
-    return devDbPath;
+    const dbPath = getConfiguredDatabasePath();
+    console.log(`📂 Database path resolved: ${dbPath}`);
+    return dbPath;
 }
 
 // ==================== ENCRYPTION HELPERS ====================
@@ -200,38 +223,111 @@ function decryptToken(encryptedBase64) {
     }
 }
 
-// ==================== DATABASE HELPER ====================
+// ==================== DATABASE INITIALIZATION FUNCTIONS ====================
+async function initializeProductionDatabase() {
+    const dbPath = getConfiguredDatabasePath();
+    const dbDir = path.dirname(dbPath);
+
+    if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+        console.log(`📁 Created database directory: ${dbDir}`);
+    }
+
+    if (fs.existsSync(dbPath)) {
+        console.log('✅ Existing database found at:', dbPath);
+        try {
+            const stats = fs.statSync(dbPath);
+            console.log(`Current permissions: ${stats.mode.toString(8)}`);
+            fs.chmodSync(dbPath, 0o666);
+            console.log('✅ Set writable permissions on existing database');
+            fs.accessSync(dbPath, fs.constants.W_OK);
+            console.log('✅ Database is writable');
+        } catch (err) {
+            console.error('❌ Database permission error:', err.message);
+        }
+        return dbPath;
+    }
+
+    console.log('🆕 No existing database found. Looking for seed...');
+
+    const possibleSeedPaths = [
+        path.join(process.resourcesPath, 'db', 'production-seed.db'),
+        path.join(process.resourcesPath, 'db', 'data', 'production-seed.db'),
+        path.join(__dirname, '../../src/db/data/production-seed.db'),
+        path.join(process.resourcesPath, 'app.asar', 'src', 'db', 'data', 'production-seed.db')
+    ];
+
+    let seedPath = null;
+    for (const testPath of possibleSeedPaths) {
+        if (fs.existsSync(testPath)) {
+            seedPath = testPath;
+            console.log('✅ Found seed database at:', seedPath);
+            break;
+        }
+    }
+
+    if (seedPath && fs.existsSync(seedPath)) {
+        try {
+            fs.copyFileSync(seedPath, dbPath);
+            console.log('📋 Copied seed database to:', dbPath);
+            fs.chmodSync(dbPath, 0o666);
+            console.log('✅ Set writable permissions (666) on copied database');
+            fs.accessSync(dbPath, fs.constants.W_OK);
+            console.log('✅ Verified database is writable');
+        } catch (err) {
+            console.error('❌ Failed to copy seed:', err.message);
+        }
+    } else {
+        console.log('⚠️ No seed database found. Will create fresh database.');
+    }
+
+    return dbPath;
+}
+
 async function getDatabase() {
-    console.log('🔍 getDatabase called, current db state:', db ? 'exists' : 'null');
+    console.log('\n🔍🔍🔍 getDatabase() CALLED 🔍🔍🔍');
+    console.log('Current db state:', db ? 'exists' : 'null');
+
     if (db) {
         try {
             await db.get('SELECT 1');
+            console.log('✅ Existing connection is valid');
             return db;
         } catch (e) {
             console.log('⚠️ Database connection stale, reconnecting...');
             db = null;
         }
     }
+
     console.log('📦 Creating new database connection...');
-    const dbPath = getDatabasePath();
-    console.log('📂 Database path:', dbPath);
+
+    const dbPath = ensureDatabaseDirectory();
+    console.log('📂 Final database path being used:', dbPath);
+
     try {
         const sqlite3 = require('sqlite3');
         const { open } = require('sqlite');
-        const dbDir = path.dirname(dbPath);
-        if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+
         db = await open({ filename: dbPath, driver: sqlite3.Database });
         await db.exec('PRAGMA foreign_keys = ON');
-        await db.get('SELECT 1');
-        console.log('✅ Database connection established');
+        await db.run('CREATE TABLE IF NOT EXISTS _test (id INTEGER)');
+        await db.run('DROP TABLE _test');
+        console.log('✅ Write test PASSED');
+
+        const result = await db.get('SELECT 1 as test');
+        console.log('✅ Read test PASSED:', result);
+
+        console.log('✅ Database connection established successfully');
         return db;
     } catch (error) {
-        console.error('❌ Failed to create database connection:', error);
+        console.error('❌❌❌ DATABASE CONNECTION FAILED ❌❌❌');
+        console.error('Error message:', error.message);
+        console.error('Attempted path:', dbPath);
         throw error;
     }
 }
 
-// ==================== TABLE CREATION HELPER (SURGICAL FIX) ====================
+// ==================== TABLE CREATION HELPER ====================
 async function ensureAllTablesExist(dbConnection) {
     console.log('🔧 Ensuring all required tables exist...');
 
@@ -270,6 +366,10 @@ async function ensureAllTablesExist(dbConnection) {
             last_month_assigned REAL DEFAULT 0,
             average_spending REAL DEFAULT 0,
             is_hidden INTEGER DEFAULT 0,
+            archived INTEGER DEFAULT 0,
+            archived_at DATETIME,
+            restored_at DATETIME,
+            original_group_id TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME,
             FOREIGN KEY (user_id) REFERENCES users(id)
@@ -377,17 +477,14 @@ async function ensureAllTablesExist(dbConnection) {
         );
     `);
 
-    // Insert demo data if tables are empty
     const userCount = await dbConnection.get('SELECT COUNT(*) as count FROM users');
     if (userCount.count === 0) {
         console.log('📝 Inserting demo user...');
         await dbConnection.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (2, 'demo', 'demo@example.com', 'Demo User')`);
     }
 
-    // Replace lines 389-400 with this:
     const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
-    // Only insert demo groups if NO groups exist AND we want to seed
-    const SKIP_DEMO_SEEDING = true; // Set to false to re-enable demo data
+    const SKIP_DEMO_SEEDING = true;
     if (groupCount.count === 0 && !SKIP_DEMO_SEEDING) {
         console.log('📝 Inserting demo category groups...');
         await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
@@ -424,22 +521,44 @@ async function ensureAllTablesExist(dbConnection) {
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
     console.log('📦 Initializing database...');
-    const dbPath = getDatabasePath();
-    const dbDir = path.dirname(dbPath);
-    if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
-    const dbExists = fs.existsSync(dbPath);
-    console.log('📂 Database exists:', dbExists);
 
     try {
-        const database = await getDatabase();
+        const dbPath = ensureDatabaseDirectory();
+        const dbDir = path.dirname(dbPath);
 
-        // CRITICAL FIX: Always ensure all tables exist
+        console.log('📂 Database directory:', dbDir);
+        console.log('📂 Database path:', dbPath);
+
+        if (!fs.existsSync(dbDir)) {
+            console.log(`📁 Creating database directory: ${dbDir}`);
+            fs.mkdirSync(dbDir, { recursive: true });
+        }
+
+        const dbExists = fs.existsSync(dbPath);
+        console.log('📂 Database file exists:', dbExists);
+
+        if (!dbExists) {
+            console.log('🆕 No existing database found. Will create new database with tables.');
+        }
+
+        const database = await getDatabase();
         await ensureAllTablesExist(database);
+
+        const tableCheck = await database.get(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='categories'"
+        );
+
+        if (tableCheck) {
+            console.log('✅ Categories table verified');
+        } else {
+            console.warn('⚠️ Categories table not found after initialization');
+        }
 
         console.log('✅ Database initialized successfully');
         return database;
     } catch (error) {
         console.error('❌ Failed to initialize database:', error);
+        console.error('❌ Error details:', error.message);
         throw error;
     }
 }
@@ -741,17 +860,15 @@ app.whenReady().then(async () => {
 
         await createWindow();
 
-        // Start hourly background sync, respecting user's autoSync setting
         backgroundSyncInterval = setInterval(async () => {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return;
 
-            // Check if auto-sync is enabled
             const db = await getDatabase();
             const row = await db.get(`
                 SELECT value FROM user_settings WHERE user_id = ? AND key = ?
             `, [currentUser.id, 'autoSyncEnabled']);
-            const autoSyncEnabled = row ? row.value !== 'false' : true; // default true
+            const autoSyncEnabled = row ? row.value !== 'false' : true;
             if (!autoSyncEnabled) {
                 console.log('🔁 Background sync disabled by user');
                 return;
@@ -762,9 +879,7 @@ app.whenReady().then(async () => {
                 const items = await getLinkedItems();
                 for (const item of items) {
                     try {
-                        // Sync accounts (in case new accounts were added)
                         await syncPlaidAccounts(item.id);
-                        // Sync transactions
                         const result = await syncTransactionsForItem(item.id);
                         if (result.success && result.transactionsAdded > 0) {
                             console.log(`✅ Background sync for ${item.institution_name || item.id}: ${result.transactionsAdded} new transactions`);
@@ -776,8 +891,7 @@ app.whenReady().then(async () => {
             } catch (error) {
                 console.error('Background sync error:', error);
             }
-        }, 3600000); // every hour
-
+        }, 3600000);
     } catch (error) {
         console.error('❌ Failed to initialize database:', error);
         dialog.showErrorBox(
@@ -827,8 +941,6 @@ function createWindow() {
             win.webContents.openDevTools({ mode: 'right' });
         } else {
             console.error('❌ Production file not found at:', indexPath);
-            console.log('📂 Directory contents:', fs.existsSync(path.dirname(indexPath)) ? fs.readdirSync(path.dirname(indexPath)) : 'Directory does not exist');
-
             win.loadURL(`data:text/html;charset=utf-8,
                 <html>
                     <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:system-ui;">
@@ -843,7 +955,6 @@ function createWindow() {
         }
     }
 
-    // Handle navigation for static exports
     win.webContents.on('will-navigate', (event, url) => {
         console.log('🔀 Navigation attempt to:', url);
 
@@ -888,8 +999,6 @@ function createWindow() {
             closeSplashWindow(splashWindow);
             splashWindow = null;
         }
-
-        // DevTools will be opened when window is ready-to-show
 
         if (!isDev) {
             win.webContents.executeJavaScript(`
@@ -940,9 +1049,7 @@ function setupIpcHandlers() {
     }
 
     console.log('🔍 Starting IPC handler registration...');
-    console.log('🔍 Step 1: Inside setupIpcHandlers');
 
-    // Remove any existing handlers to be safe
     const handlersToRemove = [
         'ping', 'create-user', 'login-user', 'logout-user', 'get-current-user', 'list-users',
         'generateForecast', 'getDailyForecast', 'getWeeklyForecast', 'getYearlyForecast',
@@ -960,17 +1067,16 @@ function setupIpcHandlers() {
         'get-categories', 'create-category', 'delete-category', 'update-category',
         'updateCategory', 'get-groups', 'create-group', 'update-group', 'delete-group',
         'get-groups-with-categories', 'save-settings', 'get-network-status',
-        'subscribe-to-event', 'validation:trackAccuracy', 'validation:getTrends',
+        'subscribe-to-event', 'publish-event', 'validation:trackAccuracy', 'validation:getTrends',
         'validation:getCategoryAccuracy', 'validation:getConfidence', 'debug-db-path',
-        'debug-category-schema', 'deleteCategory', 'debug-account-creation'
+        'debug-category-schema', 'deleteCategory', 'debug-account-creation',
+        'category:archive', 'category:restore', 'category:getArchived', 'category:toggleHide',
+        'debug:test-database-write', 'debug:get-database-info', 'debug:test-group-delete',
+        'debug:check-permissions'
     ];
 
     handlersToRemove.forEach(handler => {
-        try {
-            ipcMain.removeHandler(handler);
-        } catch (e) {
-            // Ignore errors if handler doesn't exist
-        }
+        try { ipcMain.removeHandler(handler); } catch (e) { }
     });
 
     // ==================== PING HANDLER ====================
@@ -978,7 +1084,76 @@ function setupIpcHandlers() {
         console.log('🔍 ping received');
         return { success: true, message: 'pong' };
     });
-    console.log('🔍 Step 2: Basic ping handler registered');
+
+    // ==================== DEBUG HANDLERS ====================
+    ipcMain.handle('debug:test-database-write', async () => {
+        console.log('🔍 DEBUG: Testing database write operation...');
+        try {
+            const db = await getDatabase();
+            await db.run('CREATE TABLE IF NOT EXISTS _debug_test (id INTEGER, test TEXT)');
+            await db.run("INSERT INTO _debug_test (id, test) VALUES (1, 'test')");
+            const result = await db.get('SELECT * FROM _debug_test WHERE id = 1');
+            await db.run('DROP TABLE _debug_test');
+            console.log('✅ Database write test PASSED');
+            return { success: true, message: 'Database is writable', data: result };
+        } catch (error) {
+            console.error('❌ Database write test FAILED:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('debug:get-database-info', async () => {
+        const dbPath = getConfiguredDatabasePath();
+        const exists = fs.existsSync(dbPath);
+        let writable = false;
+        let stats = null;
+        if (exists) {
+            try {
+                fs.accessSync(dbPath, fs.constants.W_OK);
+                writable = true;
+            } catch (err) { writable = false; }
+            stats = fs.statSync(dbPath);
+        }
+        return {
+            success: true,
+            data: { path: dbPath, exists, writable, size: stats ? stats.size : 0, isPackaged: app.isPackaged, userData: app.getPath('userData') }
+        };
+    });
+
+    ipcMain.handle('debug:test-group-delete', async (event, groupId, userId) => {
+        console.log('🔍 DEBUG: Testing group delete for group:', groupId, 'user:', userId);
+        try {
+            const db = await getDatabase();
+            const group = await db.get('SELECT * FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+            if (!group) return { success: false, error: 'Group not found' };
+            const categories = await db.all('SELECT * FROM categories WHERE group_id = ? AND archived = 0', [String(groupId)]);
+            console.log(`Found ${categories.length} categories in group`);
+            if (categories.length > 0) {
+                return { success: false, error: `Group has ${categories.length} categories: ${categories.map(c => c.name).join(', ')}` };
+            }
+            const result = await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+            return { success: result.changes > 0, changes: result.changes };
+        } catch (error) {
+            console.error('Debug delete error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('debug:check-permissions', async () => {
+        const dbPath = getConfiguredDatabasePath();
+        const exists = fs.existsSync(dbPath);
+        let permissions = null;
+        let writable = false;
+        if (exists) {
+            const stats = fs.statSync(dbPath);
+            permissions = stats.mode.toString(8);
+            try { fs.accessSync(dbPath, fs.constants.W_OK); writable = true; } catch (err) { writable = false; }
+        }
+        return {
+            success: true,
+            data: { path: dbPath, exists, permissions, writable, directory: path.dirname(dbPath) }
+        };
+    });
 
     // ==================== USER MANAGEMENT ====================
     ipcMain.handle('create-user', async (event, { username, password, fullName, email }) => {
@@ -1007,14 +1182,7 @@ function setupIpcHandlers() {
     ipcMain.handle('debug-db-path', () => {
         return {
             success: true,
-            data: {
-                isPackaged: app.isPackaged,
-                isDev: isDev,
-                dbPath: getDatabasePath(),
-                userData: app.getPath('userData'),
-                cwd: process.cwd(),
-                __dirname: __dirname
-            }
+            data: { isPackaged: app.isPackaged, isDev: isDev, dbPath: getDatabasePath(), userData: app.getPath('userData') }
         };
     });
 
@@ -1034,13 +1202,18 @@ function setupIpcHandlers() {
 
     // ==================== CATEGORY UPDATE HANDLER ====================
     ipcMain.handle('updateCategory', async (event, categoryId, updates) => {
-        console.log('📝 Updating category:', categoryId, updates);
+        console.log('📝 updateCategory IPC called:', { categoryId, updates });
         try {
             const db = await getDatabase();
 
+            // Build the SET clause dynamically
             const setClauses = [];
             const values = [];
 
+            if (updates.name !== undefined) {
+                setClauses.push('name = ?');
+                values.push(updates.name);
+            }
             if (updates.assigned !== undefined) {
                 setClauses.push('assigned = ?');
                 values.push(updates.assigned);
@@ -1053,236 +1226,209 @@ function setupIpcHandlers() {
                 setClauses.push('target_type = ?');
                 values.push(updates.target_type);
             }
-            if (updates.name !== undefined) {
-                setClauses.push('name = ?');
-                values.push(updates.name);
-            }
-
-            values.push(categoryId);
 
             if (setClauses.length === 0) {
                 return { success: false, error: 'No updates provided' };
             }
 
-            const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
-            await db.run(query, values);
+            // Add updated_at timestamp
+            setClauses.push('updated_at = datetime("now")');
 
+            values.push(categoryId);
+
+            const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
+            console.log('Executing query:', query, values);
+
+            const result = await db.run(query, values);
+            console.log('Query result:', result);
+
+            if (result.changes === 0) {
+                return { success: false, error: 'Category not found or no changes made' };
+            }
+
+            // Get the updated category
             const updatedCategory = await db.get('SELECT * FROM categories WHERE id = ?', [categoryId]);
+            console.log('Updated category:', updatedCategory);
 
             return { success: true, data: updatedCategory };
+
         } catch (error) {
-            console.error('❌ Error updating category:', error);
+            console.error('❌ Error in updateCategory:', error);
             return { success: false, error: error.message };
         }
     });
 
-    console.log('✅ Category update handler registered');
-
     // ==================== FORECAST HANDLERS ====================
     ipcMain.handle('generateForecast', async (event, userId, options) => {
-        console.log('📞 IPC: generateForecast called');
         try {
             const service = new ForecastService();
             const result = await service.generateForecast(userId, options);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in generateForecast:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('getDailyForecast', async (event, userId) => {
-        console.log('📞 IPC: getDailyForecast called');
         try {
             const service = new ForecastService();
             const result = await service.getDailyForecast(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in getDailyForecast:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('getWeeklyForecast', async (event, userId, weeks) => {
-        console.log('📞 IPC: getWeeklyForecast called');
         try {
             const service = new ForecastService();
             const result = await service.getWeeklyForecast(userId, weeks);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in getWeeklyForecast:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('getYearlyForecast', async (event, userId, years) => {
-        console.log('📞 IPC: getYearlyForecast called');
         try {
             const service = new ForecastService();
             const result = await service.getYearlyForecast(userId, years);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in getYearlyForecast:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('getRecommendations', async (event, userId) => {
-        console.log('📞 IPC: getRecommendations called');
         try {
             const service = new ForecastService();
             const result = await service.getRecommendations(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in getRecommendations:', error);
             return { success: false, error: error.message };
         }
     });
 
     // ==================== FORECAST HANDLERS (namespaced) ====================
     ipcMain.handle('forecast:generate', async (event, userId, options) => {
-        console.log('📞 IPC: forecast:generate called');
         try {
             const service = new ForecastService();
             const result = await service.generateForecast(userId, options);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in forecast:generate:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('forecast:daily', async (event, userId) => {
-        console.log('📞 IPC: forecast:daily called');
         try {
             const service = new ForecastService();
             const result = await service.getDailyForecast(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in forecast:daily:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('forecast:weekly', async (event, userId, weeks) => {
-        console.log('📞 IPC: forecast:weekly called');
         try {
             const service = new ForecastService();
             const result = await service.getWeeklyForecast(userId, weeks);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in forecast:weekly:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('forecast:yearly', async (event, userId, years) => {
-        console.log('📞 IPC: forecast:yearly called');
         try {
             const service = new ForecastService();
             const result = await service.getYearlyForecast(userId, years);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in forecast:yearly:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('forecast:recommendations', async (event, userId) => {
-        console.log('📞 IPC: forecast:recommendations called');
         try {
             const service = new ForecastService();
             const result = await service.getRecommendations(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in forecast:recommendations:', error);
             return { success: false, error: error.message };
         }
     });
 
     // ==================== MONEY MAP HANDLERS ====================
     ipcMain.handle('buildMoneyMap', async (event, userId) => {
-        console.log('📞 IPC: buildMoneyMap called');
         try {
             const moneyMap = new MoneyMap();
             const result = await moneyMap.buildMoneyMap(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in buildMoneyMap:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('refreshMoneyMap', async (event, moneyMap, budgetData) => {
-        console.log('📞 IPC: refreshMoneyMap called');
         try {
             const moneyMapService = new MoneyMap();
             const result = await moneyMapService.refreshWithBudget(moneyMap, budgetData);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in refreshMoneyMap:', error);
             return { success: false, error: error.message };
         }
     });
 
     // ==================== PROSPERITY HANDLERS ====================
     ipcMain.handle('optimizeProsperityMap', async (event, userId, totalIncome) => {
-        console.log('📞 IPC: optimizeProsperityMap called');
         try {
             const optimizer = new ProsperityOptimizer();
             const result = await optimizer.optimizeProsperityMap(userId, totalIncome);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in optimizeProsperityMap:', error);
             return { success: false, error: error.message };
         }
     });
 
     // ==================== VALIDATION HANDLERS ====================
     ipcMain.handle('validation:trackAccuracy', async (event, userId, forecastDate, forecastData, actualData) => {
-        console.log('📞 IPC: validation:trackAccuracy called');
         try {
             const service = new ValidationService();
             const result = await service.trackForecastAccuracy(userId, forecastDate, forecastData, actualData);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in validation:trackAccuracy:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('validation:getTrends', async (event, userId, months) => {
-        console.log('📞 IPC: validation:getTrends called');
         try {
             const service = new ValidationService();
             const result = await service.getAccuracyTrends(userId, months);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in validation:getTrends:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('validation:getCategoryAccuracy', async (event, userId) => {
-        console.log('📞 IPC: validation:getCategoryAccuracy called');
         try {
             const service = new ValidationService();
             const result = await service.getCategoryAccuracy(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in validation:getCategoryAccuracy:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('validation:getConfidence', async (event, userId, categoryId) => {
-        console.log('📞 IPC: validation:getConfidence called');
         try {
             const service = new ValidationService();
             const result = await service.calculateConfidenceScore(userId, categoryId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in validation:getConfidence:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1292,37 +1438,23 @@ function setupIpcHandlers() {
         console.log('📞 IPC: categoryGroups:getAll called for userId:', userId);
         try {
             const db = await getDatabase();
-            const groups = await db.all(
-                'SELECT * FROM category_groups WHERE user_id = ? ORDER BY sort_order ASC',
-                [userId]
-            );
-            console.log(`✅ Found ${groups.length} groups for user ${userId}`);
-
-            // Also get category counts for each group (helpful for UI)
+            const groups = await db.all('SELECT * FROM category_groups WHERE user_id = ? ORDER BY sort_order ASC', [userId]);
             for (const group of groups) {
-                const count = await db.get(
-                    'SELECT COUNT(*) as count FROM categories WHERE group_id = ?',
-                    [String(group.id)]
-                );
+                const count = await db.get('SELECT COUNT(*) as count FROM categories WHERE group_id = ? AND archived = 0', [String(group.id)]);
                 group.category_count = count.count;
-                console.log(`📊 Group "${group.name}" has ${group.category_count} categories`);
             }
-
             return { success: true, data: groups };
         } catch (error) {
-            console.error('❌ Error in categoryGroups:getAll:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
 
     ipcMain.handle('categoryGroups:getWithCategories', async (event, userId) => {
-        console.log('📞 IPC: categoryGroups:getWithCategories called');
         try {
             const service = new CategoryGroupService();
             const result = await service.getGroupsWithCategories(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in categoryGroups:getWithCategories:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
@@ -1331,29 +1463,15 @@ function setupIpcHandlers() {
         console.log('📞 IPC: categoryGroups:create called', { userId, name, sortOrder });
         try {
             const db = await getDatabase();
-
-            // Ensure the user exists
             const user = await db.get('SELECT id FROM users WHERE id = ?', [userId]);
             if (!user) {
-                await db.run(`
-                INSERT OR IGNORE INTO users (id, username, email, full_name) 
-                VALUES (?, ?, ?, ?)
-            `, [userId, `user_${userId}`, `user${userId}@example.com`, `User ${userId}`]);
+                await db.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (?, ?, ?, ?)`, [userId, `user_${userId}`, `user${userId}@example.com`, `User ${userId}`]);
             }
-
-            // Insert without specifying id (auto‑increment)
-            const result = await db.run(`
-            INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at)
-            VALUES (?, ?, ?, datetime('now'), datetime('now'))
-        `, [userId, name, sortOrder || 0]);
-
-            const id = result.lastID;  // auto‑generated integer ID
+            const result = await db.run(`INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))`, [userId, name, sortOrder || 0]);
+            const id = result.lastID;
             const newGroup = await db.get('SELECT * FROM category_groups WHERE id = ?', [id]);
-
-            console.log('✅ Group created successfully:', newGroup);
             return { success: true, data: newGroup };
         } catch (error) {
-            console.error('❌ Error in categoryGroups:create:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1361,9 +1479,11 @@ function setupIpcHandlers() {
     ipcMain.handle('categoryGroups:update', async (event, id, userId, updates) => {
         console.log('📞 IPC: categoryGroups:update called', { id, userId, updates });
         try {
-            const service = new CategoryGroupService();
-            const result = await service.updateCategoryGroup(id, userId, updates);
-            return { success: true, data: result };
+            const db = await getDatabase();
+            const result = await db.run('UPDATE category_groups SET name = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?', [updates.name, id, userId]);
+            if (result.changes === 0) return { success: false, error: 'Failed to update group' };
+            const updatedGroup = await db.get('SELECT * FROM category_groups WHERE id = ? AND user_id = ?', [id, userId]);
+            return { success: true, data: updatedGroup };
         } catch (error) {
             console.error('❌ Error in categoryGroups:update:', error);
             return { success: false, error: error.message };
@@ -1371,107 +1491,42 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('categoryGroups:delete', async (event, groupId, userId) => {
-        console.log('🚨🚨🚨 DELETE HANDLER TRIGGERED 🚨🚨🚨');
-        console.log('📞 categoryGroups:delete called with:', {
-            groupId,
-            userId,
-            groupIdType: typeof groupId,
-            userIdType: typeof userId
-        });
-
+        console.log('📞 categoryGroups:delete called with:', { groupId, userId });
         try {
             const db = await getDatabase();
-            console.log('✅ Database connection obtained');
-
-            // Check if group exists first
-            const group = await db.get(
-                'SELECT * FROM category_groups WHERE id = ? AND user_id = ?',
-                [groupId, userId]
-            );
-
-            if (!group) {
-                console.log('❌ Group not found:', { groupId, userId });
-                return {
-                    success: false,
-                    error: `Category group with ID ${groupId} not found for user ${userId}`
-                };
-            }
-
-            console.log('✅ Group found:', group);
-
-            // Check for categories
-            const categoriesInGroup = await db.get(
-                'SELECT COUNT(*) as count FROM categories WHERE group_id = ?',
-                [String(groupId)]
-            );
-
-            console.log(`📊 Found ${categoriesInGroup.count} categories in group`);
-
+            const group = await db.get('SELECT * FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+            if (!group) return { success: false, error: `Category group with ID ${groupId} not found` };
+            const categoriesInGroup = await db.get('SELECT COUNT(*) as count FROM categories WHERE group_id = ? AND archived = 0', [String(groupId)]);
             if (categoriesInGroup.count > 0) {
-                // Get category names for better error message
-                const categories = await db.all(
-                    'SELECT name FROM categories WHERE group_id = ? LIMIT 5',
-                    [String(groupId)]
-                );
-                const categoryNames = categories.map(c => c.name).join(', ');
-
-                return {
-                    success: false,
-                    error: `Cannot delete "${group.name}" because it contains ${categoriesInGroup.count} categories (${categoryNames}${categoriesInGroup.count > 5 ? '...' : ''}). Please delete or move all categories from this group first.`
-                };
+                return { success: false, error: `Cannot delete "${group.name}" because it contains ${categoriesInGroup.count} categories. Please delete or move all categories from this group first.` };
             }
-
-            // Delete the group
-            const result = await db.run(
-                'DELETE FROM category_groups WHERE id = ? AND user_id = ?',
-                [groupId, userId]
-            );
-
-            console.log('✅ Delete result:', result);
-
-            if (result.changes === 0) {
-                return {
-                    success: false,
-                    error: `Failed to delete category group ${groupId}`
-                };
-            }
-
-            console.log(`✅ Successfully deleted category group ${groupId} (${group.name})`);
+            const result = await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+            if (result.changes === 0) return { success: false, error: `Failed to delete category group ${groupId}` };
             return { success: true, data: { id: groupId, name: group.name } };
-
         } catch (error) {
             console.error('❌ Error in categoryGroups:delete:', error);
-            console.error('❌ Stack trace:', error.stack);
             return { success: false, error: error.message };
         }
     });
+
     // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
     ipcMain.handle('accounts:getAll', async (event, userId) => {
-        console.log('\x1b[32m%s\x1b[0m', '💚💚💚💚💚💚💚💚💚💚💚💚💚💚💚');
-        console.log('\x1b[32m%s\x1b[0m', '💚 accounts:getAll CALLED');
-        console.log('\x1b[32m%s\x1b[0m', '💚💚💚💚💚💚💚💚💚💚💚💚💚💚💚\n');
         try {
             const effectiveUserId = userId || 2;
             const result = await accountService.getAllAccounts(effectiveUserId);
-            console.log(`✅ Found ${result.length} accounts`);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
 
     ipcMain.handle('accounts:getById', async (event, id, userId) => {
-        console.log('📞 IPC: accounts:getById called with:', id, userId);
         try {
             const db = await getDatabase();
             let account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [id, userId || 2]);
-            if (!account) {
-                account = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
-            }
+            if (!account) account = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
             return { success: true, data: account || null };
         } catch (error) {
-            console.error('❌ Error in accounts:getById:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1480,12 +1535,8 @@ function setupIpcHandlers() {
         try {
             const db = await getDatabase();
             const id = uuidv4();
-            const {
-                userId, name, type, balance = 0, creditLimit, interestRate, dueDate, minimumPayment,
-                originalBalance, termMonths, paymentAmount, nextPaymentDate, institution,
-            } = accountData;
-            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance', 'working_balance',
-                'account_type_category', 'currency', 'institution', 'is_active', 'created_at'];
+            const { userId, name, type, balance = 0, creditLimit, interestRate, dueDate, minimumPayment, originalBalance, termMonths, paymentAmount, nextPaymentDate, institution } = accountData;
+            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance', 'working_balance', 'account_type_category', 'currency', 'institution', 'is_active', 'created_at'];
             const values = [id, userId, name, type, balance, 0, 0, 'budget', 'USD', institution || null, 1, new Date().toISOString()];
             if (creditLimit !== undefined) { columns.push('credit_limit'); values.push(type === 'credit' ? creditLimit : null); }
             if (interestRate !== undefined) { columns.push('interest_rate'); values.push(type === 'credit' ? interestRate : null); }
@@ -1499,13 +1550,11 @@ function setupIpcHandlers() {
             await db.run(`INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`, values);
             return { success: true, id };
         } catch (error) {
-            console.error('❌ Error in create-account:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:create', async (event, accountData) => {
-        console.log('🔄 Forwarding accounts:create to unified create-account handler');
         try {
             const db = await getDatabase();
             let userId = accountData.user_id;
@@ -1516,40 +1565,13 @@ function setupIpcHandlers() {
             const accountId = uuidv4();
             const now = new Date().toISOString();
             let balance = accountData.balance || 0;
-            if (accountData.type === 'credit' || accountData.type === 'loan') {
-                balance = -Math.abs(balance);
-            } else {
-                balance = Math.abs(balance);
-            }
-            const accountToInsert = {
-                id: accountId, user_id: userId, name: accountData.name || 'New Account',
-                type: accountData.type || 'checking', balance, cleared_balance: balance,
-                working_balance: balance, account_type_category: accountData.account_type_category || 'budget',
-                currency: accountData.currency || 'USD', institution: accountData.institution || null,
-                credit_limit: accountData.credit_limit || accountData.limit || null,
-                interest_rate: accountData.interest_rate || accountData.apr || null,
-                due_date: accountData.due_date || accountData.dueDate || null,
-                original_balance: accountData.original_balance || null,
-                term_months: accountData.term_months || null,
-                payment_amount: accountData.payment_amount || null,
-                payment_frequency: accountData.payment_frequency || 'monthly',
-                minimum_payment: accountData.minimum_payment || null,
-                is_active: 1, created_at: now
-            };
+            if (accountData.type === 'credit' || accountData.type === 'loan') balance = -Math.abs(balance);
+            else balance = Math.abs(balance);
+            const accountToInsert = { id: accountId, user_id: userId, name: accountData.name || 'New Account', type: accountData.type || 'checking', balance, cleared_balance: balance, working_balance: balance, account_type_category: accountData.account_type_category || 'budget', currency: accountData.currency || 'USD', institution: accountData.institution || null, credit_limit: accountData.credit_limit || accountData.limit || null, interest_rate: accountData.interest_rate || accountData.apr || null, due_date: accountData.due_date || accountData.dueDate || null, original_balance: accountData.original_balance || null, term_months: accountData.term_months || null, payment_amount: accountData.payment_amount || null, payment_frequency: accountData.payment_frequency || 'monthly', minimum_payment: accountData.minimum_payment || null, is_active: 1, created_at: now };
             const tableInfo = await db.all("PRAGMA table_info(accounts)");
             const existingColumns = tableInfo.map(col => col.name);
-            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance',
-                'working_balance', 'account_type_category', 'currency', 'institution',
-                'credit_limit', 'interest_rate', 'due_date', 'minimum_payment',
-                'is_active', 'created_at'];
-            const values = [
-                accountToInsert.id, accountToInsert.user_id, accountToInsert.name,
-                accountToInsert.type, accountToInsert.balance, accountToInsert.cleared_balance,
-                accountToInsert.working_balance, accountToInsert.account_type_category,
-                accountToInsert.currency, accountToInsert.institution, accountToInsert.credit_limit,
-                accountToInsert.interest_rate, accountToInsert.due_date, accountToInsert.minimum_payment,
-                accountToInsert.is_active, accountToInsert.created_at
-            ];
+            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance', 'working_balance', 'account_type_category', 'currency', 'institution', 'credit_limit', 'interest_rate', 'due_date', 'minimum_payment', 'is_active', 'created_at'];
+            const values = [accountToInsert.id, accountToInsert.user_id, accountToInsert.name, accountToInsert.type, accountToInsert.balance, accountToInsert.cleared_balance, accountToInsert.working_balance, accountToInsert.account_type_category, accountToInsert.currency, accountToInsert.institution, accountToInsert.credit_limit, accountToInsert.interest_rate, accountToInsert.due_date, accountToInsert.minimum_payment, accountToInsert.is_active, accountToInsert.created_at];
             if (existingColumns.includes('original_balance')) { columns.push('original_balance'); values.push(accountToInsert.original_balance); }
             if (existingColumns.includes('term_months')) { columns.push('term_months'); values.push(accountToInsert.term_months); }
             if (existingColumns.includes('payment_amount')) { columns.push('payment_amount'); values.push(accountToInsert.payment_amount); }
@@ -1559,27 +1581,22 @@ function setupIpcHandlers() {
             const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
             return { success: true, data: newAccount };
         } catch (error) {
-            console.error('❌ ERROR in accounts:create forwarder:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:update', async (event, id, userId, updates) => {
-        console.log('📞 IPC: accounts:update called');
         try {
             if (!id) return { success: false, error: 'Account ID is required' };
             if (!userId) return { success: false, error: 'User ID is required' };
-            if (!updates || Object.keys(updates).length === 0) return { success: false, error: 'No updates provided' };
             const result = await accountService.updateAccount(id, userId, updates);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:update:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:delete', async (event, id, userId) => {
-        console.log('📞 IPC: accounts:delete called', id, userId);
         try {
             if (!id || !userId) return { success: false, error: 'ID and userId required' };
             const db = await getDatabase();
@@ -1587,83 +1604,58 @@ function setupIpcHandlers() {
             if (result && result.changes > 0) return { success: true };
             return { success: false, error: 'Account not found or already deleted' };
         } catch (error) {
-            console.error('❌ Delete error:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:getBalances', async (event, accountId, userId) => {
-        console.log('📞 IPC: accounts:getBalances called');
         try {
             const result = await accountService.getAccountBalances(accountId, userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:getBalances:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:getSummary', async (event, userId) => {
-        console.log('\x1b[35m%s\x1b[0m', '📊📊📊📊📊📊📊📊📊📊📊📊📊📊📊');
-        console.log('\x1b[35m%s\x1b[0m', '📊 ACCOUNTS FETCH DEBUG');
-        console.log('\x1b[35m%s\x1b[0m', '📊📊📊📊📊📊📊📊📊📊📊📊📊📊📊\n');
-        console.log('\x1b[33m%s\x1b[0m', `📞 IPC: accounts:getSummary called with userId:`, userId);
         try {
             const effectiveUserId = userId || 2;
             let result;
-            try {
-                result = await accountService.getAccountsSummary(effectiveUserId);
-            } catch (serviceError) {
-                console.log('❌ Service error, falling back to direct query:', serviceError.message);
-                result = [];
-            }
+            try { result = await accountService.getAccountsSummary(effectiveUserId); } catch (serviceError) { result = []; }
             if (!result || result.length === 0) {
                 const db = await getDatabase();
                 const directAccounts = await db.all('SELECT * FROM accounts WHERE user_id = ?', [effectiveUserId]);
-                result = directAccounts.map(account => ({
-                    id: account.id, name: account.name, type: account.type, balance: account.balance || 0,
-                    institution: account.institution || '', account_type_category: account.account_type_category || 'budget',
-                    cleared_balance: account.cleared_balance || account.balance || 0,
-                    working_balance: account.working_balance || account.balance || 0,
-                    currency: account.currency || 'USD', is_active: account.is_active !== 0
-                }));
+                result = directAccounts.map(account => ({ id: account.id, name: account.name, type: account.type, balance: account.balance || 0, institution: account.institution || '', account_type_category: account.account_type_category || 'budget', cleared_balance: account.cleared_balance || account.balance || 0, working_balance: account.working_balance || account.balance || 0, currency: account.currency || 'USD', is_active: account.is_active !== 0 }));
             }
             return { success: true, data: result || [] };
         } catch (error) {
-            console.error('❌ Error in accounts:getSummary:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
 
     ipcMain.handle('accounts:getTotals', async (event, userId) => {
-        console.log('📞 IPC: accounts:getTotals called');
         try {
             const result = await accountService.getTotalsByType(userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:getTotals:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:startReconciliation', async (event, accountId, userId, statementBalance, statementDate) => {
-        console.log('📞 IPC: accounts:startReconciliation called');
         try {
             const result = await accountService.startReconciliation(accountId, userId, statementBalance, statementDate);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:startReconciliation:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('accounts:getCreditCardDetails', async (event, accountId, userId) => {
-        console.log('📞 IPC: accounts:getCreditCardDetails called');
         try {
             const result = await accountService.getCreditCardDetails(accountId, userId);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in accounts:getCreditCardDetails:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1671,33 +1663,20 @@ function setupIpcHandlers() {
     // ==================== PLAID HANDLERS ====================
     ipcMain.handle('plaid-create-link-token', async () => {
         const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-        const configuration = new Configuration({
-            basePath: PlaidEnvironments[process.env.PLAID_ENV],
-            baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } }
-        });
+        const configuration = new Configuration({ basePath: PlaidEnvironments[process.env.PLAID_ENV], baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
         const plaidClient = new PlaidApi(configuration);
         try {
             const currentUser = userService.getCurrentUser();
-            const response = await plaidClient.linkTokenCreate({
-                user: { client_user_id: currentUser.id.toString() },
-                client_name: 'Money Manager',
-                products: ['transactions'],
-                country_codes: ['US'],
-                language: 'en',
-            });
+            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'Money Manager', products: ['transactions'], country_codes: ['US'], language: 'en' });
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
-            console.error('Error creating link token:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('plaid-create-update-link-token', async (event, itemId) => {
         const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-        const configuration = new Configuration({
-            basePath: PlaidEnvironments[process.env.PLAID_ENV],
-            baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } }
-        });
+        const configuration = new Configuration({ basePath: PlaidEnvironments[process.env.PLAID_ENV], baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
         const plaidClient = new PlaidApi(configuration);
         try {
             const db = await getDatabase();
@@ -1706,54 +1685,36 @@ function setupIpcHandlers() {
             const accessToken = decryptToken(item.access_token);
             if (!accessToken) throw new Error('Failed to decrypt token');
             const currentUser = userService.getCurrentUser();
-            const response = await plaidClient.linkTokenCreate({
-                user: { client_user_id: currentUser.id.toString() },
-                client_name: 'Money Manager',
-                products: ['transactions'],
-                country_codes: ['US'],
-                language: 'en',
-                access_token: accessToken,
-            });
+            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'Money Manager', products: ['transactions'], country_codes: ['US'], language: 'en', access_token: accessToken });
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
-            console.error('Error creating update link token:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('plaid-exchange-public-token', async (event, publicToken) => {
         const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-        const configuration = new Configuration({
-            basePath: PlaidEnvironments[process.env.PLAID_ENV],
-            baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } }
-        });
+        const configuration = new Configuration({ basePath: PlaidEnvironments[process.env.PLAID_ENV], baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
         const plaidClient = new PlaidApi(configuration);
         try {
             const response = await plaidClient.itemPublicTokenExchange({ public_token: publicToken });
             const accessToken = response.data.access_token;
             const itemId = response.data.item_id;
             const currentUser = userService.getCurrentUser();
-
             const encryptedToken = encryptToken(accessToken);
             const db = await getDatabase();
             const existingItem = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
-            if (existingItem) {
-                await db.run(`UPDATE plaid_items SET access_token = ?, updated_at = datetime('now') WHERE id = ?`, [encryptedToken, itemId]);
-            } else {
-                await db.run(`INSERT INTO plaid_items (id, user_id, access_token, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))`, [itemId, currentUser.id, encryptedToken]);
-            }
-
+            if (existingItem) await db.run(`UPDATE plaid_items SET access_token = ?, updated_at = datetime('now') WHERE id = ?`, [encryptedToken, itemId]);
+            else await db.run(`INSERT INTO plaid_items (id, user_id, access_token, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))`, [itemId, currentUser.id, encryptedToken]);
             const instResponse = await plaidClient.itemGet({ access_token: accessToken });
             const institutionId = instResponse.data.item.institution_id;
             if (institutionId) {
                 const instData = await plaidClient.institutionsGetById({ institution_id: institutionId, country_codes: ['US'] });
                 await db.run(`UPDATE plaid_items SET institution_id = ?, institution_name = ? WHERE id = ?`, [institutionId, instData.data.institution.name, itemId]);
             }
-
             await syncPlaidAccounts(itemId);
             return { success: true, item_id: itemId };
         } catch (error) {
-            console.error('Error exchanging public token:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1763,7 +1724,6 @@ function setupIpcHandlers() {
             const items = await getLinkedItems();
             return { success: true, data: items };
         } catch (error) {
-            console.error('Error getting linked items:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1773,13 +1733,10 @@ function setupIpcHandlers() {
             const db = await getDatabase();
             const item = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
             if (!item) throw new Error('Item not found');
-
             await syncPlaidAccounts(itemId);
             await db.run(`UPDATE plaid_items SET last_sync = datetime('now'), updated_at = datetime('now') WHERE id = ?`, [itemId]);
-
             return { success: true };
         } catch (error) {
-            console.error('Error syncing item:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1788,7 +1745,6 @@ function setupIpcHandlers() {
         try {
             return await syncTransactionsForItem(itemId);
         } catch (error) {
-            console.error('Error in plaid-sync-transactions:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1803,7 +1759,6 @@ function setupIpcHandlers() {
             await db.run('DELETE FROM plaid_items WHERE id = ?', [itemId]);
             return { success: true };
         } catch (error) {
-            console.error('Error removing Plaid item:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1812,14 +1767,9 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             const db = await getDatabase();
-            await db.run(`
-                INSERT INTO plaid_category_mappings (user_id, plaid_category, category_id, updated_at)
-                VALUES (?, ?, ?, datetime('now'))
-                ON CONFLICT(user_id, plaid_category) DO UPDATE SET category_id = ?, updated_at = datetime('now')
-            `, [currentUser.id, plaidCategory, categoryId, categoryId]);
+            await db.run(`INSERT INTO plaid_category_mappings (user_id, plaid_category, category_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(user_id, plaid_category) DO UPDATE SET category_id = ?, updated_at = datetime('now')`, [currentUser.id, plaidCategory, categoryId, categoryId]);
             return { success: true };
         } catch (error) {
-            console.error('Error saving category mapping:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1842,54 +1792,37 @@ function setupIpcHandlers() {
     });
 
     // ==================== TRANSACTION HANDLERS ====================
-    if (!ipcMain.listeners('getAccountTransactions').length) {
-        ipcMain.handle('getAccountTransactions', async (event, accountId) => {
-            console.log('📞 IPC: getAccountTransactions called for account:', accountId);
-            try {
-                const currentUser = userService.getCurrentUser();
-                if (!currentUser) return { success: false, error: 'No user logged in', data: [] };
-                const dbPath = getDatabasePath();
-                const service = new TransactionService(dbPath);
-                const transactions = await service.getAccountTransactions(accountId, currentUser.id);
-                return { success: true, data: transactions };
-            } catch (error) {
-                console.error('❌ Error in getAccountTransactions:', error);
-                return { success: false, error: error.message, data: [] };
-            }
-        });
-    }
+    ipcMain.handle('getAccountTransactions', async (event, accountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in', data: [] };
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
+            const transactions = await service.getAccountTransactions(accountId, currentUser.id);
+            return { success: true, data: transactions };
+        } catch (error) {
+            return { success: false, error: error.message, data: [] };
+        }
+    });
 
     ipcMain.handle('addTransaction', async (event, transaction) => {
-        console.log('📞 IPC: addTransaction called with:', JSON.stringify(transaction, null, 2));
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
             const amount = parseFloat(transaction.amount);
             if (isNaN(amount)) return { success: false, error: 'Invalid amount' };
-            const transactionData = {
-                accountId: transaction.accountId,
-                userId: currentUser.id,
-                date: transaction.date || new Date().toISOString().split('T')[0],
-                description: transaction.description || transaction.payee || 'Transaction',
-                amount,
-                categoryId: transaction.categoryId || null,
-                payee: transaction.payee || null,
-                memo: transaction.memo || null,
-                isCleared: transaction.cleared ? 1 : 0
-            };
+            const transactionData = { accountId: transaction.accountId, userId: currentUser.id, date: transaction.date || new Date().toISOString().split('T')[0], description: transaction.description || transaction.payee || 'Transaction', amount, categoryId: transaction.categoryId || null, payee: transaction.payee || null, memo: transaction.memo || null, isCleared: transaction.cleared ? 1 : 0 };
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.createTransaction(transactionData);
             if (updateService) updateService.publish('transaction:added', result);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in addTransaction:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('updateTransaction', async (event, id, updates) => {
-        console.log('📞 IPC: updateTransaction called for id:', id);
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -1899,13 +1832,11 @@ function setupIpcHandlers() {
             if (updateService) updateService.publish('transaction:updated', result);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in updateTransaction:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('deleteTransaction', async (event, id) => {
-        console.log('📞 IPC: deleteTransaction called for id:', id);
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -1915,13 +1846,11 @@ function setupIpcHandlers() {
             if (updateService) updateService.publish('transaction:deleted', { id });
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in deleteTransaction:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('toggleTransactionCleared', async (event, id, clearedStatus) => {
-        console.log('📞 IPC: toggleTransactionCleared called for id:', id, 'status:', clearedStatus);
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -1930,13 +1859,11 @@ function setupIpcHandlers() {
             const result = await service.updateTransaction(id, currentUser.id, { is_cleared: clearedStatus ? 1 : 0 });
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in toggleTransactionCleared:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('reconcileAccount', async (event, accountId, statementBalance, transactionsToClear) => {
-        console.log('📞 IPC: reconcileAccount called', { accountId, statementBalance, transactionsToClear });
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -1945,7 +1872,6 @@ function setupIpcHandlers() {
             const result = await service.reconcileAccount(accountId, currentUser.id, statementBalance, transactionsToClear);
             return { success: true, data: result };
         } catch (error) {
-            console.error('❌ Error in reconcileAccount:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1956,304 +1882,136 @@ function setupIpcHandlers() {
             const tableInfo = await db.all("PRAGMA table_info(categories)");
             return { success: true, data: tableInfo };
         } catch (error) {
-            console.error('Error checking schema:', error);
             return { success: false, error: error.message };
         }
     });
 
     ipcMain.handle('debug-account-creation', async (event, accountData) => {
-        console.log('🔍 DEBUG: Testing account creation with data:');
-        console.log(JSON.stringify(accountData, null, 2));
-        return {
-            success: true,
-            data: { message: 'Debug handler - no actual account created', receivedData: accountData, timestamp: new Date().toISOString() }
-        };
+        console.log('🔍 DEBUG: Testing account creation with data:', accountData);
+        return { success: true, data: { message: 'Debug handler - no actual account created', receivedData: accountData } };
     });
 
     // ==================== CATEGORY HANDLERS ====================
     ipcMain.handle('createCategory', async (event, categoryData) => {
-        console.log('📞 IPC: createCategory called with:', JSON.stringify(categoryData, null, 2));
         try {
             const db = await getDatabase();
-            const allGroups = await db.all('SELECT id, name FROM category_groups');
             let groupId = categoryData.group_id;
             if (groupId) {
                 const groupExists = await db.get('SELECT id FROM category_groups WHERE id = ?', [groupId]);
                 if (!groupExists) groupId = null;
             }
             const id = categoryData.id || `cat_${Date.now()}`;
-            await db.run(`
-                INSERT INTO categories (
-                    id, user_id, name, group_id, assigned, 
-                    target_type, target_amount, target_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `, [id, categoryData.user_id, categoryData.name, groupId, categoryData.assigned || 0,
-                categoryData.target_type || 'monthly', categoryData.target_amount || 0,
-                categoryData.target_date || null]);
+            await db.run(`INSERT INTO categories (id, user_id, name, group_id, assigned, target_type, target_amount, target_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [id, categoryData.user_id, categoryData.name, groupId, categoryData.assigned || 0, categoryData.target_type || 'monthly', categoryData.target_amount || 0, categoryData.target_date || null]);
             const newCategory = await db.get('SELECT * FROM categories WHERE id = ?', [id]);
             return { success: true, data: newCategory };
         } catch (error) {
-            console.error('❌ Error in createCategory:', error);
             return { success: false, error: error.message };
         }
     });
+
     // ==================== ARCHIVE/RESTORE CATEGORY ====================
-ipcMain.handle('category:archive', async (event, categoryId, userId) => {
-    console.log('📦 Archive category:', { categoryId, userId });
-    try {
-        const db = await getDatabase();
-        
-        // Check if category exists and belongs to user
-        const category = await db.get(
-            'SELECT * FROM categories WHERE id = ? AND user_id = ?',
-            [categoryId, userId]
-        );
-        
-        if (!category) {
-            return { success: false, error: 'Category not found' };
+    ipcMain.handle('category:archive', async (event, categoryId, userId) => {
+        try {
+            const db = await getDatabase();
+            const category = await db.get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [categoryId, userId]);
+            if (!category) return { success: false, error: 'Category not found' };
+            if (category.archived) return { success: false, error: 'Category is already archived' };
+            const originalGroupId = category.group_id;
+            await db.run(`UPDATE categories SET archived = 1, archived_at = datetime('now'), original_group_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`, [originalGroupId, categoryId, userId]);
+            return { success: true, data: { id: categoryId, archived: true, message: 'Category archived successfully' } };
+        } catch (error) {
+            return { success: false, error: error.message };
         }
-        
-        if (category.archived) {
-            return { success: false, error: 'Category is already archived' };
-        }
-        
-        // Archive the category
-        await db.run(`
-            UPDATE categories 
-            SET archived = 1, 
-                archived_at = datetime("now"),
-                updated_at = datetime("now")
-            WHERE id = ? AND user_id = ?
-        `, [categoryId, userId]);
-        
-        console.log(`✅ Category ${categoryId} archived`);
-        return { 
-            success: true, 
-            data: { 
-                id: categoryId, 
-                archived: true,
-                message: 'Category archived successfully'
-            } 
-        };
-    } catch (error) {
-        console.error('❌ Error archiving category:', error);
-        return { success: false, error: error.message };
-    }
-});
-ipcMain.handle('category:restore', async (event, categoryId, userId) => {
-    console.log('🔄 Restore category:', { categoryId, userId });
-    try {
-        const db = await getDatabase();
-        
-        // Check if category exists and belongs to user
-        const category = await db.get(
-            'SELECT * FROM categories WHERE id = ? AND user_id = ?',
-            [categoryId, userId]
-        );
-        
-        if (!category) {
-            return { success: false, error: 'Category not found' };
-        }
-        
-        if (!category.archived) {
-            return { success: false, error: 'Category is not archived' };
-        }
-        
-        // Check if original group still exists
-        let targetGroupId = category.group_id;
-        if (targetGroupId) {
-            const groupExists = await db.get(
-                'SELECT id FROM category_groups WHERE id = ? AND user_id = ?',
-                [targetGroupId, userId]
-            );
-            
-            if (!groupExists) {
-                // Find or create default "Uncategorized" group
-                let defaultGroup = await db.get(
-                    'SELECT id FROM category_groups WHERE name = "Uncategorized" AND user_id = ?',
-                    [userId]
-                );
-                
-                if (!defaultGroup) {
-                    const result = await db.run(`
-                        INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at)
-                        VALUES (?, "Uncategorized", 999, datetime("now"), datetime("now"))
-                    `, [userId]);
-                    targetGroupId = result.lastID;
-                } else {
-                    targetGroupId = defaultGroup.id;
+    });
+
+    ipcMain.handle('category:restore', async (event, categoryId, userId) => {
+        try {
+            const db = await getDatabase();
+            const category = await db.get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [categoryId, userId]);
+            if (!category) return { success: false, error: 'Category not found' };
+            if (!category.archived) return { success: false, error: 'Category is not archived' };
+            let targetGroupId = category.original_group_id;
+            if (targetGroupId) {
+                const groupExists = await db.get('SELECT id FROM category_groups WHERE id = ? AND user_id = ?', [targetGroupId, userId]);
+                if (!groupExists) {
+                    let defaultGroup = await db.get('SELECT id FROM category_groups WHERE name = "Uncategorized" AND user_id = ?', [userId]);
+                    if (!defaultGroup) {
+                        const result = await db.run(`INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at) VALUES (?, "Uncategorized", 999, datetime('now'), datetime('now'))`, [userId]);
+                        targetGroupId = result.lastID;
+                    } else targetGroupId = defaultGroup.id;
                 }
-                
-                console.log(`📁 Original group deleted, using default group: ${targetGroupId}`);
             }
+            await db.run(`UPDATE categories SET archived = 0, group_id = ?, restored_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?`, [targetGroupId, categoryId, userId]);
+            return { success: true, data: { id: categoryId, archived: false, group_id: targetGroupId, message: 'Category restored successfully' } };
+        } catch (error) {
+            return { success: false, error: error.message };
         }
-        
-        // Restore the category
-        await db.run(`
-            UPDATE categories 
-            SET archived = 0,
-                group_id = ?,
-                restored_at = datetime("now"),
-                updated_at = datetime("now")
-            WHERE id = ? AND user_id = ?
-        `, [targetGroupId, categoryId, userId]);
-        
-        console.log(`✅ Category ${categoryId} restored to group ${targetGroupId}`);
-        return { 
-            success: true, 
-            data: { 
-                id: categoryId, 
-                archived: false,
-                group_id: targetGroupId,
-                message: 'Category restored successfully'
-            } 
-        };
-    } catch (error) {
-        console.error('❌ Error restoring category:', error);
-        return { success: false, error: error.message };
-    }
-});
-ipcMain.handle('category:getArchived', async (event, userId) => {
-    console.log('📋 Get archived categories for user:', userId);
-    try {
-        const db = await getDatabase();
-        
-        const archivedCategories = await db.all(`
-            SELECT 
-                c.*,
-                cg.name as group_name,
-                cg.sort_order as group_sort_order
-            FROM categories c
-            LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id
-            WHERE c.user_id = ? AND c.archived = 1
-            ORDER BY c.archived_at DESC
-        `, [userId]);
-        
-        console.log(`✅ Found ${archivedCategories.length} archived categories`);
-        return { success: true, data: archivedCategories };
-    } catch (error) {
-        console.error('❌ Error getting archived categories:', error);
-        return { success: false, error: error.message, data: [] };
-    }
-});
+    });
+
+    ipcMain.handle('category:getArchived', async (event, userId) => {
+        try {
+            const db = await getDatabase();
+            const archivedCategories = await db.all(`SELECT c.*, cg.name as group_name FROM categories c LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id WHERE c.user_id = ? AND c.archived = 1 ORDER BY c.archived_at DESC`, [userId]);
+            return { success: true, data: archivedCategories };
+        } catch (error) {
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
     // ==================== HIDE/UNHIDE CATEGORY ====================
-ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
-    console.log('👁️ Toggle hide category:', { categoryId, userId });
-    try {
-        const db = await getDatabase();
-        
-        // Get current hidden status
-        const category = await db.get(
-            'SELECT hidden FROM categories WHERE id = ? AND user_id = ?',
-            [categoryId, userId]
-        );
-        
-        if (!category) {
-            return { success: false, error: 'Category not found' };
+    ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
+        try {
+            const db = await getDatabase();
+            const category = await db.get('SELECT is_hidden FROM categories WHERE id = ? AND user_id = ?', [categoryId, userId]);
+            if (!category) return { success: false, error: 'Category not found' };
+            const newHiddenStatus = category.is_hidden ? 0 : 1;
+            await db.run('UPDATE categories SET is_hidden = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?', [newHiddenStatus, categoryId, userId]);
+            return { success: true, data: { id: categoryId, is_hidden: newHiddenStatus } };
+        } catch (error) {
+            return { success: false, error: error.message };
         }
-        
-        const newHiddenStatus = category.hidden ? 0 : 1;
-        
-        await db.run(
-            'UPDATE categories SET hidden = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?',
-            [newHiddenStatus, categoryId, userId]
-        );
-        
-        console.log(`✅ Category ${categoryId} hidden status: ${newHiddenStatus}`);
-        return { 
-            success: true, 
-            data: { 
-                id: categoryId, 
-                hidden: newHiddenStatus,
-                message: newHiddenStatus ? 'Category hidden' : 'Category unhidden'
-            } 
-        };
-    } catch (error) {
-        console.error('❌ Error toggling category hide:', error);
-        return { success: false, error: error.message };
-    }
-});
+    });
 
     ipcMain.handle('getCategories', async (event, userId) => {
-        console.log('📞 IPC: getCategories called with userId:', userId);
         try {
             const dbConnection = await getDatabase();
             let targetUserId = userId;
             if (!targetUserId) targetUserId = userService.getCurrentUser()?.id;
-            if (!targetUserId) {
-                console.log('⚠️ No user ID found, returning empty array');
-                return { success: true, data: [] };
-            }
-
-            // Get all categories with their group names
-            const categories = await dbConnection.all(`
-            SELECT 
-                c.*,
-                cg.name as group_name,
-                cg.sort_order as group_sort_order
-            FROM categories c
-            LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id
-            WHERE c.user_id = ?
-            ORDER BY cg.sort_order ASC, c.name ASC
-        `, [targetUserId]);
-
-            console.log(`✅ Found ${categories.length} categories for user ${targetUserId}`);
-
-            // Debug: Log categories by group
-            const grouped = categories.reduce((acc, cat) => {
-                const groupName = cat.group_name || 'Uncategorized';
-                if (!acc[groupName]) acc[groupName] = [];
-                acc[groupName].push(cat.name);
-                return acc;
-            }, {});
-
-            console.log('📊 Categories by group:', Object.keys(grouped).map(g => `${g}: ${grouped[g].length}`));
-
+            if (!targetUserId) return { success: true, data: [] };
+            const categories = await dbConnection.all(`SELECT c.*, cg.name as group_name FROM categories c LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id WHERE c.user_id = ? AND c.archived = 0 ORDER BY cg.sort_order ASC, c.name ASC`, [targetUserId]);
             return { success: true, data: categories };
-
         } catch (error) {
-            console.error('❌ Error in getCategories:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
 
     ipcMain.handle('delete-category', async (event, categoryId) => {
-        console.log('📞 IPC: delete-category called:', categoryId);
         try {
             const db = await getDatabase();
             await db.run('DELETE FROM categories WHERE id = ?', [categoryId]);
             return { success: true, data: { id: categoryId } };
         } catch (error) {
-            console.error('❌ Error in delete-category:', error);
             return { success: false, error: error.message };
         }
     });
 
     // ==================== LEGACY ACCOUNT HANDLERS ====================
     ipcMain.handle('get-accounts', async () => {
-        console.log('🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀');
-        console.log('🌀 get-accounts CALLED (legacy)');
-        console.log('🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀\n');
         try {
             const accounts = await accountService.getAccounts();
             return { success: true, data: accounts };
         } catch (error) {
-            console.error('❌ Error:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
 
     ipcMain.handle('getAccounts', async () => {
-        console.log('\x1b[35m%s\x1b[0m', '🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥');
-        console.log('\x1b[35m%s\x1b[0m', '🔥 getAccounts CALLED (All Accounts tab?)');
-        console.log('\x1b[35m%s\x1b[0m', '🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥\n');
         try {
             const currentUser = userService.getCurrentUser();
             const userId = currentUser?.id || 2;
             const accounts = await accountService.getAllAccounts(userId);
             return { success: true, data: accounts };
         } catch (error) {
-            console.error('❌ Error:', error);
             return { success: false, error: error.message, data: [] };
         }
     });
@@ -2277,7 +2035,6 @@ ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
     });
 
     ipcMain.handle('deleteCategory', async (event, categoryId) => {
-        console.log('🗑️ deleteCategory called with ID:', categoryId);
         try {
             const db = await getDatabase();
             const transactions = await db.get('SELECT COUNT(*) as count FROM transactions WHERE category_id = ?', [categoryId]);
@@ -2285,7 +2042,6 @@ ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
             await db.run('DELETE FROM categories WHERE id = ?', [categoryId]);
             return { success: true, data: {} };
         } catch (error) {
-            console.error('❌ Error deleting category:', error);
             return { success: false, error: error.message };
         }
     });
@@ -2315,7 +2071,6 @@ ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
             const result = await accountService.getAccountsWithSummary(currentUser.id);
             return { success: true, data: result };
         } catch (error) {
-            console.error('Error getting account dashboard:', error);
             return { success: false, error: error.message };
         }
     });
@@ -2326,7 +2081,6 @@ ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
             if (!result) return { success: false, error: 'Account not found' };
             return { success: true, data: result };
         } catch (error) {
-            console.error('Error getting account details:', error);
             return { success: false, error: error.message };
         }
     });
@@ -2354,12 +2108,7 @@ ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
         if (!subscriptions.has(windowId)) subscriptions.set(windowId, new Set());
         subscriptions.get(windowId).add(eventType);
         console.log(`📡 Window ${windowId} subscribed to ${eventType}`);
-        return {
-            unsubscribe: () => {
-                const windowSubs = subscriptions.get(windowId);
-                if (windowSubs) windowSubs.delete(eventType);
-            }
-        };
+        return { unsubscribe: () => { const windowSubs = subscriptions.get(windowId); if (windowSubs) windowSubs.delete(eventType); } };
     });
 
     ipcMain.handle('publish-event', async (event, eventType, data) => {
@@ -2375,56 +2124,38 @@ ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
             for (const [name, interfaces] of Object.entries(networkInterfaces)) {
                 if (!interfaces) continue;
                 const nonInternal = interfaces.filter(addr => !addr.internal);
-                if (nonInternal.length) activeInterfaces.push({
-                    name, addresses: nonInternal.map(addr => ({ address: addr.address, family: addr.family, mac: addr.mac, netmask: addr.netmask }))
-                });
+                if (nonInternal.length) activeInterfaces.push({ name, addresses: nonInternal.map(addr => ({ address: addr.address, family: addr.family, mac: addr.mac, netmask: addr.netmask })) });
             }
             const isOnline = activeInterfaces.length > 0;
-            return {
-                success: true,
-                data: {
-                    isOnline, isOffline: !isOnline, interfaces: activeInterfaces,
-                    timestamp: new Date().toISOString(), effectiveType: isOnline ? '4g' : 'none',
-                    downlink: isOnline ? 10 : 0, rtt: isOnline ? 50 : 0, saveData: false
-                }
-            };
+            return { success: true, data: { isOnline, isOffline: !isOnline, interfaces: activeInterfaces, timestamp: new Date().toISOString(), effectiveType: isOnline ? '4g' : 'none', downlink: isOnline ? 10 : 0, rtt: isOnline ? 50 : 0, saveData: false } };
         } catch (error) {
-            console.error('Error getting network status:', error);
             return { success: false, error: error.message, data: { isOnline: false, isOffline: true } };
         }
     });
 
     ipcHandlersRegistered = true;
-    console.log('🔍 Step 3: setupIpcHandlers complete');
+    console.log('✅ IPC handler registration complete');
 }
 
 // ==================== MENU ====================
 function createMenu() {
     const template = [
         {
-            label: 'File',
-            submenu: [
+            label: 'File', submenu: [
                 { label: 'New Budget', accelerator: 'CmdOrCtrl+N', click: () => mainWindow?.webContents.send('menu-new-budget') },
                 { label: 'Open Budget...', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('menu-open-budget') },
                 { type: 'separator' },
                 { label: 'Import from CSV...', click: () => mainWindow?.webContents.send('menu-import-csv') },
                 { label: 'Export to CSV...', click: () => mainWindow?.webContents.send('menu-export-csv') },
                 { type: 'separator' },
-                { role: 'quit' },
-            ],
+                { role: 'quit' }
+            ]
         },
         {
-            label: 'View',
-            submenu: [
-                { role: 'reload' },
-                { role: 'forceReload' },
-                { role: 'toggleDevTools' },
-                { type: 'separator' },
-                { role: 'resetZoom' },
-                { role: 'zoomIn' },
-                { role: 'zoomOut' },
-                { type: 'separator' },
-                { role: 'togglefullscreen' }
+            label: 'View', submenu: [
+                { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
+                { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+                { type: 'separator' }, { role: 'togglefullscreen' }
             ]
         }
     ];
