@@ -189,37 +189,38 @@ const PropertyMapView = () => {
 
   // ==================== READY TO ASSIGN CALCULATION ====================
   const calculateReadyToAssign = () => {
-    const categories = budgetData.categories.filter(cat => !cat.archived);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('💰 CALCULATING READY TO ASSIGN');
 
-    const getInflowTotal = async () => {
-      try {
-        const result = await window.electronAPI.getTransactions({
-          categoryId: 'inflow_ready_to_assign',
-          userId: userId,
-          startDate: new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).toISOString().split('T')[0]
-        });
-        if (result.success) {
-          return result.data.reduce((sum, t) => sum + (t.amount > 0 ? t.amount : 0), 0);
-        }
-      } catch (error) {
-        console.error('Error getting inflow transactions:', error);
-      }
-      return 0;
-    };
+    // Get active categories (not archived)
+    const activeCategories = budgetData.categories.filter(cat => !cat.archived);
 
-    const totalAssigned = categories.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
+    // Calculate total assigned
+    let totalAssigned = 0;
+    activeCategories.forEach(cat => {
+      const assigned = Number(cat.assigned) || 0;
+      totalAssigned += assigned;
+    });
 
-    getInflowTotal().then(inflowTotal => {
-      let readyToAssign = totalCashInAccounts + inflowTotal - totalAssigned;
-      setBudgetSummary({
-        totalAvailable: readyToAssign,
-        totalActivity: categories.reduce((sum, cat) => sum + (cat.activity || 0), 0),
-        totalAssigned: totalAssigned,
-        unassigned: readyToAssign
-      });
+    // Get total cash from state
+    const cashInAccounts = totalCashInAccounts;
+
+    console.log(`Total Cash in Accounts: ${cashInAccounts}`);
+    console.log(`Total Assigned: ${totalAssigned}`);
+
+    // Calculate ready to assign
+    const readyToAssign = cashInAccounts - totalAssigned;
+
+    console.log(`Ready to Assign: ${readyToAssign}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    setBudgetSummary({
+      totalAvailable: readyToAssign,
+      totalActivity: activeCategories.reduce((sum, cat) => sum + (cat.activity || 0), 0),
+      totalAssigned: totalAssigned,
+      unassigned: readyToAssign
     });
   };
-
   // Update progress for all categories
   const updateAllProgress = () => {
     setBudgetData(prev => ({
@@ -724,6 +725,10 @@ const PropertyMapView = () => {
           memo: ''
         });
         setShowAddIncomeModal(false);
+
+        // ✅ ADD THIS - Recalculate ready to assign
+        calculateReadyToAssign();
+
         alert(`✅ $${amount.toFixed(2)} added to Ready to Assign`);
       } else {
         alert('❌ Error recording income: ' + result.error);
@@ -796,6 +801,7 @@ const PropertyMapView = () => {
           memo: ''
         });
         setShowRecordPaymentModal(false);
+        calculateReadyToAssign();
         alert(`✅ Payment of $${amount.toFixed(2)} recorded to ${selectedCategory.name}`);
       } else {
         alert('❌ Error recording payment: ' + result.error);
@@ -853,6 +859,7 @@ const PropertyMapView = () => {
       toCategoryId: ''
     });
     setShowMoveMoneyModal(false);
+    calculateReadyToAssign();
     alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
   };
 
@@ -874,6 +881,7 @@ const PropertyMapView = () => {
       const newAssigned = (category.assigned || 0) + amount;
       updateCategoryAssigned(categoryId, newAssigned);
     }
+    calculateReadyToAssign();
   };
 
   const handleMoveToReadyToAssign = (categoryId, amount) => {
@@ -1034,22 +1042,46 @@ const PropertyMapView = () => {
   useEffect(() => {
     const initializeData = async () => {
       if (!userId) return;
+
+      // Reset state
       setBudgetData({ categories: [] });
       setCategoryGroups([]);
+
       await new Promise(resolve => setTimeout(resolve, 500));
+
       try {
         setLoading(true);
+
+        // Load categories and groups
         await loadCategoryGroups();
         await loadCategoriesFromDB();
-        await loadArchivedCategories();  // ← Make sure this is here
+        await loadArchivedCategories();
+
+        // Fetch and set total cash from accounts
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (userResult?.success && userResult?.data) {
+          const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+          if (accountsResult?.success) {
+            const totalCashValue = accountsResult.data
+              .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+              .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+
+            console.log('💰 Total Cash in Accounts set to:', totalCashValue);
+            setTotalCashInAccounts(totalCashValue);
+          }
+        }
+
       } catch (error) {
         console.error('❌ Error during initialization:', error);
       } finally {
         setLoading(false);
       }
     };
+
     initializeData();
   }, [userId]);
+
+
   const getInflowTotal = async () => {
     try {
       const result = await window.electronAPI.getTransactions({
