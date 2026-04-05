@@ -1051,20 +1051,20 @@ const PropertyMapView = () => {
     initializeData();
   }, [userId]);
   const getInflowTotal = async () => {
-  try {
-    const result = await window.electronAPI.getTransactions({
-      categoryId: 'inflow_ready_to_assign',
-      userId: userId,
-      startDate: new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).toISOString().split('T')[0]
-    });
-    if (result.success) {
-      return result.data.reduce((sum, t) => sum + (t.amount > 0 ? t.amount : 0), 0);
+    try {
+      const result = await window.electronAPI.getTransactions({
+        categoryId: 'inflow_ready_to_assign',
+        userId: userId,
+        startDate: new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).toISOString().split('T')[0]
+      });
+      if (result.success) {
+        return result.data.reduce((sum, t) => sum + (t.amount > 0 ? t.amount : 0), 0);
+      }
+    } catch (error) {
+      console.error('Error getting inflow transactions:', error);
     }
-  } catch (error) {
-    console.error('Error getting inflow transactions:', error);
-  }
-  return 0; // ← Already handles this
-};
+    return 0; // ← Already handles this
+  };
 
   useEffect(() => {
     let isFirstRun = true;
@@ -1190,6 +1190,36 @@ const PropertyMapView = () => {
           </div>
           <button style={styles.addGroupButton} onClick={() => setShowAddGroupModal(true)}>
             + Add Category Group
+          </button>
+          <button
+            onClick={async () => {
+              // Get current user
+              const userResult = await window.electronAPI.getCurrentUser();
+              const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log('🔍 ACCOUNTS DEBUG:');
+              console.log('All accounts:', accountsResult.data);
+
+              const totalCash = accountsResult.data
+                .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+                .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+
+              console.log('Filtered accounts (checking/savings):',
+                accountsResult.data.filter(acc => acc.type === 'checking' || acc.type === 'savings'));
+              console.log('Total Cash:', totalCash);
+
+              // Check total assigned
+              const categories = await window.electronAPI.getCategories(2);
+              const totalAssigned = categories.data.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
+              console.log('Total Assigned across all categories:', totalAssigned);
+
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              alert(`Total Cash: $${totalCash}\nTotal Assigned: $${totalAssigned}\nReady to Assign: $${totalCash - totalAssigned}`);
+            }}
+            style={{ background: '#F59E0B', color: 'white', padding: '8px', margin: '8px' }}
+          >
+            🔍 DEBUG READY TO ASSIGN
           </button>
           <button
             onClick={async () => {
