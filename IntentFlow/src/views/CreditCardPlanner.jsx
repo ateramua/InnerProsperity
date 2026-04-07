@@ -200,6 +200,7 @@ export default function CreditCardPlanner({
   };
 
   const handleMoveMoney = () => {
+  
     if (!paymentPlan || paymentPlan.shortfall <= 0) return;
 
     if (onMoveMoney) {

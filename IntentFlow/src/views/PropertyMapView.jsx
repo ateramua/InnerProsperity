@@ -5,6 +5,7 @@ import AutoAssignView from './AutoAssignView';
 import FutureMonthsView from './FutureMonthsView';
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import BudgetEngine from "../shared/budgetEngine.mjs";
+import CategoryTargetModal from '../components/CategoryTargetModal';
 
 const PropertyMapView = () => {
   // ==================== STATE DECLARATIONS ====================
@@ -30,6 +31,9 @@ const PropertyMapView = () => {
 
   const [budgetEngine] = useState(() => new BudgetEngine());
   const hasLoadedCategories = useRef(false);
+  const [showTargetModal, setShowTargetModal] = useState(false);
+  const [selectedCategoryForTarget, setSelectedCategoryForTarget] = useState(null);
+
 
   const [incomeData, setIncomeData] = useState({
     amount: '',
@@ -110,26 +114,31 @@ const PropertyMapView = () => {
       return { progress: null, status: 'no-target', needed: 0 };
     }
 
+    // Use AVAILABLE for goal progress, not assigned
+    const currentAmount = category.available || 0;
+
     switch (category.target_type) {
       case 'monthly':
-        const progress = (category.assigned / category.target_amount) * 100;
-        const needed = Math.max(0, category.target_amount - category.assigned);
+        // Monthly goal: compare available vs target
+        const progress = (currentAmount / category.target_amount) * 100;
+        const needed = Math.max(0, category.target_amount - currentAmount);
         return {
           progress,
           status: progress >= 100 ? 'funded' : progress > 0 ? 'partial' : 'unfunded',
           needed,
           targetAmount: category.target_amount,
-          currentAmount: category.assigned
+          currentAmount: currentAmount
         };
       case 'balance':
-        const balanceProgress = ((category.available || 0) / category.target_amount) * 100;
-        const balanceNeeded = Math.max(0, category.target_amount - (category.available || 0));
+        // Balance goal: available should reach target
+        const balanceProgress = (currentAmount / category.target_amount) * 100;
+        const balanceNeeded = Math.max(0, category.target_amount - currentAmount);
         return {
           progress: balanceProgress,
           status: balanceProgress >= 100 ? 'completed' : balanceProgress > 0 ? 'in-progress' : 'not-started',
           needed: balanceNeeded,
           targetAmount: category.target_amount,
-          currentAmount: category.available || 0
+          currentAmount: currentAmount
         };
       case 'by_date':
         if (!category.target_date) return { progress: null, status: 'no-date', needed: 0 };
@@ -137,16 +146,16 @@ const PropertyMapView = () => {
         const targetDate = new Date(category.target_date);
         const monthsRemaining = (targetDate.getFullYear() - today.getFullYear()) * 12 +
           (targetDate.getMonth() - today.getMonth());
-        const totalNeeded = category.target_amount - (category.available || 0);
+        const totalNeeded = category.target_amount - currentAmount;
         const monthlyNeeded = monthsRemaining > 0 ? totalNeeded / monthsRemaining : totalNeeded;
-        const dateProgress = ((category.available || 0) / category.target_amount) * 100;
+        const dateProgress = (currentAmount / category.target_amount) * 100;
         return {
           progress: dateProgress,
           status: dateProgress >= 100 ? 'completed' : 'in-progress',
           needed: totalNeeded,
           monthlyNeeded: Math.max(0, monthlyNeeded),
           targetAmount: category.target_amount,
-          currentAmount: category.available || 0,
+          currentAmount: currentAmount,
           monthsRemaining: Math.max(0, monthsRemaining)
         };
       default:
@@ -186,42 +195,120 @@ const PropertyMapView = () => {
   const getTargetInfo = (category) => {
     return calculateTargetProgress(category);
   };
+  // Calculate Available with proper rollover logic
+  const calculateAvailable = (category, previousMonthAvailable = 0) => {
+    // Available = Previous Available + Assigned This Month - Spending (Activity)
+    const assigned = Number(category.assigned) || 0;
+    const activity = Number(category.activity) || 0;
+
+    let available = previousMonthAvailable + assigned - activity;
+
+    // Handle overspending based on account type
+    const isCashAccount = category.account_type !== 'credit';
+
+    if (available < 0 && !isCashAccount) {
+      // Credit overspending - becomes debt, doesn't reduce cash
+      // We'll track this separately
+      console.log(`⚠️ Credit overspending in ${category.name}: ${formatCurrency(available)}`);
+    } else if (available < 0 && isCashAccount) {
+      // Cash overspending - must be covered
+      console.log(`🔴 Cash overspending in ${category.name}: ${formatCurrency(available)}`);
+    }
+
+    return available;
+  };
+  // Update available for a specific category and save to database
+  const updateCategoryAvailable = async (category, previousMonthAvailable = 0) => {
+    const newAvailable = calculateAvailable(category, previousMonthAvailable);
+
+    if (newAvailable !== category.available) {
+      // Update local state
+      setBudgetData(prev => ({
+        ...prev,
+        categories: prev.categories.map(cat =>
+          cat.id === category.id
+            ? { ...cat, available: newAvailable }
+            : cat
+        )
+      }));
+
+      // Update database
+      try {
+        await window.electronAPI.updateCategory(category.id, { available: newAvailable });
+        console.log(`✅ Updated available for ${category.name}: ${formatCurrency(newAvailable)}`);
+      } catch (error) {
+        console.error(`❌ Failed to update available for ${category.id}:`, error);
+      }
+    }
+
+    return newAvailable;
+  };
+
+
+
+  // Update all categories' available amounts
+  const updateAllAvailable = async () => {
+    console.log('🔄 Recalculating all available amounts...');
+
+    for (const category of budgetData.categories) {
+      // Get previous month's available (carryover)
+      const previousAvailable = category.previous_available || 0;
+      await updateCategoryAvailable(category, previousAvailable);
+    }
+
+    console.log('✅ Finished updating available amounts');
+    calculateReadyToAssign(); // Recalculate ready to assign after updates
+  };
+
+  // Get previous month's available (for rollover)
+  const getPreviousMonthAvailable = async (categoryId, previousMonth) => {
+    try {
+      const result = await window.electronAPI.getCategoryHistory(categoryId, previousMonth);
+      return result?.available || 0;
+    } catch (error) {
+      console.error('Error getting previous month available:', error);
+      return 0;
+    }
+  };
 
   // ==================== READY TO ASSIGN CALCULATION ====================
   const calculateReadyToAssign = () => {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('💰 CALCULATING READY TO ASSIGN');
 
-    // Get active categories (not archived)
     const activeCategories = budgetData.categories.filter(cat => !cat.archived);
 
-    // Calculate total assigned
-    let totalAssigned = 0;
-    activeCategories.forEach(cat => {
-      const assigned = Number(cat.assigned) || 0;
-      totalAssigned += assigned;
-    });
+    // Total Assigned this month
+    let totalAssigned = activeCategories.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0);
 
-    // Get total cash from state
+    // Total Available from previous month (carryover)
+    let totalCarryover = activeCategories.reduce((sum, cat) => sum + (cat.previous_available || 0), 0);
+
+    // Total Activity (spending) this month
+    let totalActivity = activeCategories.reduce((sum, cat) => sum + (Number(cat.activity) || 0), 0);
+
+    // Total cash in accounts
     const cashInAccounts = totalCashInAccounts;
 
-    console.log(`Total Cash in Accounts: ${cashInAccounts}`);
+    // Ready to Assign = Cash - (Assigned - Activity + Carryover)
+    const totalBudgeted = totalAssigned - totalActivity + totalCarryover;
+    const readyToAssign = cashInAccounts - totalBudgeted;
+
+    console.log(`Total Cash: ${cashInAccounts}`);
     console.log(`Total Assigned: ${totalAssigned}`);
-
-    // Calculate ready to assign
-    const readyToAssign = cashInAccounts - totalAssigned;
-
+    console.log(`Total Activity: ${totalActivity}`);
+    console.log(`Total Carryover: ${totalCarryover}`);
     console.log(`Ready to Assign: ${readyToAssign}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     setBudgetSummary({
       totalAvailable: readyToAssign,
-      totalActivity: activeCategories.reduce((sum, cat) => sum + (cat.activity || 0), 0),
+      totalActivity: totalActivity,
       totalAssigned: totalAssigned,
       unassigned: readyToAssign
     });
   };
-  // Update progress for all categories
+
   const updateAllProgress = () => {
     setBudgetData(prev => ({
       ...prev,
@@ -231,6 +318,12 @@ const PropertyMapView = () => {
       }))
     }));
   };
+  // Recalculate available whenever assigned or activity changes
+  useEffect(() => {
+    if (budgetData.categories.length > 0) {
+      updateAllAvailable();
+    }
+  }, [budgetData.categories.map(cat => `${cat.id}:${cat.assigned}:${cat.activity}`).join(',')]);
 
   // ==================== DATABASE OPERATIONS ====================
   const loadCategoryGroups = async () => {
@@ -250,6 +343,10 @@ const PropertyMapView = () => {
     }
   };
 
+
+
+
+
   const loadCategoriesFromDB = async (retryCount = 0) => {
     if (!window.electronAPI?.getCategories) {
       console.error('❌ electronAPI.getCategories is not available!');
@@ -263,11 +360,6 @@ const PropertyMapView = () => {
     try {
       setLoading(true);
       const result = await window.electronAPI.getCategories(userId);
-
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('📊 LOAD CATEGORIES RESULT:');
-      console.log('Success:', result.success);
-      console.log('Data length:', result.data?.length);
 
       if (result && result.success && result.data) {
         const dbCategories = result.data.map(cat => ({
@@ -289,12 +381,6 @@ const PropertyMapView = () => {
           is_hidden: cat.is_hidden === 1 || cat.hidden === 1,
           original_group_id: cat.original_group_id || cat.group_id
         }));
-
-        console.log('✅ Mapped categories:', dbCategories.map(c => ({
-          name: c.name,
-          groupId: c.groupId,
-          groupIdType: typeof c.groupId
-        })));
 
         setBudgetData(prev => ({
           ...prev,
@@ -318,7 +404,6 @@ const PropertyMapView = () => {
       const result = await window.electronAPI.getArchivedCategories(userId);
       if (result && result.success) {
         setArchivedCategories(result.data);
-        console.log(`📋 Loaded ${result.data.length} archived categories from API`);
       } else {
         setArchivedCategories([]);
       }
@@ -347,15 +432,11 @@ const PropertyMapView = () => {
     try {
       const result = await window.electronAPI.archiveCategory(category.id, userId);
       if (result && result.success) {
-        // Update local state - remove from active categories
         setBudgetData(prev => ({
           ...prev,
           categories: prev.categories.filter(cat => cat.id !== category.id)
         }));
-
-        // Refresh archived categories list
         await loadArchivedCategories();
-
         alert(`✅ Category "${category.name}" has been archived.`);
       } else {
         alert('❌ Failed to archive category: ' + (result?.error || 'Unknown error'));
@@ -373,11 +454,9 @@ const PropertyMapView = () => {
     try {
       const result = await window.electronAPI.restoreCategory(category.id, userId);
       if (result && result.success) {
-        // Refresh both active categories and archived list
         await loadCategoriesFromDB();
         await loadCategoryGroups();
         await loadArchivedCategories();
-
         alert(`✅ Category "${category.name}" has been restored.`);
       } else {
         alert('❌ Failed to restore category: ' + (result?.error || 'Unknown error'));
@@ -389,7 +468,6 @@ const PropertyMapView = () => {
   };
 
   const handleEditCategory = (category) => {
-    console.log('✏️ EDIT CATEGORY CLICKED:', category);
     setEditingCategory(category.id);
     setEditCategoryData({
       name: category.name,
@@ -399,10 +477,80 @@ const PropertyMapView = () => {
     });
   };
 
-  const handleSaveCategoryEdit = async (categoryId) => {
-    console.log('💾 SAVE EDIT CALLED for category:', categoryId);
-    console.log('Current edit data:', editCategoryData);
+  const getGoalTooltip = (category) => {
+    const targetInfo = calculateTargetProgress(category);
+    switch (targetInfo.status) {
+      case 'funded':
+        return `Monthly goal met! Assigned ${formatCurrency(category.assigned)} of ${formatCurrency(targetInfo.targetAmount)}`;
+      case 'completed':
+        return `Goal achieved! ${formatCurrency(category.available)} of ${formatCurrency(targetInfo.targetAmount)}`;
+      case 'partial':
+        return `Partially funded. Need ${formatCurrency(targetInfo.needed)} more to reach monthly goal`;
+      case 'unfunded':
+        return `No funds assigned yet. Need ${formatCurrency(targetInfo.needed)} to reach monthly goal`;
+      case 'in-progress':
+        return `Progress: ${Math.round(targetInfo.progress)}% toward ${formatCurrency(targetInfo.targetAmount)}`;
+      default:
+        return 'Click 🎯 to set a goal';
+    }
+  };
 
+  const getProgressColor = (status) => {
+    switch (status) {
+      case 'funded':
+      case 'completed':
+        return '#4ADE80';
+      case 'partial':
+      case 'in-progress':
+        return '#F59E0B';
+      case 'unfunded':
+      case 'not-started':
+        return '#EF4444';
+      default:
+        return '#3B82F6';
+    }
+  };
+
+  const getGoalDetails = (category, targetInfo) => {
+    if (!targetInfo.targetAmount) return null;
+
+    switch (category.target_type) {
+      case 'monthly':
+        return (
+          <div style={styles.goalDetailText}>
+            {targetInfo.status === 'funded' ? '✅ Monthly goal met' :
+              targetInfo.status === 'partial' ? `⚠️ ${formatCurrency(targetInfo.needed)} short` :
+                '❌ Not funded'}
+          </div>
+        );
+      case 'balance':
+        const current = category.available || 0;
+        const percent = (current / targetInfo.targetAmount) * 100;
+        return (
+          <div style={styles.goalDetailText}>
+            <div>{formatCurrency(current)} of {formatCurrency(targetInfo.targetAmount)}</div>
+            <div style={{ fontSize: '10px', color: '#94A3B8' }}>
+              {current >= targetInfo.targetAmount ? 'Goal achieved! 🎉' : `${Math.round(percent)}% to goal`}
+            </div>
+          </div>
+        );
+      case 'by_date':
+        return (
+          <div style={styles.goalDetailText}>
+            <div>{formatCurrency(category.available || 0)} of {formatCurrency(targetInfo.targetAmount)}</div>
+            {targetInfo.monthsRemaining > 0 && (
+              <div style={{ fontSize: '10px', color: '#F59E0B' }}>
+                Need ${targetInfo.monthlyNeeded?.toFixed(0)}/month
+              </div>
+            )}
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const handleSaveCategoryEdit = async (categoryId) => {
     if (!editCategoryData.name.trim()) {
       alert('Please enter a category name');
       return;
@@ -416,9 +564,7 @@ const PropertyMapView = () => {
         target_type: editCategoryData.target_type
       };
 
-      console.log('Sending updates:', updates);
       const result = await window.electronAPI.updateCategory(categoryId, updates);
-      console.log('Update result:', result);
 
       if (!result.success) {
         alert('Failed to update category: ' + (result.error || 'Unknown error'));
@@ -451,7 +597,6 @@ const PropertyMapView = () => {
 
       await loadCategoriesFromDB();
       alert('✅ Category updated successfully!');
-
     } catch (error) {
       console.error('❌ Error saving category:', error);
       alert('Error: ' + error.message);
@@ -460,7 +605,6 @@ const PropertyMapView = () => {
   };
 
   const handleCancelEdit = () => {
-    console.log('❌ Cancel edit');
     setEditingCategory(null);
     setEditCategoryData({
       name: '',
@@ -690,6 +834,7 @@ const PropertyMapView = () => {
   // ==================== QUICK ACTIONS ====================
   const handleAddIncome = async () => {
     const amount = parseFloat(incomeData.amount);
+
     if (isNaN(amount) || amount <= 0) {
       alert('Please enter a valid amount');
       return;
@@ -725,10 +870,7 @@ const PropertyMapView = () => {
           memo: ''
         });
         setShowAddIncomeModal(false);
-
-        // ✅ ADD THIS - Recalculate ready to assign
         calculateReadyToAssign();
-
         alert(`✅ $${amount.toFixed(2)} added to Ready to Assign`);
       } else {
         alert('❌ Error recording income: ' + result.error);
@@ -739,8 +881,150 @@ const PropertyMapView = () => {
     }
   };
 
+  const handleQuickAssign = (method) => {
+
+    if (budgetSummary.unassigned <= 0) {
+      alert('No funds available to assign');
+      return;
+    }
+
+    let allocations = [];
+    let remainingFunds = budgetSummary.unassigned;
+    const activeCategories = budgetData.categories.filter(cat => !cat.archived);
+
+    switch (method) {
+      case 'smart':
+        // Smart allocation based on priority
+        const prioritized = activeCategories.map(cat => {
+          const targetInfo = calculateTargetProgress(cat);
+          let priority = 5;
+          let neededAmount = 0;
+
+          if (targetInfo.status === 'partial' && cat.target_type === 'monthly') {
+            priority = 1;
+            neededAmount = targetInfo.needed;
+          } else if (targetInfo.status === 'unfunded' && cat.target_type === 'monthly') {
+            priority = 2;
+            neededAmount = targetInfo.needed;
+          } else if (targetInfo.status === 'in-progress' && cat.target_type === 'by_date') {
+            priority = 3;
+            neededAmount = targetInfo.monthlyNeeded || targetInfo.needed;
+          } else if (targetInfo.status === 'in-progress' && cat.target_type === 'balance') {
+            priority = 4;
+            neededAmount = targetInfo.needed;
+          } else if ((cat.available || 0) < 0) {
+            priority = 1;
+            neededAmount = Math.abs(cat.available || 0);
+          }
+
+          return { ...cat, priority, neededAmount, targetInfo };
+        }).filter(c => c.priority < 5 && c.neededAmount > 0)
+          .sort((a, b) => a.priority - b.priority);
+
+        for (const cat of prioritized) {
+          if (remainingFunds <= 0) break;
+          let amountToAssign = Math.min(cat.neededAmount, remainingFunds);
+          if (cat.target_type === 'by_date' && cat.targetInfo.monthlyNeeded) {
+            amountToAssign = Math.min(cat.targetInfo.monthlyNeeded, remainingFunds);
+          }
+          if (amountToAssign > 0) {
+            allocations.push({
+              categoryId: cat.id,
+              amount: amountToAssign,
+              reason: `${cat.name}: ${cat.target_type} goal`
+            });
+            remainingFunds -= amountToAssign;
+          }
+        }
+        break;
+
+      case 'underfunded':
+        const overspent = activeCategories.filter(c => (c.available || 0) < 0);
+        const monthlyTargets = activeCategories.filter(c =>
+          c.target_type === 'monthly' && (c.assigned || 0) < (c.target_amount || 0)
+        );
+        const savingsGoals = activeCategories.filter(c =>
+          c.target_type === 'balance' && (c.available || 0) < (c.target_amount || 0)
+        );
+        const dateGoals = activeCategories.filter(c =>
+          c.target_type === 'by_date' && (c.available || 0) < (c.target_amount || 0)
+        );
+
+        const sortedCategories = [
+          ...overspent.map(c => ({ ...c, urgency: 1, needed: Math.abs(c.available || 0) })),
+          ...monthlyTargets.map(c => ({ ...c, urgency: 2, needed: (c.target_amount || 0) - (c.assigned || 0) })),
+          ...savingsGoals.map(c => ({ ...c, urgency: 3, needed: (c.target_amount || 0) - (c.available || 0) })),
+          ...dateGoals.map(c => ({ ...c, urgency: 4, needed: (c.target_amount || 0) - (c.available || 0) }))
+        ].sort((a, b) => a.urgency - b.urgency);
+
+        for (const cat of sortedCategories) {
+          if (remainingFunds <= 0) break;
+          let amountToAssign = Math.min(cat.needed, remainingFunds);
+          if (amountToAssign > 0) {
+            allocations.push({ categoryId: cat.id, amount: amountToAssign, reason: `Funding ${cat.name}` });
+            remainingFunds -= amountToAssign;
+          }
+        }
+        break;
+
+      case 'last-month':
+        activeCategories.forEach(cat => {
+          const lastMonthAmount = cat.last_month_assigned || cat.assigned || 0;
+          const currentAssigned = cat.assigned || 0;
+          const needed = Math.max(0, lastMonthAmount - currentAssigned);
+          if (needed > 0 && remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed, reason: `Match last month's ${formatCurrency(lastMonthAmount)}` });
+            remainingFunds -= needed;
+          }
+        });
+        break;
+
+      case 'average':
+        activeCategories.forEach(cat => {
+          const avgSpend = cat.average_spending || cat.assigned || 0;
+          const currentAssigned = cat.assigned || 0;
+          const needed = Math.max(0, avgSpend - currentAssigned);
+          if (needed > 0 && remainingFunds >= needed) {
+            allocations.push({ categoryId: cat.id, amount: needed, reason: `Average spending: ${formatCurrency(avgSpend)}` });
+            remainingFunds -= needed;
+          }
+        });
+        break;
+    }
+
+    if (allocations.length > 0) {
+      const previewMessage = allocations.map(a => `${a.reason}: ${formatCurrency(a.amount)}`).join('\n');
+      if (confirm(`Ready to assign ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${allocations.length} categories:\n\n${previewMessage}\n\nProceed?`)) {
+        setBudgetData(prev => ({
+          ...prev,
+          categories: prev.categories.map(cat => {
+            const allocation = allocations.find(a => a.categoryId === cat.id);
+            if (allocation) {
+              return {
+                ...cat,
+                assigned: (cat.assigned || 0) + allocation.amount,
+                available: (cat.available || 0) + allocation.amount
+              };
+            }
+            return cat;
+          })
+        }));
+        allocations.forEach(allocation => {
+          const category = budgetData.categories.find(c => c.id === allocation.categoryId);
+          if (category) {
+            updateCategoryAssigned(allocation.categoryId, (category.assigned || 0) + allocation.amount);
+          }
+        });
+        alert(`✅ Assigned ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${allocations.length} categories`);
+      }
+    } else {
+      alert('No categories need funding based on current criteria');
+    }
+  };
+
   const handleRecordPayment = async () => {
     const amount = parseFloat(paymentData.amount);
+
     if (isNaN(amount) || amount <= 0) {
       alert('Please enter a valid amount');
       return;
@@ -862,127 +1146,47 @@ const PropertyMapView = () => {
     calculateReadyToAssign();
     alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
   };
-
-  const handleAssignToCategory = (categoryId, amount) => {
-    setBudgetData(prev => ({
-      ...prev,
-      categories: prev.categories.map(cat =>
-        cat.id === categoryId
-          ? {
-            ...cat,
-            assigned: (cat.assigned || 0) + amount,
-            available: (cat.available || 0) + amount
-          }
-          : cat
-      )
-    }));
-    const category = budgetData.categories.find(c => c.id === categoryId);
-    if (category) {
-      const newAssigned = (category.assigned || 0) + amount;
-      updateCategoryAssigned(categoryId, newAssigned);
-    }
-    calculateReadyToAssign();
+  const handleSetGoal = (category) => {
+    setSelectedCategoryForTarget(category);
+    setShowTargetModal(true);
   };
 
-  const handleMoveToReadyToAssign = (categoryId, amount) => {
-    setBudgetData(prev => ({
-      ...prev,
-      categories: prev.categories.map(cat =>
-        cat.id === categoryId
-          ? {
-            ...cat,
-            assigned: (cat.assigned || 0) - amount,
-            available: (cat.available || 0) - amount
-          }
-          : cat
-      )
-    }));
-  };
+  const handleSaveGoal = async (goalData) => {
+    if (!selectedCategoryForTarget) return;
 
-  const handleQuickAssign = (method) => {
-    if (budgetSummary.unassigned <= 0) {
-      alert('No funds available to assign');
-      return;
-    }
-    let allocations = [];
-    let remainingFunds = budgetSummary.unassigned;
-    const activeCategories = budgetData.categories.filter(cat => !cat.archived);
+    try {
+      const result = await window.electronAPI.updateCategory(selectedCategoryForTarget.id, {
+        target_amount: goalData.target_amount,
+        target_type: goalData.target_type,
+        target_date: goalData.target_date
+      });
 
-    switch (method) {
-      case 'underfunded':
-        const overspent = activeCategories.filter(c => (c.available || 0) < 0);
-        const monthlyTargets = activeCategories.filter(c =>
-          c.target_type === 'monthly' && (c.assigned || 0) < (c.target_amount || 0)
-        );
-        const savingsGoals = activeCategories.filter(c =>
-          c.target_type === 'balance' && (c.available || 0) < (c.target_amount || 0)
-        );
-        overspent.forEach(cat => {
-          const needed = Math.abs(cat.available || 0);
-          if (remainingFunds >= needed) {
-            allocations.push({ categoryId: cat.id, amount: needed });
-            remainingFunds -= needed;
-          }
-        });
-        monthlyTargets.forEach(cat => {
-          const needed = (cat.target_amount || 0) - (cat.assigned || 0);
-          if (needed > 0 && remainingFunds >= needed) {
-            allocations.push({ categoryId: cat.id, amount: needed });
-            remainingFunds -= needed;
-          }
-        });
-        savingsGoals.forEach(cat => {
-          const needed = (cat.target_amount || 0) - (cat.available || 0);
-          if (needed > 0 && remainingFunds >= needed) {
-            allocations.push({ categoryId: cat.id, amount: needed });
-            remainingFunds -= needed;
-          }
-        });
-        break;
-      case 'last-month':
-        activeCategories.forEach(cat => {
-          const lastMonthAmount = cat.last_month_assigned || cat.assigned || 0;
-          const currentAssigned = cat.assigned || 0;
-          const needed = Math.max(0, lastMonthAmount - currentAssigned);
-          if (needed > 0 && remainingFunds >= needed) {
-            allocations.push({ categoryId: cat.id, amount: needed });
-            remainingFunds -= needed;
-          }
-        });
-        break;
-      case 'average':
-        activeCategories.forEach(cat => {
-          const avgSpend = cat.average_spending || cat.assigned || 0;
-          const currentAssigned = cat.assigned || 0;
-          const needed = Math.max(0, avgSpend - currentAssigned);
-          if (needed > 0 && remainingFunds >= needed) {
-            allocations.push({ categoryId: cat.id, amount: needed });
-            remainingFunds -= needed;
-          }
-        });
-        break;
-    }
-    if (allocations.length > 0) {
-      setBudgetData(prev => ({
-        ...prev,
-        categories: prev.categories.map(cat => {
-          const allocation = allocations.find(a => a.categoryId === cat.id);
-          if (allocation) {
-            return {
-              ...cat,
-              assigned: (cat.assigned || 0) + allocation.amount,
-              available: (cat.available || 0) + allocation.amount
-            };
-          }
-          return cat;
-        })
-      }));
-      alert(`✅ Assigned $${allocations.reduce((sum, a) => sum + a.amount, 0).toFixed(2)} to ${allocations.length} categories`);
-    } else {
-      alert('No categories need funding');
+      if (result.success) {
+        setBudgetData(prev => ({
+          ...prev,
+          categories: prev.categories.map(cat =>
+            cat.id === selectedCategoryForTarget.id
+              ? {
+                ...cat,
+                target_amount: goalData.target_amount,
+                target_type: goalData.target_type,
+                target_date: goalData.target_date
+              }
+              : cat
+          )
+        }));
+
+        setShowTargetModal(false);
+        setSelectedCategoryForTarget(null);
+        alert('✅ Goal saved successfully!');
+      } else {
+        alert('❌ Failed to save goal: ' + (result.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error saving goal:', error);
+      alert('Error saving goal: ' + error.message);
     }
   };
-
   const handleAutoAssign = (allocations) => {
     setBudgetData(prev => ({
       ...prev,
@@ -1008,9 +1212,6 @@ const PropertyMapView = () => {
       const catGroupId = Number(c.groupId);
       return catGroupId === targetId && !c.archived;
     });
-    if (filtered.length > 0) {
-      console.log(`✅ Group ${groupId} has ${filtered.length} categories:`, filtered.map(c => c.name));
-    }
     return filtered;
   };
 
@@ -1043,7 +1244,6 @@ const PropertyMapView = () => {
     const initializeData = async () => {
       if (!userId) return;
 
-      // Reset state
       setBudgetData({ categories: [] });
       setCategoryGroups([]);
 
@@ -1051,13 +1251,10 @@ const PropertyMapView = () => {
 
       try {
         setLoading(true);
-
-        // Load categories and groups
         await loadCategoryGroups();
         await loadCategoriesFromDB();
         await loadArchivedCategories();
 
-        // Fetch and set total cash from accounts
         const userResult = await window.electronAPI.getCurrentUser();
         if (userResult?.success && userResult?.data) {
           const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
@@ -1065,12 +1262,9 @@ const PropertyMapView = () => {
             const totalCashValue = accountsResult.data
               .filter(acc => acc.type === 'checking' || acc.type === 'savings')
               .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-
-            console.log('💰 Total Cash in Accounts set to:', totalCashValue);
             setTotalCashInAccounts(totalCashValue);
           }
         }
-
       } catch (error) {
         console.error('❌ Error during initialization:', error);
       } finally {
@@ -1080,23 +1274,6 @@ const PropertyMapView = () => {
 
     initializeData();
   }, [userId]);
-
-
-  const getInflowTotal = async () => {
-    try {
-      const result = await window.electronAPI.getTransactions({
-        categoryId: 'inflow_ready_to_assign',
-        userId: userId,
-        startDate: new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).toISOString().split('T')[0]
-      });
-      if (result.success) {
-        return result.data.reduce((sum, t) => sum + (t.amount > 0 ? t.amount : 0), 0);
-      }
-    } catch (error) {
-      console.error('Error getting inflow transactions:', error);
-    }
-    return 0; // ← Already handles this
-  };
 
   useEffect(() => {
     let isFirstRun = true;
@@ -1201,9 +1378,34 @@ const PropertyMapView = () => {
                   : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`
               }
             </div>
+
           </div>
         </div>
+        {/* Overspending Warning - Simplified */}
+        {(() => {
+          const overspentCategories = budgetData.categories.filter(c => !c.archived && (c.available || 0) < 0);
 
+          if (overspentCategories.length === 0) return null;
+
+          return (
+            <div style={styles.warningBanner}>
+              <div style={styles.warningIcon}>⚠️</div>
+              <div style={styles.warningContent}>
+                <strong>Overspending Alert!</strong>
+                <div style={styles.warningText}>
+                  You have {overspentCategories.length} categor{overspentCategories.length > 1 ? 'ies' : 'y'} with negative Available.
+                  Please cover this overspending from other categories.
+                </div>
+                <button
+                  onClick={() => handleQuickAssign('underfunded')}
+                  style={styles.warningButton}
+                >
+                  Cover Overspending
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         <div style={styles.controlsRow}>
           <div style={styles.monthSelector}>
             <button style={styles.monthNavButton} onClick={() => {
@@ -1225,28 +1427,13 @@ const PropertyMapView = () => {
           </button>
           <button
             onClick={async () => {
-              // Get current user
               const userResult = await window.electronAPI.getCurrentUser();
               const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
-
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-              console.log('🔍 ACCOUNTS DEBUG:');
-              console.log('All accounts:', accountsResult.data);
-
               const totalCash = accountsResult.data
                 .filter(acc => acc.type === 'checking' || acc.type === 'savings')
                 .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-
-              console.log('Filtered accounts (checking/savings):',
-                accountsResult.data.filter(acc => acc.type === 'checking' || acc.type === 'savings'));
-              console.log('Total Cash:', totalCash);
-
-              // Check total assigned
               const categories = await window.electronAPI.getCategories(2);
               const totalAssigned = categories.data.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
-              console.log('Total Assigned across all categories:', totalAssigned);
-
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
               alert(`Total Cash: $${totalCash}\nTotal Assigned: $${totalAssigned}\nReady to Assign: $${totalCash - totalAssigned}`);
             }}
             style={{ background: '#F59E0B', color: 'white', padding: '8px', margin: '8px' }}
@@ -1255,13 +1442,8 @@ const PropertyMapView = () => {
           </button>
           <button
             onClick={async () => {
-              console.log('🔍 FORCE REFRESHING CATEGORIES...');
               await loadCategoriesFromDB();
               await loadCategoryGroups();
-              setTimeout(() => {
-                console.log('Final budgetData.categories:', budgetData.categories);
-                console.log('Final categoryGroups:', categoryGroups);
-              }, 500);
             }}
             style={{ background: '#10B981', color: 'white', padding: '8px', margin: '8px' }}
           >
@@ -1269,6 +1451,13 @@ const PropertyMapView = () => {
           </button>
           {budgetSummary.unassigned > 0 && (
             <div style={styles.quickBudgetTools}>
+              <button onClick={() => handleQuickAssign('smart')} style={{
+                ...styles.quickBudgetButton,
+                background: '#8B5CF6',
+                color: 'white'
+              }} title="Smart assign based on goal priorities">
+                🧠 Smart Assign
+              </button>
               <button onClick={() => handleQuickAssign('underfunded')} style={{
                 ...styles.quickBudgetButton,
                 background: '#F59E0B',
@@ -1283,7 +1472,7 @@ const PropertyMapView = () => {
               }}>📅 Last Month's Amount</button>
               <button onClick={() => handleQuickAssign('average')} style={{
                 ...styles.quickBudgetButton,
-                background: '#8B5CF6',
+                background: '#10B981',
                 color: 'white'
               }}>📊 Average Spending</button>
             </div>
@@ -1302,7 +1491,7 @@ const PropertyMapView = () => {
                   <th style={styles.tableHeader}>Activity</th>
                   <th style={styles.tableHeader}>Available</th>
                   <th style={styles.tableHeader}>Progress</th>
-                  <th style={styles.tableHeader}>Goal</th>
+                  <th style={styles.tableHeader}>Goal Target</th>
                 </tr>
               </thead>
               <tbody>
@@ -1353,11 +1542,9 @@ const PropertyMapView = () => {
                             groupCategories.map((cat, catIndex) => {
                               const targetInfo = getTargetInfo(cat);
                               const hasTarget = targetInfo.status !== 'no-target';
-                              const isUnderfunded = targetInfo.status === 'partial' || targetInfo.status === 'unfunded';
                               const isEditing = editingCategory === cat.id;
                               const categoryKey = `cat-${cat.id}-${groupIndex}-${catIndex}`;
 
-                              // EDIT MODE
                               if (isEditing) {
                                 return (
                                   <tr key={`${categoryKey}-edit`} style={{ ...styles.categoryRow, background: '#1a3a5a' }}>
@@ -1387,8 +1574,10 @@ const PropertyMapView = () => {
                                         placeholder="0.00"
                                       />
                                     </td>
+
                                     <td style={styles.amountCell}>{formatCurrency(cat.activity || 0)}</td>
                                     <td style={styles.amountCell}>{formatCurrency(cat.available || 0)}</td>
+
                                     <td style={styles.progressCell}>
                                       <select
                                         value={editCategoryData.target_type}
@@ -1422,7 +1611,6 @@ const PropertyMapView = () => {
                                 );
                               }
 
-                              // NORMAL VIEW
                               return (
                                 <tr key={categoryKey} style={styles.categoryRow}>
                                   <td style={styles.categoryCell}>
@@ -1430,33 +1618,108 @@ const PropertyMapView = () => {
                                       <span style={styles.categoryName}>{cat.name}</span>
                                       <div style={styles.categoryActions}>
                                         <button onClick={() => handleEditCategory(cat)} style={styles.editCategoryButton} title="Edit category">✏️</button>
+                                        <button onClick={() => handleSetGoal(cat)} style={styles.goalButton} title="Set goal">🎯</button>
                                         <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton} title="Archive category">📦</button>
                                         <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton} title="Delete category">🗑️</button>
                                       </div>
                                       {hasTarget && (
-                                        <span style={styles.targetIndicator}>
+                                        <span style={styles.targetIndicator} title={getGoalTooltip(cat)}>
                                           {targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}
                                         </span>
                                       )}
                                     </div>
                                   </td>
                                   <td style={styles.amountCell}>
-                                    {formatCurrency(cat.assigned || 0)}
-                                    {isUnderfunded && <div style={{ fontSize: '11px', color: '#F59E0B' }}>Need ${targetInfo.needed?.toFixed(0)}</div>}
+                                    <div>{formatCurrency(cat.assigned || 0)}</div>
+                                    {/* Keep target status messages here */}
+                                    {hasTarget && targetInfo.status === 'partial' && (
+                                      <div style={{ fontSize: '11px', color: '#F59E0B' }}>
+                                        Need ${targetInfo.needed?.toFixed(0)} more
+                                      </div>
+                                    )}
+                                    {hasTarget && targetInfo.status === 'unfunded' && (
+                                      <div style={{ fontSize: '11px', color: '#EF4444' }}>
+                                        Unfunded - ${targetInfo.needed?.toFixed(0)} needed
+                                      </div>
+                                    )}
                                   </td>
-                                  <td style={{ ...styles.amountCell, color: (cat.activity || 0) < 0 ? '#F87171' : '#4ADE80' }}>
+                                  {/* ACTIVITY COLUMN - This was missing entirely! */}
+                                  <td style={styles.amountCell}>
                                     {formatCurrency(cat.activity || 0)}
                                   </td>
-                                  <td style={{ ...styles.amountCell, color: (cat.available || 0) < 0 ? '#F87171' : '#4ADE80' }}>
+                                  {/* AVAILABLE COLUMN */}
+                                  <td style={{
+                                    ...styles.amountCell,
+                                    color: (cat.available || 0) < 0 ? '#F87171' : (cat.available || 0) === 0 ? '#F59E0B' : '#4ADE80',
+                                    fontWeight: (cat.available || 0) < 0 ? 'bold' : 'normal'
+                                  }}>
                                     {formatCurrency(cat.available || 0)}
+                                    {(cat.available || 0) < 0 && (
+                                      <div style={{ fontSize: '10px', color: '#F87171', marginTop: '2px' }}>
+                                        ⚠️ Overspent - Cover from another category
+                                      </div>
+                                    )}
+                                    {(cat.available || 0) === 0 && (
+                                      <div style={{ fontSize: '10px', color: '#F59E0B', marginTop: '2px' }}>
+                                        Fully allocated
+                                      </div>
+                                    )}
                                   </td>
                                   <td style={styles.progressCell}>
-                                    <div style={styles.progressBarContainer}>
-                                      <div style={{ ...styles.progressBarFill, width: `${cat.progress || 0}%` }} />
-                                      <span style={styles.progressText}>{cat.progress || 0}%</span>
-                                    </div>
+                                    {/* Progress bar code remains the same */}
                                   </td>
-                                  <td style={styles.amountCell}>—</td>
+                                  <td style={styles.progressCell}>
+                                    {hasTarget ? (
+                                      <div>
+                                        <div style={styles.progressBarContainer}>
+                                          <div style={{
+                                            ...styles.progressBarFill,
+                                            width: `${Math.min(100, cat.progress || 0)}%`,
+                                            backgroundColor: getProgressColor(targetInfo.status)
+                                          }} />
+                                          <span style={styles.progressText}>{Math.min(100, Math.round(cat.progress || 0))}%</span>
+                                        </div>
+                                        <div style={styles.goalDetails}>
+                                          {getGoalDetails(cat, targetInfo)}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div style={styles.noGoalIndicator}>
+                                        <span style={{ fontSize: '12px', color: '#64748B' }}>—</span>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td style={styles.goalCell}>
+                                    {hasTarget ? (
+                                      <div style={styles.goalInfo}>
+                                        <div style={styles.goalTarget}>
+                                          Target: {formatCurrency(targetInfo.targetAmount)}
+                                        </div>
+                                        {targetInfo.monthsRemaining !== undefined && (
+                                          <div style={styles.goalDate}>
+                                            {targetInfo.monthsRemaining} months left
+                                            {targetInfo.monthlyNeeded && (
+                                              <div style={styles.monthlyNeeded}>
+                                                ${targetInfo.monthlyNeeded.toFixed(0)}/month needed
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                        {targetInfo.status === 'balance' && (
+                                          <div style={styles.goalBalance}>
+                                            {cat.available >= targetInfo.targetAmount ? 'Goal achieved! 🎉' : 'In progress'}
+                                          </div>
+                                        )}
+                                        {targetInfo.status === 'monthly' && targetInfo.needed > 0 && (
+                                          <div style={styles.goalShortfall}>
+                                            Short by {formatCurrency(targetInfo.needed)}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div style={styles.noGoalCell}>—</div>
+                                    )}
+                                  </td>
                                 </tr>
                               );
                             })
@@ -1465,7 +1728,6 @@ const PropertyMapView = () => {
                               <td colSpan="6" style={styles.emptyGroupCell}>No categories in this group</td>
                             </tr>
                           )}
-
                           {groupCategories.length > 0 && (
                             <tr key={`total-${group.id}-${groupIndex}`} style={styles.groupTotalRow}>
                               <td style={styles.groupTotalCell}><strong>{group.name} Total</strong></td>
@@ -1506,10 +1768,15 @@ const PropertyMapView = () => {
           onAutoAssign={handleAutoAssign}
           underfundedTotal={getTotalUnderfunded()}
         />
+
+
+
         <div style={{ color: "#F87171", marginTop: 8 }}>Underfunded: {formatCurrency(getTotalUnderfunded())}</div>
         <AutoAssignView readyToAssign={budgetSummary.unassigned} underfundedTotal={getTotalUnderfunded()} underfundedCategories={calculateUnderfundedCategories()} />
         <FutureMonthsView futureAssignments={2340.50} nextMonthTarget={5000} monthsAhead={1.5} />
       </div>
+
+
 
       {/* Archived Categories Modal */}
       {showArchivedModal && (
@@ -1645,15 +1912,41 @@ const PropertyMapView = () => {
       )}
 
       {/* Add Category Modal */}
+      {/* Add Category Modal */}
       {showAddCategoryModal && selectedGroupForCategory && (
         <div style={styles.modalOverlay} onClick={() => setShowAddCategoryModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Add Category to {selectedGroupForCategory.name}</h3>
-            <div style={styles.formGroup}><label style={styles.label}>Category Name</label><input type="text" style={styles.input} value={newCategoryData.name} onChange={(e) => setNewCategoryData({ ...newCategoryData, name: e.target.value })} placeholder="e.g., Groceries, Rent, Savings" autoFocus /></div>
-            <div style={styles.formGroup}><label style={styles.label}>Initial Assigned Amount (Optional)</label><input type="number" style={styles.input} value={newCategoryData.assigned === 0 ? '' : newCategoryData.assigned} onChange={(e) => { const val = e.target.value === '' ? 0 : parseFloat(e.target.value); setNewCategoryData({ ...newCategoryData, assigned: isNaN(val) ? 0 : val }); }} placeholder="0.00" step="0.01" min="0" /></div>
-            <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleCreateCategory}>Create Category</button><button style={styles.cancelButton} onClick={() => { setShowAddCategoryModal(false); setNewCategoryData({ name: '', assigned: 0, groupId: null }); setSelectedGroupForCategory(null); }}>Cancel</button></div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Category Name</label>
+              <input type="text" style={styles.input} value={newCategoryData.name} onChange={(e) => setNewCategoryData({ ...newCategoryData, name: e.target.value })} placeholder="e.g., Groceries, Rent, Savings" autoFocus />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Initial Assigned Amount (Optional)</label>
+              <input type="number" style={styles.input} value={newCategoryData.assigned === 0 ? '' : newCategoryData.assigned} onChange={(e) => { const val = e.target.value === '' ? 0 : parseFloat(e.target.value); setNewCategoryData({ ...newCategoryData, assigned: isNaN(val) ? 0 : val }); }} placeholder="0.00" step="0.01" min="0" />
+            </div>
+            <div style={styles.modalActions}>
+              <button style={styles.saveButton} onClick={handleCreateCategory}>Create Category</button>
+              <button style={styles.cancelButton} onClick={() => { setShowAddCategoryModal(false); setNewCategoryData({ name: '', assigned: 0, groupId: null }); setSelectedGroupForCategory(null); }}>Cancel</button>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Set Goal Modal - MOVED HERE (separate, not nested) */}
+      {showTargetModal && selectedCategoryForTarget && (
+        <CategoryTargetModal
+          isOpen={showTargetModal}
+          onClose={() => {
+            setShowTargetModal(false);
+            setSelectedCategoryForTarget(null);
+          }}
+          category={selectedCategoryForTarget}
+          onSave={handleSaveGoal}
+          currentTargetAmount={selectedCategoryForTarget.target_amount || 0}
+          currentTargetType={selectedCategoryForTarget.target_type || 'monthly'}
+          currentTargetDate={selectedCategoryForTarget.target_date}
+        />
       )}
     </div>
   );
@@ -1821,6 +2114,38 @@ const styles = {
   tableHead: {
     backgroundColor: '#2563EB'
   },
+  warningBanner: {
+    backgroundColor: '#7F1D1D',
+    borderRadius: '12px',
+    padding: '16px',
+    marginBottom: '20px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    border: '1px solid #F87171'
+  },
+  warningIcon: {
+    fontSize: '24px'
+  },
+  warningContent: {
+    flex: 1
+  },
+  warningText: {
+    fontSize: '12px',
+    color: '#FCA5A5',
+    marginTop: '4px'
+  },
+
+  warningButton: {
+    padding: '6px 12px',
+    backgroundColor: '#EF4444',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: '500'
+  },
   tableHeader: {
     padding: '12px 16px',
     textAlign: 'left',
@@ -1909,6 +2234,14 @@ const styles = {
     marginLeft: '12px'
   },
   editCategoryButton: {
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '14px',
+    padding: '2px 4px',
+    borderRadius: '4px'
+  },
+  goalButton: {
     background: 'none',
     border: 'none',
     cursor: 'pointer',
@@ -2138,6 +2471,115 @@ const styles = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontWeight: '500'
+  },
+  goalCell: {
+    padding: '12px 16px',
+    minWidth: '150px'
+  },
+  goalInfo: {
+    fontSize: '12px',
+    color: '#94A3B8'
+  },
+  goalTarget: {
+    fontWeight: '500',
+    color: '#60A5FA',
+    marginBottom: '4px'
+  },
+  goalDate: {
+    fontSize: '11px',
+    color: '#F59E0B'
+  },
+  goalBalance: {
+    fontSize: '11px',
+    color: '#4ADE80'
+  },
+  goalShortfall: {
+    fontSize: '11px',
+    color: '#EF4444'
+  },
+  monthlyNeeded: {
+    fontSize: '10px',
+    color: '#F59E0B',
+    marginTop: '2px'
+  },
+  goalDetailText: {
+    fontSize: '11px',
+    marginTop: '4px',
+    color: '#94A3B8'
+  },
+  noGoalIndicator: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px'
+  },
+  quickSetGoalButton: {
+    background: 'none',
+    border: '1px dashed #4B5563',
+    color: '#60A5FA',
+    fontSize: '10px',
+    padding: '2px 8px',
+    borderRadius: '12px',
+    cursor: 'pointer',
+    transition: 'all 0.2s'
+  },
+  noGoalCell: {
+    color: '#64748B',
+    textAlign: 'center',
+    fontSize: '14px'
+  },
+  goalSummaryCard: {
+    backgroundColor: '#1E3A8A',
+    borderRadius: '12px',
+    padding: '16px',
+    border: '1px solid #334155',
+    marginBottom: '20px'
+  },
+  goalSummaryTitle: {
+    color: '#FFFFFF',
+    fontSize: '16px',
+    fontWeight: '600',
+    marginBottom: '12px'
+  },
+  goalSummaryStats: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px'
+  },
+  goalSummaryProgress: {
+    marginBottom: '8px'
+  },
+  goalSummaryLabel: {
+    color: '#94A3B8',
+    fontSize: '12px',
+    marginBottom: '4px'
+  },
+  goalSummaryPercentage: {
+    color: '#8B5CF6',
+    fontSize: '24px',
+    fontWeight: '700',
+    marginBottom: '8px'
+  },
+  goalSummaryBreakdown: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '12px 0',
+    borderTop: '1px solid #334155',
+    borderBottom: '1px solid #334155'
+  },
+  goalStat: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+    fontSize: '12px',
+    color: '#94A3B8'
+  },
+  goalSummaryTotal: {
+    fontSize: '12px',
+    color: '#60A5FA',
+    textAlign: 'center',
+    paddingTop: '8px'
   }
 };
 
