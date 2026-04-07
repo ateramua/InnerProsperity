@@ -119,26 +119,20 @@ const PropertyMapView = () => {
 
     switch (category.target_type) {
       case 'monthly':
-        // Monthly goal: compare available vs target
         const progress = (currentAmount / category.target_amount) * 100;
         const needed = Math.max(0, category.target_amount - currentAmount);
         return {
           progress,
           status: progress >= 100 ? 'funded' : progress > 0 ? 'partial' : 'unfunded',
           needed,
-          targetAmount: category.target_amount,
-          currentAmount: currentAmount
         };
       case 'balance':
-        // Balance goal: available should reach target
         const balanceProgress = (currentAmount / category.target_amount) * 100;
         const balanceNeeded = Math.max(0, category.target_amount - currentAmount);
         return {
           progress: balanceProgress,
           status: balanceProgress >= 100 ? 'completed' : balanceProgress > 0 ? 'in-progress' : 'not-started',
           needed: balanceNeeded,
-          targetAmount: category.target_amount,
-          currentAmount: currentAmount
         };
       case 'by_date':
         if (!category.target_date) return { progress: null, status: 'no-date', needed: 0 };
@@ -154,9 +148,7 @@ const PropertyMapView = () => {
           status: dateProgress >= 100 ? 'completed' : 'in-progress',
           needed: totalNeeded,
           monthlyNeeded: Math.max(0, monthlyNeeded),
-          targetAmount: category.target_amount,
-          currentAmount: currentAmount,
-          monthsRemaining: Math.max(0, monthsRemaining)
+          monthsRemaining: Math.max(0, monthsRemaining),
         };
       default:
         return { progress: null, status: 'no-target', needed: 0 };
@@ -481,15 +473,15 @@ const PropertyMapView = () => {
     const targetInfo = calculateTargetProgress(category);
     switch (targetInfo.status) {
       case 'funded':
-        return `Monthly goal met! Assigned ${formatCurrency(category.assigned)} of ${formatCurrency(targetInfo.targetAmount)}`;
+        return `Monthly goal met! Assigned ${formatCurrency(category.assigned)} of ${formatCurrency(category.target_amount)}`;
       case 'completed':
-        return `Goal achieved! ${formatCurrency(category.available)} of ${formatCurrency(targetInfo.targetAmount)}`;
+        return `Goal achieved! ${formatCurrency(category.available)} of ${formatCurrency(category.target_amount)}`;
       case 'partial':
         return `Partially funded. Need ${formatCurrency(targetInfo.needed)} more to reach monthly goal`;
       case 'unfunded':
         return `No funds assigned yet. Need ${formatCurrency(targetInfo.needed)} to reach monthly goal`;
       case 'in-progress':
-        return `Progress: ${Math.round(targetInfo.progress)}% toward ${formatCurrency(targetInfo.targetAmount)}`;
+        return `Progress: ${Math.round(targetInfo.progress)}% toward ${formatCurrency(category.target_amount)}`;
       default:
         return 'Click 🎯 to set a goal';
     }
@@ -512,7 +504,7 @@ const PropertyMapView = () => {
   };
 
   const getGoalDetails = (category, targetInfo) => {
-    if (!targetInfo.targetAmount) return null;
+    if (!category.target_amount) return null;
 
     switch (category.target_type) {
       case 'monthly':
@@ -525,19 +517,19 @@ const PropertyMapView = () => {
         );
       case 'balance':
         const current = category.available || 0;
-        const percent = (current / targetInfo.targetAmount) * 100;
+        const percent = (current / category.target_amount) * 100;
         return (
           <div style={styles.goalDetailText}>
-            <div>{formatCurrency(current)} of {formatCurrency(targetInfo.targetAmount)}</div>
+            <div>{formatCurrency(current)} of {formatCurrency(category.target_amount)}</div>
             <div style={{ fontSize: '10px', color: '#94A3B8' }}>
-              {current >= targetInfo.targetAmount ? 'Goal achieved! 🎉' : `${Math.round(percent)}% to goal`}
+              {current >= category.target_amount ? 'Goal achieved! 🎉' : `${Math.round(percent)}% to goal`}
             </div>
           </div>
         );
       case 'by_date':
         return (
           <div style={styles.goalDetailText}>
-            <div>{formatCurrency(category.available || 0)} of {formatCurrency(targetInfo.targetAmount)}</div>
+            <div>{formatCurrency(category.available || 0)} of {formatCurrency(category.target_amount)}</div>
             {targetInfo.monthsRemaining > 0 && (
               <div style={{ fontSize: '10px', color: '#F59E0B' }}>
                 Need ${targetInfo.monthlyNeeded?.toFixed(0)}/month
@@ -1484,6 +1476,15 @@ const PropertyMapView = () => {
             <div style={styles.loading}>Loading categories...</div>
           ) : (
             <table style={styles.table}>
+              {/* Column group for fixed widths */}
+              <colgroup>
+                <col style={{ width: '30%' }} />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '18%' }} />
+                <col style={{ width: '16%' }} />
+              </colgroup>
               <thead style={styles.tableHead}>
                 <tr>
                   <th style={styles.tableHeader}>Category</th>
@@ -1574,10 +1575,8 @@ const PropertyMapView = () => {
                                         placeholder="0.00"
                                       />
                                     </td>
-
                                     <td style={styles.amountCell}>{formatCurrency(cat.activity || 0)}</td>
                                     <td style={styles.amountCell}>{formatCurrency(cat.available || 0)}</td>
-
                                     <td style={styles.progressCell}>
                                       <select
                                         value={editCategoryData.target_type}
@@ -1631,7 +1630,6 @@ const PropertyMapView = () => {
                                   </td>
                                   <td style={styles.amountCell}>
                                     <div>{formatCurrency(cat.assigned || 0)}</div>
-                                    {/* Keep target status messages here */}
                                     {hasTarget && targetInfo.status === 'partial' && (
                                       <div style={{ fontSize: '11px', color: '#F59E0B' }}>
                                         Need ${targetInfo.needed?.toFixed(0)} more
@@ -1643,11 +1641,9 @@ const PropertyMapView = () => {
                                       </div>
                                     )}
                                   </td>
-                                  {/* ACTIVITY COLUMN - This was missing entirely! */}
                                   <td style={styles.amountCell}>
                                     {formatCurrency(cat.activity || 0)}
                                   </td>
-                                  {/* AVAILABLE COLUMN */}
                                   <td style={{
                                     ...styles.amountCell,
                                     color: (cat.available || 0) < 0 ? '#F87171' : (cat.available || 0) === 0 ? '#F59E0B' : '#4ADE80',
@@ -1665,59 +1661,68 @@ const PropertyMapView = () => {
                                       </div>
                                     )}
                                   </td>
-                                  <td style={styles.progressCell}>
-                                    {/* Progress bar code remains the same */}
-                                  </td>
+                                  {/* PROGRESS COLUMN - Fixed width, clean layout */}
                                   <td style={styles.progressCell}>
                                     {hasTarget ? (
-                                      <div>
+                                      <div style={styles.progressWrapper}>
                                         <div style={styles.progressBarContainer}>
                                           <div style={{
                                             ...styles.progressBarFill,
-                                            width: `${Math.min(100, cat.progress || 0)}%`,
+                                            width: `${Math.min(100, targetInfo.progress || 0)}%`,
                                             backgroundColor: getProgressColor(targetInfo.status)
                                           }} />
-                                          <span style={styles.progressText}>{Math.min(100, Math.round(cat.progress || 0))}%</span>
+                                          <span style={styles.progressText}>
+                                            {Math.min(100, Math.round(targetInfo.progress || 0))}%
+                                          </span>
                                         </div>
-                                        <div style={styles.goalDetails}>
-                                          {getGoalDetails(cat, targetInfo)}
-                                        </div>
+                                        {/* Status text - compact and clean */}
+                                        {targetInfo.status === 'partial' && (
+                                          <div style={styles.progressStatus}>Need {formatCurrency(targetInfo.needed)}</div>
+                                        )}
+                                        {targetInfo.status === 'unfunded' && (
+                                          <div style={styles.progressStatus}>Not funded</div>
+                                        )}
+                                        {targetInfo.status === 'funded' && (
+                                          <div style={{...styles.progressStatus, color: '#4ADE80'}}>✅ Funded</div>
+                                        )}
+                                        {targetInfo.status === 'completed' && (
+                                          <div style={{...styles.progressStatus, color: '#4ADE80'}}>🎉 Achieved</div>
+                                        )}
+                                        {targetInfo.status === 'in-progress' && targetInfo.monthlyNeeded && (
+                                          <div style={styles.progressStatus}>${targetInfo.monthlyNeeded.toFixed(0)}/month</div>
+                                        )}
                                       </div>
                                     ) : (
-                                      <div style={styles.noGoalIndicator}>
-                                        <span style={{ fontSize: '12px', color: '#64748B' }}>—</span>
-                                      </div>
+                                      <div style={styles.noGoalIndicator}>—</div>
                                     )}
                                   </td>
+                                  {/* GOAL TARGET COLUMN - Pure configuration value only */}
                                   <td style={styles.goalCell}>
-                                    {hasTarget ? (
-                                      <div style={styles.goalInfo}>
-                                        <div style={styles.goalTarget}>
-                                          Target: {formatCurrency(targetInfo.targetAmount)}
+                                    {cat.target_amount && cat.target_amount > 0 ? (
+                                      <div style={styles.goalTargetWrapper}>
+                                        <div style={styles.goalTargetAmount}>
+                                          {formatCurrency(cat.target_amount)}
                                         </div>
-                                        {targetInfo.monthsRemaining !== undefined && (
-                                          <div style={styles.goalDate}>
-                                            {targetInfo.monthsRemaining} months left
-                                            {targetInfo.monthlyNeeded && (
-                                              <div style={styles.monthlyNeeded}>
-                                                ${targetInfo.monthlyNeeded.toFixed(0)}/month needed
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                        {targetInfo.status === 'balance' && (
-                                          <div style={styles.goalBalance}>
-                                            {cat.available >= targetInfo.targetAmount ? 'Goal achieved! 🎉' : 'In progress'}
-                                          </div>
-                                        )}
-                                        {targetInfo.status === 'monthly' && targetInfo.needed > 0 && (
-                                          <div style={styles.goalShortfall}>
-                                            Short by {formatCurrency(targetInfo.needed)}
-                                          </div>
-                                        )}
+                                        <div style={styles.goalTypeIndicator}>
+                                          {cat.target_type === 'monthly' && '📅 Monthly'}
+                                          {cat.target_type === 'balance' && '🎯 Balance'}
+                                          {cat.target_type === 'by_date' && '⏰ By Date'}
+                                          {cat.target_date && cat.target_type === 'by_date' && (
+                                            <span style={styles.goalDateSmall}>
+                                              {new Date(cat.target_date).toLocaleDateString()}
+                                            </span>
+                                          )}
+                                        </div>
                                       </div>
                                     ) : (
-                                      <div style={styles.noGoalCell}>—</div>
+                                      <div style={styles.noGoalCell}>
+                                        <button
+                                          onClick={() => handleSetGoal(cat)}
+                                          style={styles.quickSetGoalButton}
+                                        >
+                                          + Set Goal
+                                        </button>
+                                      </div>
                                     )}
                                   </td>
                                 </tr>
@@ -1912,7 +1917,6 @@ const PropertyMapView = () => {
       )}
 
       {/* Add Category Modal */}
-      {/* Add Category Modal */}
       {showAddCategoryModal && selectedGroupForCategory && (
         <div style={styles.modalOverlay} onClick={() => setShowAddCategoryModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -1933,7 +1937,7 @@ const PropertyMapView = () => {
         </div>
       )}
 
-      {/* Set Goal Modal - MOVED HERE (separate, not nested) */}
+      {/* Set Goal Modal */}
       {showTargetModal && selectedCategoryForTarget && (
         <CategoryTargetModal
           isOpen={showTargetModal}
@@ -2277,14 +2281,24 @@ const styles = {
   },
   progressCell: {
     padding: '12px 16px',
-    minWidth: '100px'
+    width: '140px',
+    minWidth: '140px',
+    maxWidth: '140px',
+    verticalAlign: 'middle',
+  },
+  progressWrapper: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    width: '100%',
   },
   progressBarContainer: {
     backgroundColor: '#1E3A8A',
     borderRadius: '10px',
     height: '20px',
     position: 'relative',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    width: '100%',
   },
   progressBarFill: {
     height: '100%',
@@ -2298,7 +2312,16 @@ const styles = {
     transform: 'translate(-50%, -50%)',
     fontSize: '10px',
     fontWeight: 'bold',
-    color: '#FFFFFF'
+    color: '#FFFFFF',
+    whiteSpace: 'nowrap',
+  },
+  progressStatus: {
+    fontSize: '10px',
+    color: '#F59E0B',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   groupTotalRow: {
     backgroundColor: '#1E3A8A',
@@ -2474,7 +2497,35 @@ const styles = {
   },
   goalCell: {
     padding: '12px 16px',
-    minWidth: '150px'
+    width: '120px',
+    minWidth: '120px',
+    maxWidth: '120px',
+    verticalAlign: 'middle',
+  },
+  goalTargetWrapper: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+    width: '100%',
+  },
+  goalTargetAmount: {
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#60A5FA',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+  },
+  goalTypeIndicator: {
+    fontSize: '10px',
+    color: '#94A3B8',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+  },
+  goalDateSmall: {
+    fontSize: '9px',
+    color: '#F59E0B',
+    marginLeft: '4px',
   },
   goalInfo: {
     fontSize: '12px',
