@@ -4,7 +4,7 @@ import AllAccountsView from './AllAccountsView';
 import PropertyMapView from './PropertyMapView';
 import ReflectsView from './ReflectsView';
 import CashView from './CashView';
-import CreditCardsView from './CreditCardsView';
+// import CreditCardsView from './CreditCardsView';
 import LoansView from './LoansView';
 import AccountDetailView from './AccountDetailView';
 import MoneyMapView from './MoneyMapView';

@@ -21,6 +21,253 @@ const SummaryView = ({
     risk: 0.25
   });
 
+  // Add Transaction Modal State
+  const [showAddTransactionModal, setShowAddTransactionModal] = useState(false);
+  const [transactionForm, setTransactionForm] = useState({
+    accountId: '',
+    transactionType: 'outflow',
+    categoryId: '',
+    amount: '',
+    date: new Date().toISOString().split('T')[0],
+    payee: '',
+    memo: '',
+    cleared: true
+  });
+  const [accounts, setAccounts] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [transactionError, setTransactionError] = useState('');
+
+  // Add safety for categories
+  const safeCategories = Array.isArray(categories) ? categories : [];
+
+  // Load accounts for dropdown - get ALL account types (checking, savings, credit, loan)
+  const loadAccounts = async () => {
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+        if (accountsResult?.success) {
+          // Show ALL accounts - no filtering by type
+          const allAccounts = accountsResult.data || [];
+          setAccounts(allAccounts);
+          console.log('📋 Loaded all accounts for dropdown:', {
+            total: allAccounts.length,
+            types: allAccounts.map(a => a.type)
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error loading accounts:', error);
+      setAccounts([]);
+    }
+  };
+
+  // Load accounts when component mounts
+  useEffect(() => {
+    loadAccounts();
+  }, []);
+
+  // Refresh accounts when modal closes (in case accounts were updated elsewhere)
+  useEffect(() => {
+    if (!showAddTransactionModal) {
+      loadAccounts();
+    }
+  }, [showAddTransactionModal]);
+
+  // Listen for global accounts-updated events
+  useEffect(() => {
+    const handleAccountsUpdated = () => {
+      console.log('📢 accounts-updated event received, refreshing accounts');
+      loadAccounts();
+    };
+
+    window.addEventListener('accounts-updated', handleAccountsUpdated);
+    return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
+  }, []);
+
+  // Fix getFilteredCategories
+  const getFilteredCategories = () => {
+    if (transactionForm.transactionType === 'inflow') {
+      return [{ id: 'inflow_ready_to_assign', name: 'Inflow: Ready to Assign' }];
+    }
+    // For outflow, show all non-archived categories
+    if (!safeCategories || safeCategories.length === 0) {
+      return [];
+    }
+    return safeCategories.filter(cat => cat && !cat.archived);
+  };
+
+  // Handle transaction submission
+// Handle transaction submission with proper account balance updates
+const handleAddTransaction = async () => {
+  setTransactionError('');
+
+  const amountValue = parseFloat(transactionForm.amount);
+  if (isNaN(amountValue) || amountValue === 0) {
+    setTransactionError('Please enter a valid amount');
+    return;
+  }
+
+  if (!transactionForm.payee.trim()) {
+    setTransactionError('Please enter a payee');
+    return;
+  }
+
+  if (!transactionForm.accountId) {
+    setTransactionError('Please select an account');
+    return;
+  }
+
+  if (!transactionForm.categoryId) {
+    setTransactionError('Please select a category');
+    return;
+  }
+
+  setIsSubmitting(true);
+
+  try {
+    const userResult = await window.electronAPI.getCurrentUser();
+    if (!userResult?.success || !userResult?.data) {
+      setTransactionError('Please log in to add transaction');
+      return;
+    }
+
+    const userId = userResult.data.id;
+    const selectedAccount = accounts.find(a => a.id === transactionForm.accountId);
+    
+    if (!selectedAccount) {
+      setTransactionError('Selected account not found');
+      return;
+    }
+
+    const isCreditOrLoan = selectedAccount.type === 'credit' || selectedAccount.type === 'loan';
+    const isExpense = transactionForm.transactionType === 'outflow';
+
+    let transactionAmount = 0;
+    let balanceChange = 0;
+
+    // Calculate transaction amount and balance change
+    if (isCreditOrLoan) {
+      if (isExpense) {
+        // Spending on credit/loan - INCREASES debt (more negative)
+        transactionAmount = -Math.abs(amountValue);
+        balanceChange = -Math.abs(amountValue);
+        console.log(`💳 Credit/Loan EXPENSE: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by ${balanceChange}`);
+      } else {
+        // Payment on credit/loan - DECREASES debt (less negative)
+        transactionAmount = Math.abs(amountValue);
+        balanceChange = Math.abs(amountValue);
+        console.log(`💳 Credit/Loan PAYMENT: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by +${balanceChange}`);
+      }
+    } else {
+      if (isExpense) {
+        // Spending from checking/savings - DECREASES balance
+        transactionAmount = -Math.abs(amountValue);
+        balanceChange = -Math.abs(amountValue);
+        console.log(`💰 Cash EXPENSE: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by ${balanceChange}`);
+      } else {
+        // Income to checking/savings - INCREASES balance
+        transactionAmount = Math.abs(amountValue);
+        balanceChange = Math.abs(amountValue);
+        console.log(`💰 Cash INCOME: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by +${balanceChange}`);
+      }
+    }
+
+    const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
+      transactionForm.categoryId === 'inflow_ready_to_assign';
+
+    // Step 1: Add the transaction
+    const transactionData = {
+      accountId: transactionForm.accountId,
+      date: transactionForm.date,
+      payee: transactionForm.payee,
+      description: transactionForm.payee,
+      amount: transactionAmount,
+      categoryId: isReadyToAssign ? null : transactionForm.categoryId,
+      memo: transactionForm.memo,
+      cleared: transactionForm.cleared ? 1 : 0
+    };
+
+    console.log('📝 Adding transaction:', transactionData);
+    const transactionResult = await window.electronAPI.addTransaction(transactionData);
+
+    if (!transactionResult.success) {
+      console.error('❌ Transaction failed:', transactionResult.error);
+      setTransactionError(transactionResult.error || 'Failed to add transaction');
+      return;
+    }
+
+    console.log('✅ Transaction added successfully:', transactionResult.data);
+
+    // Step 2: Calculate new balance
+    const currentBalance = selectedAccount.balance || 0;
+    const newBalance = currentBalance + balanceChange;
+    
+    console.log(`💰 Account balance update:`);
+    console.log(`   Account: ${selectedAccount.name} (${selectedAccount.type})`);
+    console.log(`   Current balance: ${formatCurrency(currentBalance)}`);
+    console.log(`   Change: ${balanceChange > 0 ? '+' : ''}${formatCurrency(balanceChange)}`);
+    console.log(`   New balance: ${formatCurrency(newBalance)}`);
+
+    // Step 3: Update the account balance in the database
+    const updateResult = await window.electronAPI.updateAccount(
+      selectedAccount.id,
+      userId,
+      { balance: newBalance }
+    );
+
+    if (!updateResult.success) {
+      console.error('❌ Account balance update failed:', updateResult.error);
+      setTransactionError('Transaction added but failed to update account balance. Please refresh the page.');
+      return;
+    }
+
+    console.log('✅ Account balance updated successfully:', updateResult.data);
+
+    // Step 4: Verify the update by fetching the account again
+    const verifyResult = await window.electronAPI.getAccountsSummary(userId);
+    if (verifyResult?.success) {
+      const updatedAccount = verifyResult.data.find(a => a.id === selectedAccount.id);
+      if (updatedAccount) {
+        console.log(`✅ Verification - New balance from DB: ${formatCurrency(updatedAccount.balance)}`);
+        if (Math.abs(updatedAccount.balance - newBalance) > 0.01) {
+          console.warn(`⚠️ Balance mismatch! Expected: ${formatCurrency(newBalance)}, Got: ${formatCurrency(updatedAccount.balance)}`);
+        }
+      }
+    }
+    
+    // Step 5: Refresh all UI components
+    await loadAccounts(); // Refresh accounts in this component
+    
+    // Force a refresh of the accounts in the parent component
+    window.dispatchEvent(new CustomEvent('accounts-updated', { 
+      detail: { accountId: selectedAccount.id, newBalance: newBalance }
+    }));
+    window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+    
+    // Step 6: Reset form and close modal
+    setTransactionForm({
+      accountId: '',
+      transactionType: 'outflow',
+      categoryId: '',
+      amount: '',
+      date: new Date().toISOString().split('T')[0],
+      payee: '',
+      memo: '',
+      cleared: true
+    });
+    
+    setShowAddTransactionModal(false);
+    alert(`✅ Transaction added successfully!\n\nAccount: ${selectedAccount.name}\nNew balance: ${formatCurrency(newBalance)}`);
+    
+  } catch (error) {
+    console.error('❌ Error in transaction flow:', error);
+    setTransactionError('An unexpected error occurred: ' + error.message);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
   // Format currency helper
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
@@ -31,14 +278,9 @@ const SummaryView = ({
     }).format(amount);
   };
 
-  // ==================== YNAB CONSTRAINT ENGINE ====================
-  
-  /**
-   * Calculate Required Contribution based on target type
-   * This is the core constraint engine
-   */
+  // Fix calculateRequiredContribution
   const calculateRequiredContribution = useCallback((category) => {
-    if (!category.target_amount || category.target_amount === 0) {
+    if (!category || !category.target_amount || category.target_amount === 0) {
       return { needed: 0, type: 'none', priority: 0 };
     }
 
@@ -48,64 +290,47 @@ const SummaryView = ({
     const targetAmount = category.target_amount;
 
     switch (category.target_type) {
-      // 🎯 Target Savings Balance - "I want $X total"
-      case 'target_balance':
-      case 'balance':
-        const needed = Math.max(0, targetAmount - available);
-        const progress = (available / targetAmount) * 100;
+      case 'monthly':
+      case 'monthly_savings':
+        const needed = Math.max(0, targetAmount - assigned);
+        const priority = needed > 0 ? (needed / targetAmount) * 100 : 0;
         return {
           needed,
-          type: 'target_balance',
-          priority: progress < 30 ? 1 : progress < 70 ? 2 : 3,
-          urgency: 1 - (available / targetAmount),
-          message: `Need ${formatCurrency(needed)} to reach ${formatCurrency(targetAmount)}`
+          type: 'monthly',
+          priority: priority,
+          targetMessage: `Monthly goal: Need ${formatCurrency(needed)} more this month`
         };
 
-      // 📅 Needed for Spending (by date) - Dynamic amortization
+      case 'target_balance':
+      case 'balance':
+        const balanceNeeded = Math.max(0, targetAmount - available);
+        const balancePriority = balanceNeeded > 0 ? (balanceNeeded / targetAmount) * 100 : 0;
+        return {
+          needed: balanceNeeded,
+          type: 'balance',
+          priority: balancePriority,
+          targetMessage: `Savings goal: Need ${formatCurrency(balanceNeeded)} to reach ${formatCurrency(targetAmount)}`
+        };
+
       case 'target_balance_by_date':
       case 'by_date':
-        if (!category.target_date) return { needed: 0, type: 'by_date', priority: 0 };
-        
+        if (!category.target_date) {
+          return { needed: 0, type: 'none', priority: 0 };
+        }
         const today = new Date();
         const targetDate = new Date(category.target_date);
-        const monthsRemaining = Math.max(0, (targetDate.getFullYear() - today.getFullYear()) * 12 + 
+        const monthsRemaining = Math.max(1, (targetDate.getFullYear() - today.getFullYear()) * 12 +
           (targetDate.getMonth() - today.getMonth()));
-        
         const totalNeeded = Math.max(0, targetAmount - available);
-        const monthlyNeeded = monthsRemaining > 0 ? totalNeeded / monthsRemaining : totalNeeded;
-        const dateProgress = (available / targetAmount) * 100;
-        
+        const monthlyNeeded = totalNeeded / monthsRemaining;
+        const datePriority = totalNeeded > 0 ? (totalNeeded / targetAmount) * 100 : 0;
         return {
           needed: monthlyNeeded,
-          totalNeeded,
-          type: 'by_date',
-          priority: monthsRemaining <= 1 ? 1 : monthsRemaining <= 3 ? 2 : 3,
-          urgency: 1 / Math.max(1, monthsRemaining),
-          message: `Need ${formatCurrency(monthlyNeeded)}/month for ${monthsRemaining} months`
-        };
-
-      // 🔁 Monthly Funding Goal - "I need $X every month"
-      case 'needed_for_spending':
-      case 'monthly':
-        const monthlyNeededAmount = Math.max(0, targetAmount - assigned);
-        const monthlyProgress = (assigned / targetAmount) * 100;
-        return {
-          needed: monthlyNeededAmount,
-          type: 'monthly',
-          priority: monthlyProgress < 50 ? 1 : monthlyProgress < 100 ? 2 : 3,
-          urgency: 1 - (assigned / targetAmount),
-          message: `Need ${formatCurrency(monthlyNeededAmount)} for this month`
-        };
-
-      // 💰 Monthly Savings Builder - Fixed amount each month
-      case 'monthly_savings_builder':
-        const builderNeeded = Math.max(0, targetAmount - assigned);
-        return {
-          needed: builderNeeded,
-          type: 'savings_builder',
-          priority: 2,
-          urgency: 0.5,
-          message: `Set aside ${formatCurrency(targetAmount)} this month`
+          totalNeeded: totalNeeded,
+          monthsRemaining: monthsRemaining,
+          type: 'deadline',
+          priority: datePriority,
+          targetMessage: `Deadline goal: Need ${formatCurrency(monthlyNeeded)}/month for ${monthsRemaining} months`
         };
 
       default:
@@ -113,228 +338,450 @@ const SummaryView = ({
     }
   }, [formatCurrency]);
 
-  /**
-   * Calculate Priority Score = Urgency × Importance × Risk
-   * This creates a weighted score for smart allocation
-   */
   const calculatePriorityScore = useCallback((category) => {
     const constraint = calculateRequiredContribution(category);
-    if (constraint.needed <= 0) return 0;
 
-    // Overspent categories get highest urgency
-    const isOverspent = (category.available || 0) < 0;
-    if (isOverspent) return 100;
+    let urgencyScore = 0;
+    let importanceScore = 0;
+    let riskScore = 0;
 
-    // Base urgency from constraint
-    let urgency = constraint.urgency || 0;
-    
-    // Importance based on target type
-    let importance = 0;
     switch (constraint.type) {
-      case 'by_date':
-        importance = 1.0; // Highest - time-bound
-        break;
       case 'monthly':
-        importance = 0.8; // High - recurring
+        urgencyScore = constraint.priority / 100;
+        importanceScore = 0.8;
+        riskScore = category.activity && category.activity < 0 ? 0.9 : 0.3;
         break;
-      case 'target_balance':
-        importance = 0.6; // Medium - savings
+      case 'deadline':
+        urgencyScore = constraint.priority / 100;
+        importanceScore = 0.7;
+        riskScore = constraint.monthsRemaining <= 1 ? 0.95 : 0.5;
         break;
-      case 'savings_builder':
-        importance = 0.5; // Medium-low
+      case 'balance':
+        urgencyScore = constraint.priority / 100;
+        importanceScore = 0.6;
+        riskScore = 0.4;
         break;
       default:
-        importance = 0.3;
+        return 0;
     }
 
-    // Risk factor (how far behind vs time remaining)
-    let risk = 0;
-    if (constraint.type === 'by_date' && constraint.totalNeeded) {
-      const monthsRemaining = category.target_date ? 
-        Math.max(0, (new Date(category.target_date) - new Date()) / (1000 * 60 * 60 * 24 * 30)) : 1;
-      risk = Math.min(1, constraint.totalNeeded / (constraint.totalNeeded + (category.available || 0)));
-      if (monthsRemaining <= 1) risk *= 1.5;
-    } else {
-      risk = Math.min(1, constraint.needed / (constraint.needed + (category.assigned || 0)));
-    }
-
-    // Weighted score
-    const score = (urgency * priorityWeights.urgency) + 
-                  (importance * priorityWeights.importance) + 
-                  (risk * priorityWeights.risk);
-    
-    return Math.min(100, Math.max(0, score * 100));
+    return (urgencyScore * priorityWeights.urgency) +
+      (importanceScore * priorityWeights.importance) +
+      (riskScore * priorityWeights.risk);
   }, [calculateRequiredContribution, priorityWeights]);
 
-  /**
-   * Smart Allocation Engine - Distributes funds to maximize goal satisfaction
-   */
+  // Fix generateSmartAllocation
   const generateSmartAllocation = useCallback(() => {
     setIsCalculating(true);
-    
+
     let remainingFunds = unassigned;
     const results = [];
-    
-    // Get all categories that need funding
-    const categoriesToFund = categories.filter(cat => {
-      if (cat.archived) return false;
+
+    if (!safeCategories || safeCategories.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'priority_weighted',
+        categoriesCount: 0,
+        message: 'No categories available'
+      });
+      setIsCalculating(false);
+      return;
+    }
+
+    const categoriesToFund = safeCategories.filter(cat => {
+      if (!cat || cat.archived) return false;
       const constraint = calculateRequiredContribution(cat);
       return constraint.needed > 0;
     });
-    
-    // Calculate priority scores for each category
+
+    if (categoriesToFund.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'priority_weighted',
+        categoriesCount: 0,
+        message: 'All goals are fully funded! 🎉'
+      });
+      setIsCalculating(false);
+      return;
+    }
+
+
+    // src/views/SummaryView.jsx (only showing the changed parts - replace your existing handleAddTransaction and add the helper function)
+
+    // Add this helper function to calculate balance change
+    const calculateBalanceChange = (accountType, transactionType, amount) => {
+      const isCreditOrLoan = accountType === 'credit' || accountType === 'loan';
+      const isExpense = transactionType === 'outflow';
+      const absAmount = Math.abs(amount);
+
+      if (isCreditOrLoan) {
+        // Credit/Loan accounts
+        if (isExpense) {
+          return -absAmount; // Spending increases debt (more negative)
+        } else {
+          return absAmount; // Payment decreases debt (less negative)
+        }
+      } else {
+        // Checking/Savings accounts
+        if (isExpense) {
+          return -absAmount; // Spending decreases balance
+        } else {
+          return absAmount; // Income increases balance
+        }
+      }
+    };
+
+    // Replace your existing handleAddTransaction with this one
+    const handleAddTransaction = async () => {
+      setTransactionError('');
+
+      const amountValue = parseFloat(transactionForm.amount);
+      if (isNaN(amountValue) || amountValue === 0) {
+        setTransactionError('Please enter a valid amount');
+        return;
+      }
+
+      if (!transactionForm.payee.trim()) {
+        setTransactionError('Please enter a payee');
+        return;
+      }
+
+      if (!transactionForm.accountId) {
+        setTransactionError('Please select an account');
+        return;
+      }
+
+      if (!transactionForm.categoryId) {
+        setTransactionError('Please select a category');
+        return;
+      }
+
+      setIsSubmitting(true);
+
+      try {
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (!userResult?.success || !userResult?.data) {
+          setTransactionError('Please log in to add transaction');
+          return;
+        }
+
+        const selectedAccount = accounts.find(a => a.id === transactionForm.accountId);
+        if (!selectedAccount) {
+          setTransactionError('Selected account not found');
+          return;
+        }
+
+        // Calculate the transaction amount (for the transactions table)
+        const isCreditOrLoan = selectedAccount.type === 'credit' || selectedAccount.type === 'loan';
+        const isExpense = transactionForm.transactionType === 'outflow';
+
+        let transactionAmount = 0;
+        if (isCreditOrLoan) {
+          if (isExpense) {
+            transactionAmount = -Math.abs(amountValue);
+          } else {
+            transactionAmount = Math.abs(amountValue);
+          }
+        } else {
+          if (isExpense) {
+            transactionAmount = -Math.abs(amountValue);
+          } else {
+            transactionAmount = Math.abs(amountValue);
+          }
+        }
+
+        const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
+          transactionForm.categoryId === 'inflow_ready_to_assign';
+
+        // Step 1: Add the transaction
+        const transactionData = {
+          accountId: transactionForm.accountId,
+          date: transactionForm.date,
+          payee: transactionForm.payee,
+          description: transactionForm.payee,
+          amount: transactionAmount,
+          categoryId: isReadyToAssign ? null : transactionForm.categoryId,
+          memo: transactionForm.memo,
+          cleared: transactionForm.cleared ? 1 : 0
+        };
+
+        console.log('📝 Adding transaction:', transactionData);
+        const transactionResult = await window.electronAPI.addTransaction(transactionData);
+
+        if (!transactionResult.success) {
+          setTransactionError(transactionResult.error || 'Failed to add transaction');
+          return;
+        }
+
+        // Step 2: Calculate and update account balance
+        const balanceChange = calculateBalanceChange(
+          selectedAccount.type,
+          transactionForm.transactionType,
+          amountValue
+        );
+
+        const currentBalance = selectedAccount.balance || 0;
+        const newBalance = currentBalance + balanceChange;
+
+        console.log(`💰 Updating account "${selectedAccount.name}" balance:`, {
+          current: formatCurrency(currentBalance),
+          change: balanceChange,
+          new: formatCurrency(newBalance),
+          transactionType: transactionForm.transactionType,
+          accountType: selectedAccount.type
+        });
+
+        const updateResult = await window.electronAPI.updateAccount(
+          selectedAccount.id,
+          userResult.data.id,
+          { balance: newBalance }
+        );
+
+        if (!updateResult.success) {
+          console.error('Failed to update account balance:', updateResult.error);
+          setTransactionError('Transaction added but failed to update account balance. Please refresh the page.');
+          return;
+        }
+
+        console.log('✅ Transaction and account balance updated successfully');
+
+        // Step 3: Refresh all UI components
+        await loadAccounts(); // Refresh accounts in this component
+
+        // Dispatch events to refresh other parts of the app
+        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+
+        // Step 4: Reset form and close modal
+        setTransactionForm({
+          accountId: '',
+          transactionType: 'outflow',
+          categoryId: '',
+          amount: '',
+          date: new Date().toISOString().split('T')[0],
+          payee: '',
+          memo: '',
+          cleared: true
+        });
+
+        setShowAddTransactionModal(false);
+        alert('✅ Transaction added and account balance updated successfully');
+
+      } catch (error) {
+        console.error('Error adding transaction:', error);
+        setTransactionError('An unexpected error occurred: ' + error.message);
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
     const scoredCategories = categoriesToFund.map(cat => ({
       ...cat,
-      priorityScore: calculatePriorityScore(cat),
+      score: calculatePriorityScore(cat),
       constraint: calculateRequiredContribution(cat)
-    }));
-    
-    // Sort by priority score (highest first)
-    scoredCategories.sort((a, b) => b.priorityScore - a.priorityScore);
-    
-    // Allocate funds
+    })).sort((a, b) => b.score - a.score);
+
     for (const cat of scoredCategories) {
       if (remainingFunds <= 0) break;
-      
-      const needed = cat.constraint.needed;
-      const amountToFund = Math.min(needed, remainingFunds);
-      
-      if (amountToFund > 0) {
+
+      let neededAmount = cat.constraint.needed;
+      if (cat.constraint.type === 'deadline' && cat.constraint.monthsRemaining) {
+        neededAmount = Math.min(cat.constraint.needed, cat.constraint.totalNeeded || neededAmount);
+      }
+
+      const amountToAssign = Math.min(neededAmount, remainingFunds);
+
+      if (amountToAssign > 0) {
         results.push({
           categoryId: cat.id,
           categoryName: cat.name,
-          amount: amountToFund,
-          needed: needed,
-          priorityScore: cat.priorityScore,
-          targetType: cat.constraint.type,
-          targetMessage: cat.constraint.message,
-          urgency: cat.constraint.urgency,
-          progress: cat.target_amount ? ((cat.assigned || 0) / cat.target_amount) * 100 : 0
+          amount: amountToAssign,
+          needed: neededAmount,
+          priority: Math.round(cat.score * 100),
+          targetMessage: cat.constraint.targetMessage
         });
-        remainingFunds -= amountToFund;
+        remainingFunds -= amountToAssign;
       }
     }
-    
-    const totalToAssign = results.reduce((sum, item) => sum + item.amount, 0);
-    
+
     setPreviewResults({
       allocations: results,
-      totalToAssign,
+      totalToAssign: unassigned - remainingFunds,
       remainingAfter: remainingFunds,
       strategy: 'priority_weighted',
-      categoriesCount: results.length,
-      message: results.length === 0 ? '🎉 All goals are on track!' : null
+      categoriesCount: results.length
     });
-    
-    setIsCalculating(false);
-  }, [categories, unassigned, calculateRequiredContribution, calculatePriorityScore]);
 
-  /**
-   * Underfunded Only Strategy - Fund only categories that are behind
-   */
+    setIsCalculating(false);
+  }, [safeCategories, unassigned, calculateRequiredContribution, calculatePriorityScore]);
+
+  // Fix generateUnderfundedAllocation
   const generateUnderfundedAllocation = useCallback(() => {
     setIsCalculating(true);
-    
+
     let remainingFunds = unassigned;
     const results = [];
-    
-    const underfundedCategories = categories.filter(cat => {
-      if (cat.archived) return false;
-      const constraint = calculateRequiredContribution(cat);
-      return constraint.needed > 0 && constraint.needed > 0;
-    });
-    
-    for (const cat of underfundedCategories) {
-      if (remainingFunds <= 0) break;
-      
-      const constraint = calculateRequiredContribution(cat);
-      const amountToFund = Math.min(constraint.needed, remainingFunds);
-      
-      if (amountToFund > 0) {
-        results.push({
-          categoryId: cat.id,
-          categoryName: cat.name,
-          amount: amountToFund,
-          needed: constraint.needed,
-          targetType: constraint.type,
-          targetMessage: constraint.message
-        });
-        remainingFunds -= amountToFund;
-      }
+
+    if (!safeCategories || safeCategories.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'underfunded',
+        categoriesCount: 0
+      });
+      setIsCalculating(false);
+      return;
     }
-    
+
+    const underfundedCategories = safeCategories.filter(cat => {
+      if (!cat || cat.archived) return false;
+      const constraint = calculateRequiredContribution(cat);
+      return constraint.needed > 0;
+    });
+
+    if (underfundedCategories.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'underfunded',
+        categoriesCount: 0,
+        message: 'No underfunded categories found'
+      });
+      setIsCalculating(false);
+      return;
+    }
+
+    const sortedCategories = underfundedCategories
+      .map(cat => ({
+        ...cat,
+        constraint: calculateRequiredContribution(cat)
+      }))
+      .sort((a, b) => b.constraint.needed - a.constraint.needed);
+
+    for (const cat of sortedCategories) {
+      if (remainingFunds <= 0) break;
+
+      const amountToAssign = Math.min(cat.constraint.needed, remainingFunds);
+      results.push({
+        categoryId: cat.id,
+        categoryName: cat.name,
+        amount: amountToAssign,
+        needed: cat.constraint.needed,
+        targetMessage: cat.constraint.targetMessage
+      });
+      remainingFunds -= amountToAssign;
+    }
+
     setPreviewResults({
       allocations: results,
-      totalToAssign: results.reduce((sum, item) => sum + item.amount, 0),
+      totalToAssign: unassigned - remainingFunds,
       remainingAfter: remainingFunds,
       strategy: 'underfunded',
       categoriesCount: results.length
     });
-    
-    setIsCalculating(false);
-  }, [categories, unassigned, calculateRequiredContribution]);
 
-  /**
-   * Deadline Driven Strategy - Prioritize by closest deadline
-   */
+    setIsCalculating(false);
+  }, [safeCategories, unassigned, calculateRequiredContribution]);
+
+  // Fix generateDeadlineAllocation
   const generateDeadlineAllocation = useCallback(() => {
     setIsCalculating(true);
-    
+
     let remainingFunds = unassigned;
     const results = [];
-    
-    const byDateCategories = categories.filter(cat => 
+
+    if (!safeCategories || safeCategories.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'deadline',
+        categoriesCount: 0
+      });
+      setIsCalculating(false);
+      return;
+    }
+
+    const byDateCategories = safeCategories.filter(cat =>
+      cat &&
       (cat.target_type === 'target_balance_by_date' || cat.target_type === 'by_date') &&
-      cat.target_date && cat.target_amount > 0
+      cat.target_date &&
+      cat.target_amount > 0
     ).sort((a, b) => new Date(a.target_date) - new Date(b.target_date));
-    
+
+    if (byDateCategories.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'deadline',
+        categoriesCount: 0,
+        message: 'No deadline-based goals found'
+      });
+      setIsCalculating(false);
+      return;
+    }
+
     for (const cat of byDateCategories) {
       if (remainingFunds <= 0) break;
-      
+
       const constraint = calculateRequiredContribution(cat);
-      const amountToFund = Math.min(constraint.needed, remainingFunds);
-      
-      if (amountToFund > 0) {
+      if (constraint.needed > 0) {
+        const amountToAssign = Math.min(constraint.needed, remainingFunds);
         results.push({
           categoryId: cat.id,
           categoryName: cat.name,
-          amount: amountToFund,
+          amount: amountToAssign,
           needed: constraint.needed,
-          targetType: constraint.type,
-          targetMessage: constraint.message,
-          deadline: cat.target_date
+          targetMessage: constraint.targetMessage
         });
-        remainingFunds -= amountToFund;
+        remainingFunds -= amountToAssign;
       }
     }
-    
+
     setPreviewResults({
       allocations: results,
-      totalToAssign: results.reduce((sum, item) => sum + item.amount, 0),
+      totalToAssign: unassigned - remainingFunds,
       remainingAfter: remainingFunds,
       strategy: 'deadline',
       categoriesCount: results.length
     });
-    
-    setIsCalculating(false);
-  }, [categories, unassigned, calculateRequiredContribution]);
 
-  /**
-   * Last Month Strategy - Match previous month's assignments
-   */
+    setIsCalculating(false);
+  }, [safeCategories, unassigned, calculateRequiredContribution]);
+
+  // Fix generateLastMonthAllocation
   const generateLastMonthAllocation = useCallback(() => {
     setIsCalculating(true);
-    
+
     let remainingFunds = unassigned;
     const results = [];
-    
-    for (const cat of categories) {
+
+    if (!safeCategories || safeCategories.length === 0) {
+      setPreviewResults({
+        allocations: [],
+        totalToAssign: 0,
+        remainingAfter: remainingFunds,
+        strategy: 'lastMonth',
+        categoriesCount: 0
+      });
+      setIsCalculating(false);
+      return;
+    }
+
+    for (const cat of safeCategories) {
+      if (!cat) continue;
       if (remainingFunds <= 0) break;
-      
+
       const lastMonthAmount = cat.last_month_assigned || 0;
       const currentAssigned = cat.assigned || 0;
       const needed = Math.max(0, lastMonthAmount - currentAssigned);
-      
+
       if (needed > 0 && remainingFunds >= needed) {
         results.push({
           categoryId: cat.id,
@@ -346,7 +793,7 @@ const SummaryView = ({
         remainingFunds -= needed;
       }
     }
-    
+
     setPreviewResults({
       allocations: results,
       totalToAssign: results.reduce((sum, item) => sum + item.amount, 0),
@@ -354,29 +801,31 @@ const SummaryView = ({
       strategy: 'lastMonth',
       categoriesCount: results.length
     });
-    
-    setIsCalculating(false);
-  }, [categories, unassigned, formatCurrency]);
 
-  /**
-   * Reset Strategy - Clear all assigned amounts
-   */
+    setIsCalculating(false);
+  }, [safeCategories, unassigned, formatCurrency]);
+
+  // Fix generateResetAllocation
   const generateResetAllocation = useCallback(() => {
     setIsCalculating(true);
-    
+
     const results = [];
-    for (const cat of categories) {
-      const currentAssigned = cat.assigned || 0;
-      if (currentAssigned !== 0) {
-        results.push({
-          categoryId: cat.id,
-          categoryName: cat.name,
-          amount: -currentAssigned,
-          targetMessage: `Reset to zero (was ${formatCurrency(currentAssigned)})`
-        });
+
+    if (safeCategories && safeCategories.length > 0) {
+      for (const cat of safeCategories) {
+        if (!cat) continue;
+        const currentAssigned = cat.assigned || 0;
+        if (currentAssigned !== 0) {
+          results.push({
+            categoryId: cat.id,
+            categoryName: cat.name,
+            amount: -currentAssigned,
+            targetMessage: `Reset to zero (was ${formatCurrency(currentAssigned)})`
+          });
+        }
       }
     }
-    
+
     setPreviewResults({
       allocations: results,
       totalToAssign: -Math.abs(results.reduce((sum, item) => sum + item.amount, 0)),
@@ -384,55 +833,48 @@ const SummaryView = ({
       strategy: 'reset',
       categoriesCount: results.length
     });
-    
-    setIsCalculating(false);
-  }, [categories, unassigned, formatCurrency]);
 
-  // Strategies configuration
+    setIsCalculating(false);
+  }, [safeCategories, unassigned, formatCurrency]);
+
   const strategies = [
     {
       id: 'priority_weighted',
-      name: '🎯 Smart Priority Engine',
-      description: `Intelligent allocation based on urgency × importance × risk`,
-      icon: '🧠',
+      name: '🎯 Smart Priority',
+      description: 'AI-powered allocation based on urgency, importance, and risk',
       color: '#8B5CF6',
       action: generateSmartAllocation
     },
     {
       id: 'underfunded',
-      name: '💰 Fund Underfunded',
-      description: `Complete all targets (${formatCurrency(underfundedTotal)} needed)`,
-      icon: '💰',
-      color: '#3B82F6',
+      name: '⚠️ Underfunded First',
+      description: 'Focus on categories with the largest funding gaps',
+      color: '#F59E0B',
       action: generateUnderfundedAllocation
     },
     {
       id: 'deadline',
       name: '⏰ Deadline Driven',
-      description: 'Prioritize goals with closest deadlines',
-      icon: '⏰',
+      description: 'Prioritize time-sensitive goals and upcoming expenses',
       color: '#EF4444',
       action: generateDeadlineAllocation
     },
     {
       id: 'lastMonth',
-      name: '📅 Last Month\'s Amount',
-      description: 'Use amounts from last month',
-      icon: '📅',
-      color: '#06B6D4',
+      name: '📅 Last Month\'s Budget',
+      description: 'Match previous month\'s assigned amounts',
+      color: '#3B82F6',
       action: generateLastMonthAllocation
     },
     {
       id: 'reset',
       name: '🔄 Reset All Assigned',
-      description: 'Clear all assigned amounts to zero',
-      icon: '🔄',
-      color: '#F59E0B',
+      description: 'Set all categories to $0 assigned',
+      color: '#6B7280',
       action: generateResetAllocation
     }
   ];
 
-  // Handle strategy selection
   const handleStrategySelect = (strategyId) => {
     setSelectedStrategy(strategyId);
     const strategy = strategies.find(s => s.id === strategyId);
@@ -441,7 +883,6 @@ const SummaryView = ({
     }
   };
 
-  // Execute auto-assign
   const handleAutoAssign = () => {
     if (previewResults && onAutoAssign) {
       if (previewResults.strategy === 'reset') {
@@ -464,16 +905,21 @@ const SummaryView = ({
     }
   };
 
-  // Calculate category stats
+  // Fix getCategoryStats
   const getCategoryStats = () => {
-    const totalCategories = categories.length;
-    const fundedCategories = categories.filter(c => (c.assigned || 0) > 0).length;
-    const overspentCategories = categories.filter(c => (c.available || 0) < 0).length;
-    const onTrackCategories = categories.filter(c => {
+    if (!safeCategories || safeCategories.length === 0) {
+      return { totalCategories: 0, fundedCategories: 0, overspentCategories: 0, onTrackCategories: 0 };
+    }
+
+    const totalCategories = safeCategories.length;
+    const fundedCategories = safeCategories.filter(c => c && (c.assigned || 0) > 0).length;
+    const overspentCategories = safeCategories.filter(c => c && (c.available || 0) < 0).length;
+    const onTrackCategories = safeCategories.filter(c => {
+      if (!c) return false;
       const constraint = calculateRequiredContribution(c);
       return constraint.needed === 0;
     }).length;
-    
+
     return { totalCategories, fundedCategories, overspentCategories, onTrackCategories };
   };
 
@@ -601,7 +1047,6 @@ const SummaryView = ({
 
         {showAutoAssignOptions && (
           <div style={styles.autoAssignOptions}>
-            {/* Strategy Selection */}
             <div style={styles.strategyGrid}>
               {strategies.map(strategy => (
                 <button
@@ -622,7 +1067,6 @@ const SummaryView = ({
               ))}
             </div>
 
-            {/* Priority Weight Sliders (only for smart priority engine) */}
             {selectedStrategy === 'priority_weighted' && (
               <div style={styles.weightControls}>
                 <div style={styles.weightLabel}>Priority Weights:</div>
@@ -677,7 +1121,6 @@ const SummaryView = ({
               </div>
             )}
 
-            {/* Loading State */}
             {isCalculating && (
               <div style={styles.calculating}>
                 <div style={styles.spinner}></div>
@@ -685,104 +1128,71 @@ const SummaryView = ({
               </div>
             )}
 
-            {/* Preview Results */}
             {previewResults && !isCalculating && (
               <div style={styles.previewContainer}>
                 <div style={styles.previewHeader}>
                   <div>
-                    <span style={styles.previewTitle}>
-                      {previewResults.strategy === 'priority_weighted' ? '🧠 Smart Priority Plan' :
-                       previewResults.strategy === 'underfunded' ? '💰 Underfunded Categories' :
-                       previewResults.strategy === 'deadline' ? '⏰ Deadline Driven' :
-                       previewResults.strategy === 'lastMonth' ? '📅 Last Month' : '🔄 Reset Plan'}
-                    </span>
-                    {previewResults.message && (
-                      <div style={styles.previewMessage}>{previewResults.message}</div>
-                    )}
+                    <div style={styles.previewTitle}>
+                      🎯 Funding Plan: {strategies.find(s => s.id === previewResults.strategy)?.name}
+                    </div>
+                    <div style={styles.previewMessage}>
+                      {previewResults.message || `${previewResults.categoriesCount} categories will receive funding`}
+                    </div>
                   </div>
-                  <span style={styles.previewSummary}>
-                    {previewResults.strategy === 'reset' ? (
-                      <>
-                        Freed: {formatCurrency(Math.abs(previewResults.totalToAssign))} →
-                        New RTA: {formatCurrency(previewResults.remainingAfter)}
-                      </>
-                    ) : (
-                      <>
-                        Total: {formatCurrency(previewResults.totalToAssign)} •
-                        Remaining: {formatCurrency(previewResults.remainingAfter)} •
-                        {previewResults.categoriesCount} categories
-                      </>
-                    )}
-                  </span>
+                  <div style={styles.previewSummary}>
+                    <div>Total: {formatCurrency(previewResults.totalToAssign)}</div>
+                    <div style={{ fontSize: '0.65rem', color: '#6B7280' }}>
+                      Remaining: {formatCurrency(previewResults.remainingAfter)}
+                    </div>
+                  </div>
                 </div>
 
                 {previewResults.allocations.length > 0 && (
                   <div style={styles.previewList}>
-                    {previewResults.allocations.slice(0, 10).map((item, index) => (
-                      <div key={index} style={styles.previewItem}>
+                    {previewResults.allocations.slice(0, 8).map((alloc, idx) => (
+                      <div key={idx} style={styles.previewItem}>
                         <div style={styles.previewItemInfo}>
-                          <span style={styles.previewItemName}>{item.categoryName}</span>
-                          {item.targetMessage && (
-                            <span style={styles.previewItemReason}>{item.targetMessage}</span>
+                          <span style={styles.previewItemName}>{alloc.categoryName}</span>
+                          <span style={styles.previewItemReason}>{alloc.targetMessage}</span>
+                          {alloc.priority && (
+                            <span style={styles.priorityBadge}>Priority: {alloc.priority}%</span>
                           )}
-                          {item.priorityScore !== undefined && (
-                            <div style={styles.priorityBadge}>
-                              Score: {Math.round(item.priorityScore)}
-                            </div>
-                          )}
-                          {item.progress !== undefined && (
-                            <div style={styles.previewProgressBar}>
-                              <div style={{
-                                ...styles.previewProgressFill,
-                                width: `${item.progress}%`,
-                                backgroundColor: item.progress >= 100 ? '#10B981' : 
-                                               item.progress >= 75 ? '#3B82F6' : 
-                                               item.progress >= 50 ? '#F59E0B' : '#EF4444'
-                              }} />
-                            </div>
-                          )}
+                          <div style={styles.previewProgressBar}>
+                            <div style={{
+                              ...styles.previewProgressFill,
+                              width: `${Math.min(100, (alloc.amount / alloc.needed) * 100)}%`,
+                              backgroundColor: alloc.amount >= alloc.needed ? '#4ADE80' : '#8B5CF6'
+                            }} />
+                          </div>
                         </div>
                         <div style={{
                           ...styles.previewItemAmount,
-                          color: item.amount > 0 ? '#4ADE80' : '#F87171'
+                          color: alloc.amount >= 0 ? '#4ADE80' : '#F87171'
                         }}>
-                          {item.amount > 0 ? '+' : ''}{formatCurrency(Math.abs(item.amount))}
+                          {alloc.amount >= 0 ? '+' : ''}{formatCurrency(alloc.amount)}
                         </div>
                       </div>
                     ))}
-                    {previewResults.allocations.length > 10 && (
+                    {previewResults.allocations.length > 8 && (
                       <div style={styles.previewMore}>
-                        ...and {previewResults.allocations.length - 10} more categories
+                        +{previewResults.allocations.length - 8} more categories
                       </div>
                     )}
                   </div>
                 )}
 
                 <div style={styles.previewActions}>
-                  <button
-                    style={{
-                      ...styles.applyButton,
-                      backgroundColor: previewResults.strategy === 'reset' ? '#F59E0B' : '#8B5CF6'
-                    }}
-                    onClick={handleAutoAssign}
-                    disabled={previewResults.allocations.length === 0}
-                  >
-                    {previewResults.strategy === 'reset' ? '🔄 Reset All Assigned' : '✓ Apply Smart Allocation'}
+                  <button style={styles.applyButton} onClick={handleAutoAssign}>
+                    Apply Funding Plan
                   </button>
-                  <button
-                    style={styles.cancelPreviewButton}
-                    onClick={() => {
-                      setShowAutoAssignOptions(false);
-                      setPreviewResults(null);
-                    }}
-                  >
+                  <button style={styles.cancelPreviewButton} onClick={() => setPreviewResults(null)}>
                     Cancel
                   </button>
                 </div>
 
-                {previewResults.strategy !== 'reset' && previewResults.totalToAssign > unassigned && unassigned > 0 && (
+                {previewResults.strategy === 'reset' && (
                   <div style={styles.warningMessage}>
-                    ⚠️ Insufficient funds: Need {formatCurrency(previewResults.totalToAssign - unassigned)} more
+                    ⚠️ This will reset ALL category assigned amounts to $0
                   </div>
                 )}
               </div>
@@ -790,6 +1200,188 @@ const SummaryView = ({
           </div>
         )}
       </div>
+
+      {/* Add Transaction Card */}
+      <div style={styles.addTransactionCard}>
+        <div style={styles.addTransactionHeader}>
+          <span style={styles.addTransactionIcon}>➕</span>
+          <h3 style={styles.addTransactionTitle}>Add Transaction</h3>
+        </div>
+        <button
+          style={styles.addTransactionButton}
+          onClick={() => setShowAddTransactionModal(true)}
+        >
+          + New Transaction
+        </button>
+      </div>
+
+      {/* Add Transaction Modal */}
+      {showAddTransactionModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowAddTransactionModal(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>Add Transaction</h3>
+              <button
+                style={styles.closeButton}
+                onClick={() => setShowAddTransactionModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={styles.modalBody}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Account *</label>
+                <select
+                  value={transactionForm.accountId}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, accountId: e.target.value })}
+                  style={styles.select}
+                >
+                  <option value="">Select an account</option>
+                  {accounts.map(account => {
+                    const balance = account.balance || 0;
+                    const absBalance = formatCurrency(Math.abs(balance));
+                    const balanceDisplay = (account.type === 'credit' || account.type === 'loan')
+                      ? `(${absBalance})`
+                      : absBalance;
+
+                    let typeLabel = account.type;
+                    if (account.type === 'credit') typeLabel = '💳 Credit Card';
+                    else if (account.type === 'loan') typeLabel = '🏦 Loan';
+                    else if (account.type === 'savings') typeLabel = '💰 Savings';
+                    else if (account.type === 'checking') typeLabel = '💵 Checking';
+
+                    return (
+                      <option key={account.id} value={account.id}>
+                        {account.name} ({typeLabel}) - Balance: {balanceDisplay}
+                      </option>
+                    );
+                  })}
+                </select>
+                {accounts.length === 0 && (
+                  <small style={styles.hint}>No accounts found. Please create an account first.</small>
+                )}
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Transaction Type *</label>
+                <select
+                  value={transactionForm.transactionType}
+                  onChange={(e) => {
+                    setTransactionForm({
+                      ...transactionForm,
+                      transactionType: e.target.value,
+                      categoryId: ''
+                    });
+                  }}
+                  style={styles.select}
+                >
+                  <option value="outflow">Outflow (Expense)</option>
+                  <option value="inflow">Inflow (Income)</option>
+                </select>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Category *</label>
+                <select
+                  value={transactionForm.categoryId}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
+                  style={styles.select}
+                >
+                  <option value="">Select a category</option>
+                  {getFilteredCategories().map(category => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Amount *</label>
+                <div style={styles.inputWrapper}>
+                  <span style={styles.currencySymbol}>$</span>
+                  <input
+                    type="number"
+                    value={transactionForm.amount}
+                    onChange={(e) => setTransactionForm({ ...transactionForm, amount: e.target.value })}
+                    style={styles.modalInput}
+                    placeholder="0.00"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Date *</label>
+                <input
+                  type="date"
+                  value={transactionForm.date}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Payee *</label>
+                <input
+                  type="text"
+                  value={transactionForm.payee}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, payee: e.target.value })}
+                  style={styles.input}
+                  placeholder="e.g., Starbucks, Rent, Paycheck"
+                />
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Memo (Optional)</label>
+                <input
+                  type="text"
+                  value={transactionForm.memo}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, memo: e.target.value })}
+                  style={styles.input}
+                  placeholder="Additional notes"
+                />
+              </div>
+
+              <div style={styles.checkboxGroup}>
+                <label style={styles.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={transactionForm.cleared}
+                    onChange={(e) => setTransactionForm({ ...transactionForm, cleared: e.target.checked })}
+                    style={styles.checkbox}
+                  />
+                  Mark as cleared
+                </label>
+              </div>
+
+              {transactionError && (
+                <div style={styles.errorMessage}>
+                  ⚠️ {transactionError}
+                </div>
+              )}
+            </div>
+
+            <div style={styles.modalFooter}>
+              <button
+                style={styles.cancelModalButton}
+                onClick={() => setShowAddTransactionModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                style={styles.submitButton}
+                onClick={handleAddTransaction}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Adding...' : 'Add Transaction'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -861,7 +1453,152 @@ const styles = {
   previewActions: { display: 'flex', gap: '0.5rem' },
   applyButton: { flex: 1, padding: '0.5rem', background: '#8B5CF6', color: 'white', border: 'none', borderRadius: '0.25rem', fontSize: '0.8rem', fontWeight: '500', cursor: 'pointer', transition: 'all 0.2s ease' },
   cancelPreviewButton: { flex: 1, padding: '0.5rem', background: '#4B5563', color: 'white', border: 'none', borderRadius: '0.25rem', fontSize: '0.8rem', cursor: 'pointer' },
-  warningMessage: { marginTop: '0.5rem', padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #EF4444', borderRadius: '0.25rem', color: '#EF4444', fontSize: '0.7rem', textAlign: 'center' }
+  warningMessage: { marginTop: '0.5rem', padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #EF4444', borderRadius: '0.25rem', color: '#EF4444', fontSize: '0.7rem', textAlign: 'center' },
+  addTransactionCard: {
+    marginTop: '1rem',
+    padding: '1rem',
+    background: '#0A2472',
+    borderRadius: '0.75rem',
+    border: '1px solid #374151'
+  },
+  addTransactionHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginBottom: '0.75rem'
+  },
+  addTransactionIcon: { fontSize: '1.25rem' },
+  addTransactionTitle: { fontSize: '1rem', fontWeight: '600', color: 'white', margin: 0 },
+  addTransactionButton: {
+    width: '100%',
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #10B981, #059669)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.9rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease'
+  },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0, 0, 0, 0.8)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2000,
+    backdropFilter: 'blur(4px)'
+  },
+  modalContent: {
+    background: '#1F2937',
+    borderRadius: '1rem',
+    width: '90%',
+    maxWidth: '500px',
+    maxHeight: '90vh',
+    display: 'flex',
+    flexDirection: 'column',
+    boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+  },
+  modalHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '1.5rem',
+    borderBottom: '1px solid #374151'
+  },
+  modalTitle: { fontSize: '1.25rem', fontWeight: '600', color: 'white', margin: 0 },
+  closeButton: {
+    background: 'none',
+    border: 'none',
+    color: '#9CA3AF',
+    fontSize: '1.25rem',
+    cursor: 'pointer',
+    padding: '0.25rem 0.5rem',
+    borderRadius: '0.25rem',
+    transition: 'all 0.2s'
+  },
+  modalBody: { padding: '1.5rem', overflowY: 'auto', flex: 1 },
+  modalFooter: { display: 'flex', gap: '1rem', padding: '1.5rem', borderTop: '1px solid #374151' },
+  formGroup: { marginBottom: '1rem' },
+  label: { display: 'block', marginBottom: '0.5rem', color: '#9CA3AF', fontSize: '0.875rem', fontWeight: '500' },
+  input: {
+    width: '100%',
+    padding: '0.75rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '0.875rem'
+  },
+  select: {
+    width: '100%',
+    padding: '0.75rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '0.875rem',
+    cursor: 'pointer'
+  },
+  hint: { display: 'block', marginTop: '0.5rem', color: '#F87171', fontSize: '0.75rem' },
+  inputWrapper: { position: 'relative' },
+  currencySymbol: {
+    position: 'absolute',
+    left: '0.75rem',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    color: '#9CA3AF',
+    zIndex: 1
+  },
+  modalInput: {
+    width: '100%',
+    padding: '0.75rem 0.75rem 0.75rem 2rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '0.875rem'
+  },
+  checkboxGroup: { marginTop: '0.5rem' },
+  checkboxLabel: { display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#9CA3AF', fontSize: '0.875rem', cursor: 'pointer' },
+  checkbox: { width: '1rem', height: '1rem', cursor: 'pointer' },
+  errorMessage: {
+    marginTop: '0.75rem',
+    padding: '0.5rem',
+    background: 'rgba(239, 68, 68, 0.1)',
+    border: '1px solid #EF4444',
+    borderRadius: '0.25rem',
+    color: '#F87171',
+    fontSize: '0.75rem',
+    textAlign: 'center'
+  },
+  cancelModalButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: '#4B5563',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.875rem',
+    fontWeight: '500',
+    cursor: 'pointer'
+  },
+  submitButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #10B981, #059669)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.875rem',
+    fontWeight: '600',
+    cursor: 'pointer'
+  }
 };
 
 // Add keyframe animation

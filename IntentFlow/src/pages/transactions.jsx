@@ -255,13 +255,13 @@ export default function TransactionsPage() {
           <div style={styles.modalOverlay} onClick={() => setShowAddModal(false)}>
             <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
               <h3 style={styles.modalTitle}>Add Transaction</h3>
-              
+
               <div style={styles.formGroup}>
                 <label style={styles.label}>Date</label>
                 <input
                   type="date"
                   value={transactionForm.date}
-                  onChange={(e) => setTransactionForm({...transactionForm, date: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })}
                   style={styles.input}
                 />
               </div>
@@ -270,15 +270,27 @@ export default function TransactionsPage() {
                 <label style={styles.label}>Account</label>
                 <select
                   value={transactionForm.accountId}
-                  onChange={(e) => setTransactionForm({...transactionForm, accountId: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, accountId: e.target.value })}
                   style={styles.select}
                 >
-                  <option value="">Select Account</option>
-                  {accounts.map(account => (
-                    <option key={account.id} value={account.id}>
-                      {account.name} ({formatCurrency(account.balance)})
-                    </option>
-                  ))}
+                  <option value="">Select an account</option>
+                  {accounts.map(account => {
+                    // Format balance with proper sign
+                    let balanceDisplay = formatCurrency(Math.abs(account.balance || 0));
+                    let balanceColor = '';
+
+                    if (account.type === 'credit' || account.type === 'loan') {
+                      balanceDisplay = `(${balanceDisplay})`; // Parentheses for liability accounts
+                    }
+
+                    return (
+                      <option key={account.id} value={account.id}>
+                        {account.name} ({account.type === 'credit' ? 'Credit Card' :
+                          account.type === 'loan' ? 'Loan' :
+                            account.type === 'savings' ? 'Savings' : 'Checking'}) - {balanceDisplay}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -287,7 +299,7 @@ export default function TransactionsPage() {
                 <input
                   type="text"
                   value={transactionForm.payee}
-                  onChange={(e) => setTransactionForm({...transactionForm, payee: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, payee: e.target.value })}
                   style={styles.input}
                   placeholder="e.g., Grocery Store"
                 />
@@ -298,7 +310,7 @@ export default function TransactionsPage() {
                 <input
                   type="number"
                   value={transactionForm.amount}
-                  onChange={(e) => setTransactionForm({...transactionForm, amount: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, amount: e.target.value })}
                   style={styles.input}
                   placeholder="0.00"
                   step="0.01"
@@ -309,7 +321,7 @@ export default function TransactionsPage() {
                 <label style={styles.label}>Type</label>
                 <select
                   value={transactionForm.type}
-                  onChange={(e) => setTransactionForm({...transactionForm, type: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, type: e.target.value })}
                   style={styles.select}
                 >
                   <option value="outflow">Outflow (Money Out)</option>
@@ -321,7 +333,7 @@ export default function TransactionsPage() {
                 <label style={styles.label}>Category</label>
                 <select
                   value={transactionForm.categoryId}
-                  onChange={(e) => setTransactionForm({...transactionForm, categoryId: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
                   style={styles.select}
                 >
                   <option value="">Select Category</option>
@@ -338,7 +350,7 @@ export default function TransactionsPage() {
                 <input
                   type="text"
                   value={transactionForm.memo}
-                  onChange={(e) => setTransactionForm({...transactionForm, memo: e.target.value})}
+                  onChange={(e) => setTransactionForm({ ...transactionForm, memo: e.target.value })}
                   style={styles.input}
                   placeholder="Additional notes"
                 />
@@ -349,7 +361,7 @@ export default function TransactionsPage() {
                   <input
                     type="checkbox"
                     checked={transactionForm.cleared}
-                    onChange={(e) => setTransactionForm({...transactionForm, cleared: e.target.checked})}
+                    onChange={(e) => setTransactionForm({ ...transactionForm, cleared: e.target.checked })}
                   />
                   <span style={{ marginLeft: '0.5rem' }}>Cleared</span>
                 </label>

@@ -10,7 +10,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   const [showInlineModal, setShowInlineModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingAccount, setEditingAccount] = useState(null);
-  
+
   // Inline modal state (self-contained for adding)
   const [inlineFormData, setInlineFormData] = useState({
     name: '',
@@ -27,7 +27,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   });
   const [inlineErrors, setInlineErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
+
   // Edit modal state
   const [editFormData, setEditFormData] = useState({
     name: '',
@@ -65,6 +65,39 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       return () => document.head.removeChild(style);
     }
   }, []);
+  // src/views/CashAccountsView.jsx
+  // ... all your existing code up to the useEffect hooks ...
+
+  useEffect(() => {
+    loadAccounts();
+  }, [propAccounts]);
+
+  // Reset inline form when modal opens
+  useEffect(() => {
+    if (showInlineModal) {
+      resetInlineForm();
+    }
+  }, [showInlineModal]);
+
+  // Load editing account data when edit modal opens
+  useEffect(() => {
+    if (showEditModal && editingAccount) {
+      loadEditingAccountData();
+    }
+  }, [showEditModal, editingAccount]);
+
+  // ✅ ADD THIS NEW useEffect - Listen for accounts-updated events
+  useEffect(() => {
+    const handleAccountsUpdated = () => {
+      console.log('📢 CashAccountsView: accounts-updated event received, refreshing accounts');
+      loadAccounts(true); // Force refresh from database
+    };
+
+    window.addEventListener('accounts-updated', handleAccountsUpdated);
+    return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
+  }, []);
+
+  // Rest of your component continues...
 
   useEffect(() => {
     loadAccounts();
@@ -103,11 +136,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const loadEditingAccountData = () => {
     if (!editingAccount) return;
-    
+
     setEditFormData({
       name: editingAccount.name || '',
-      balance: editingAccount.balance !== undefined && editingAccount.balance !== null 
-        ? Math.abs(editingAccount.balance).toString() 
+      balance: editingAccount.balance !== undefined && editingAccount.balance !== null
+        ? Math.abs(editingAccount.balance).toString()
         : '',
       institution: editingAccount.institution || '',
       account_number: editingAccount.account_number || '',
@@ -118,7 +151,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       interest_rate: editingAccount.interest_rate || '',
       notes: editingAccount.notes || ''
     });
-    
+
     setDisplayAccountNumber(maskNumber(editingAccount.account_number || ''));
     setDisplayRoutingNumber(maskNumber(editingAccount.routing_number || ''));
     setDisplayDebitCardNumber(maskNumber(editingAccount.debit_card_number || ''));
@@ -262,7 +295,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const handleCreateInlineAccount = async () => {
     if (!validateInlineForm()) return;
-    
+
     setIsSubmitting(true);
     try {
       const userResult = await window.electronAPI.getCurrentUser();
@@ -315,7 +348,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const handleUpdateAccount = async () => {
     if (!validateEditForm()) return;
-    
+
     setIsEditing(true);
     try {
       const userResult = await window.electronAPI.getCurrentUser();
@@ -323,9 +356,9 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         alert('You must be logged in');
         return;
       }
-      
+
       const userId = userResult.data.id;
-      
+
       const updates = {
         name: editFormData.name.trim(),
         balance: editFormData.balance ? -Math.abs(parseFloat(editFormData.balance)) : 0,
@@ -342,7 +375,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       console.log('📝 Updating account:', editingAccount.id, updates);
 
       const result = await window.electronAPI.updateAccount(editingAccount.id, userId, updates);
-      
+
       if (result.success) {
         alert('✅ Account updated successfully');
         setShowEditModal(false);
@@ -371,7 +404,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         alert('You must be logged in');
         return;
       }
-      
+
       const userId = userResult.data.id;
       const result = await window.electronAPI.deleteAccount(accountId, userId);
 
