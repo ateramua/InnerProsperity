@@ -65,8 +65,6 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       return () => document.head.removeChild(style);
     }
   }, []);
-  // src/views/CashAccountsView.jsx
-  // ... all your existing code up to the useEffect hooks ...
 
   useEffect(() => {
     loadAccounts();
@@ -86,36 +84,16 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     }
   }, [showEditModal, editingAccount]);
 
-  // ✅ ADD THIS NEW useEffect - Listen for accounts-updated events
+  // Listen for accounts-updated events
   useEffect(() => {
     const handleAccountsUpdated = () => {
       console.log('📢 CashAccountsView: accounts-updated event received, refreshing accounts');
-      loadAccounts(true); // Force refresh from database
+      loadAccounts(true);
     };
 
     window.addEventListener('accounts-updated', handleAccountsUpdated);
     return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
   }, []);
-
-  // Rest of your component continues...
-
-  useEffect(() => {
-    loadAccounts();
-  }, [propAccounts]);
-
-  // Reset inline form when modal opens
-  useEffect(() => {
-    if (showInlineModal) {
-      resetInlineForm();
-    }
-  }, [showInlineModal]);
-
-  // Load editing account data when edit modal opens
-  useEffect(() => {
-    if (showEditModal && editingAccount) {
-      loadEditingAccountData();
-    }
-  }, [showEditModal, editingAccount]);
 
   const resetInlineForm = () => {
     setInlineFormData({

@@ -423,6 +423,7 @@ function LoanManager({
                 )}
 
                 {/* Action Buttons */}
+                {/* Action Buttons */}
                 <div style={styles.loanActions}>
                   <button
                     onClick={(e) => {
@@ -431,7 +432,7 @@ function LoanManager({
                     }}
                     style={styles.paymentButton}
                   >
-                    Make Payment
+                    💰 Make Payment
                   </button>
                   <button
                     onClick={(e) => {
@@ -448,12 +449,11 @@ function LoanManager({
                       e.stopPropagation();
                       onViewDetails && onViewDetails(loan.id);
                     }}
-                    style={styles.detailsButton}
+                    style={styles.transactionsButton}
                   >
-                    View Details
+                    📋 Transactions
                   </button>
                 </div>
-
                 {/* Expanded Details */}
                 {isSelected && (
                   <div style={styles.expandedDetails}>
@@ -771,6 +771,16 @@ const styles = {
   summaryValue: {
     fontSize: '1.5rem',
     fontWeight: 'bold'
+  },
+  transactionsButton: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'transparent',
+    border: '1px solid #3B82F6',
+    color: '#3B82F6',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
+    cursor: 'pointer'
   },
   filterTabs: {
     display: 'flex',

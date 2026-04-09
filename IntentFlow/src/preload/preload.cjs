@@ -140,6 +140,11 @@ debugTestGroupDelete: (groupId, userId) => ipcRenderer.invoke('debug:test-group-
     getWeeklyForecast: (userId, weeks) =>
       ipcRenderer.invoke('forecast:weekly', userId, weeks),
 
+    // Scheduled transactions
+getScheduledTransactions: (accountId) => ipcRenderer.invoke('scheduled-transactions:get', accountId),
+addScheduledTransaction: (data) => ipcRenderer.invoke('scheduled-transactions:add', data),
+deleteScheduledTransaction: (id) => ipcRenderer.invoke('scheduled-transactions:delete', id),
+
     getYearlyForecast: (userId, years) =>
       ipcRenderer.invoke('forecast:yearly', userId, years),
 

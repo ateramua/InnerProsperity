@@ -383,6 +383,64 @@ class AccountService {
         }
     }
 
+    // In AccountService.js
+
+async getScheduledTransactions(accountId, userId) {
+  const db = await this.getDb();
+  try {
+    const transactions = await db.all(
+      `SELECT * FROM scheduled_transactions 
+       WHERE account_id = ? AND user_id = ? AND status = 'pending'
+       ORDER BY date ASC`,
+      [accountId, userId]
+    );
+    return transactions;
+  } finally {
+    if (!this.dbProvider && db && typeof db.close === 'function') {
+      await db.close();
+    }
+  }
+}
+
+async addScheduledTransaction(transactionData) {
+  const db = await this.getDb();
+  try {
+    const id = uuidv4();
+    await db.run(
+      `INSERT INTO scheduled_transactions (
+        id, account_id, date, payee, amount, 
+        transaction_type, category_id, memo, user_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, transactionData.accountId, transactionData.date, 
+        transactionData.payee, transactionData.amount,
+        transactionData.transactionType, transactionData.categoryId, 
+        transactionData.memo, transactionData.userId, 'pending'
+      ]
+    );
+    return { id };
+  } finally {
+    if (!this.dbProvider && db && typeof db.close === 'function') {
+      await db.close();
+    }
+  }
+}
+
+async deleteScheduledTransaction(id, userId) {
+  const db = await this.getDb();
+  try {
+    await db.run(
+      `DELETE FROM scheduled_transactions WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+    return true;
+  } finally {
+    if (!this.dbProvider && db && typeof db.close === 'function') {
+      await db.close();
+    }
+  }
+}
+
     // ==================== CREDIT CARD SPECIFIC ====================
 
     async getCreditCardDetails(accountId, userId) {

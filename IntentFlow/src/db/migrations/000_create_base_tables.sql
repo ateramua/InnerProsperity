@@ -49,9 +49,31 @@ CREATE TABLE IF NOT EXISTS categories (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+-- src/db/migrations/000_create_base_tables.sql
+-- Add this after your existing tables (around line 30-40)
+
+-- Scheduled Transactions Table
+CREATE TABLE IF NOT EXISTS scheduled_transactions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  payee TEXT NOT NULL,
+  amount REAL NOT NULL,
+  transaction_type TEXT NOT NULL,
+  category_id TEXT,
+  memo TEXT,
+  user_id TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
 
 -- INDEXES
 CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_account_id ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_categories_user_id ON categories(user_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_transactions_account_id ON scheduled_transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_transactions_date ON scheduled_transactions(date);
+CREATE INDEX IF NOT EXISTS idx_scheduled_transactions_user_id ON scheduled_transactions(user_id);

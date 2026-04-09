@@ -374,6 +374,21 @@ async function ensureAllTablesExist(dbConnection) {
             updated_at DATETIME,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+         CREATE TABLE IF NOT EXISTS scheduled_transactions (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        payee TEXT NOT NULL,
+        amount REAL NOT NULL,
+        transaction_type TEXT NOT NULL,
+        category_id TEXT,
+        memo TEXT,
+        user_id TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
         
         CREATE TABLE IF NOT EXISTS accounts (
             id TEXT PRIMARY KEY,
@@ -1101,6 +1116,88 @@ function setupIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+    // Get scheduled transactions for an account
+ipcMain.handle('scheduled-transactions:get', async (event, accountId) => {
+  try {
+    const db = await getDatabase(); // Your database connection function
+    const transactions = await db.all(
+      `SELECT * FROM scheduled_transactions 
+       WHERE account_id = ? AND status = 'pending'
+       ORDER BY date ASC`,
+      [accountId]
+    );
+    return { success: true, data: transactions };
+  } catch (error) {
+    console.error('Error getting scheduled transactions:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Add a scheduled transaction
+ipcMain.handle('scheduled-transactions:add', async (event, data) => {
+  try {
+    const db = await getDatabase();
+    const id = require('uuid').v4();
+    
+    await db.run(
+      `INSERT INTO scheduled_transactions (
+        id, account_id, date, payee, amount, 
+        transaction_type, category_id, memo, user_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, data.accountId, data.date, data.payee, data.amount,
+        data.transactionType, data.categoryId, data.memo, data.userId, 'pending'
+      ]
+    );
+    
+    return { success: true, data: { id } };
+  } catch (error) {
+    console.error('Error adding scheduled transaction:', error);
+    return { success: false, error: error.message };
+  }
+});
+// In your main process where you set up IPC handlers for accounts
+ipcMain.handle('accounts:scheduled:get', async (event, accountId) => {
+  const user = await getUserFromSession(event);
+  if (!user) return { success: false, error: 'Not authenticated' };
+  
+  const accountService = new AccountService(() => getDatabase());
+  const transactions = await accountService.getScheduledTransactions(accountId, user.id);
+  return { success: true, data: transactions };
+});
+
+ipcMain.handle('accounts:scheduled:add', async (event, data) => {
+  const user = await getUserFromSession(event);
+  if (!user) return { success: false, error: 'Not authenticated' };
+  
+  const accountService = new AccountService(() => getDatabase());
+  const result = await accountService.addScheduledTransaction({
+    ...data,
+    userId: user.id
+  });
+  return { success: true, data: result };
+});
+
+ipcMain.handle('accounts:scheduled:delete', async (event, id) => {
+  const user = await getUserFromSession(event);
+  if (!user) return { success: false, error: 'Not authenticated' };
+  
+  const accountService = new AccountService(() => getDatabase());
+  await accountService.deleteScheduledTransaction(id, user.id);
+  return { success: true };
+});
+
+// Delete a scheduled transaction
+ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
+  try {
+    const db = await getDatabase();
+    await db.run(`DELETE FROM scheduled_transactions WHERE id = ?`, [id]);
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting scheduled transaction:', error);
+    return { success: false, error: error.message };
+  }
+});
 
     ipcMain.handle('debug:get-database-info', async () => {
         const dbPath = getConfiguredDatabasePath();

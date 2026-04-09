@@ -9,15 +9,18 @@ const AccountDetailPage = () => {
 
     const [account, setAccount] = useState(null);
     const [transactions, setTransactions] = useState([]);
+    const [scheduledTransactions, setScheduledTransactions] = useState([]);
     const [categories, setCategories] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showAddModal, setShowAddModal] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [transactionError, setTransactionError] = useState('');
+    const [showScheduledSection, setShowScheduledSection] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     
     // Transaction form with Transaction Type
     const [transactionForm, setTransactionForm] = useState({
-        transactionType: 'outflow',  // 'outflow' or 'inflow'
+        transactionType: 'outflow',
         categoryId: '',
         amount: '',
         date: new Date().toISOString().split('T')[0],
@@ -40,7 +43,6 @@ const AccountDetailPage = () => {
         if (transactionForm.transactionType === 'inflow') {
             return [{ id: 'inflow_ready_to_assign', name: '💰 Inflow: Ready to Assign' }];
         }
-        // For outflow - show all non-archived categories
         if (!categories || categories.length === 0) {
             return [];
         }
@@ -57,6 +59,102 @@ const AccountDetailPage = () => {
             return isExpense ? -absAmount : absAmount;
         } else {
             return isExpense ? -absAmount : absAmount;
+        }
+    };
+
+    // Load scheduled transactions
+    const loadScheduledTransactions = async () => {
+        try {
+            if (window.electronAPI.getScheduledTransactions && account?.id) {
+                const result = await window.electronAPI.getScheduledTransactions(account.id);
+                if (result?.success) {
+                    setScheduledTransactions(result.data || []);
+                    console.log('📅 Scheduled transactions loaded:', result.data?.length);
+                }
+            }
+        } catch (error) {
+            console.error('Error loading scheduled transactions:', error);
+        }
+    };
+
+    // Approve a scheduled transaction
+    const handleApproveScheduled = async (scheduledTx) => {
+        setRefreshing(true);
+        try {
+            const userResult = await window.electronAPI.getCurrentUser();
+            if (!userResult?.success || !userResult?.data) {
+                alert('Please log in to approve transaction');
+                return;
+            }
+
+            const userId = userResult.data.id;
+            const isExpense = scheduledTx.transactionType === 'outflow';
+            const amountValue = Math.abs(parseFloat(scheduledTx.amount));
+
+            let transactionAmount = isExpense ? -amountValue : amountValue;
+            let balanceChange = isExpense ? -amountValue : amountValue;
+
+            const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
+                scheduledTx.categoryId === 'inflow_ready_to_assign';
+
+            // Step 1: Add to regular transactions
+            const transactionData = {
+                accountId: account.id,
+                date: new Date().toISOString().split('T')[0],
+                payee: scheduledTx.payee,
+                description: scheduledTx.payee,
+                amount: transactionAmount,
+                categoryId: isReadyToAssign ? null : scheduledTx.categoryId,
+                memo: scheduledTx.memo,
+                cleared: 1
+            };
+
+            const addResult = await window.electronAPI.addTransaction(transactionData);
+            if (!addResult.success) {
+                alert('Failed to add transaction: ' + addResult.error);
+                return;
+            }
+
+            // Step 2: Update account balance
+            const currentBalance = account.balance || 0;
+            const newBalance = currentBalance + balanceChange;
+            await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+
+            // Step 3: Delete the scheduled transaction
+            await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
+
+            // Step 4: Refresh all data
+            await loadAccountData(account.id);
+            await loadScheduledTransactions();
+            
+            window.dispatchEvent(new CustomEvent('accounts-updated'));
+            window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+            
+            alert(`✅ Transaction approved and added!\nNew balance: ${formatCurrency(newBalance)}`);
+        } catch (error) {
+            console.error('Error approving scheduled transaction:', error);
+            alert('Error approving transaction: ' + error.message);
+        } finally {
+            setRefreshing(false);
+        }
+    };
+
+    // Reject/Delete a scheduled transaction
+    const handleRejectScheduled = async (scheduledTx) => {
+        if (!window.confirm(`Are you sure you want to delete this scheduled transaction?\n\nPayee: ${scheduledTx.payee}\nAmount: ${formatCurrency(scheduledTx.amount)}`)) {
+            return;
+        }
+
+        setRefreshing(true);
+        try {
+            await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
+            await loadScheduledTransactions();
+            alert('✅ Scheduled transaction deleted');
+        } catch (error) {
+            console.error('Error deleting scheduled transaction:', error);
+            alert('Error deleting transaction: ' + error.message);
+        } finally {
+            setRefreshing(false);
         }
     };
 
@@ -98,6 +196,7 @@ const AccountDetailPage = () => {
             }
 
             await loadCategories();
+            await loadScheduledTransactions();
         } catch (error) {
             console.error('Error loading account data:', error);
         } finally {
@@ -118,10 +217,93 @@ const AccountDetailPage = () => {
         setTransactionError('');
     };
 
+    // Add regular transaction (for today/past dates)
+    const handleAddRegularTransaction = async (amountValue, userId) => {
+        const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
+        const isExpense = transactionForm.transactionType === 'outflow';
+
+        let transactionAmount = 0;
+        let balanceChange = 0;
+
+        if (isCreditOrLoan) {
+            if (isExpense) {
+                transactionAmount = -amountValue;
+                balanceChange = -amountValue;
+            } else {
+                transactionAmount = amountValue;
+                balanceChange = amountValue;
+            }
+        } else {
+            if (isExpense) {
+                transactionAmount = -amountValue;
+                balanceChange = -amountValue;
+            } else {
+                transactionAmount = amountValue;
+                balanceChange = amountValue;
+            }
+        }
+
+        const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
+            transactionForm.categoryId === 'inflow_ready_to_assign';
+
+        const transactionData = {
+            accountId: account.id,
+            date: transactionForm.date,
+            payee: transactionForm.payee,
+            description: transactionForm.payee,
+            amount: transactionAmount,
+            categoryId: isReadyToAssign ? null : transactionForm.categoryId,
+            memo: transactionForm.memo,
+            cleared: transactionForm.cleared ? 1 : 0
+        };
+
+        const result = await window.electronAPI.addTransaction(transactionData);
+        if (!result.success) {
+            throw new Error(result.error || 'Failed to add transaction');
+        }
+
+        const currentBalance = account.balance || 0;
+        const newBalance = currentBalance + balanceChange;
+        await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+        
+        return newBalance;
+    };
+
+    // Add scheduled transaction (for future dates)
+    const handleAddScheduledTransaction = async (amountValue, userId) => {
+        const scheduledData = {
+            accountId: account.id,
+            date: transactionForm.date,
+            payee: transactionForm.payee,
+            amount: amountValue,
+            transactionType: transactionForm.transactionType,
+            categoryId: transactionForm.categoryId,
+            memo: transactionForm.memo,
+            userId: userId,
+            status: 'pending'
+        };
+
+        if (!window.electronAPI.addScheduledTransaction) {
+            throw new Error('Scheduled transactions not supported yet');
+        }
+
+        const result = await window.electronAPI.addScheduledTransaction(scheduledData);
+        if (!result.success) {
+            throw new Error(result.error || 'Failed to add scheduled transaction');
+        }
+        
+        return null;
+    };
+
+    // Main handler - decides between regular and scheduled
     const handleAddTransaction = async () => {
         setTransactionError('');
 
         const amountValue = parseFloat(transactionForm.amount);
+        const transactionDate = new Date(transactionForm.date);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
         if (isNaN(amountValue) || amountValue === 0) {
             setTransactionError('Please enter a valid amount');
             return;
@@ -147,82 +329,29 @@ const AccountDetailPage = () => {
             }
 
             const userId = userResult.data.id;
-            
-            if (!account) {
-                setTransactionError('Account not found');
-                return;
-            }
+            const isFutureDate = transactionDate > today;
 
-            const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
-            const isExpense = transactionForm.transactionType === 'outflow';
-
-            let transactionAmount = 0;
-            let balanceChange = 0;
-
-            if (isCreditOrLoan) {
-                if (isExpense) {
-                    transactionAmount = -Math.abs(amountValue);
-                    balanceChange = -Math.abs(amountValue);
-                } else {
-                    transactionAmount = Math.abs(amountValue);
-                    balanceChange = Math.abs(amountValue);
-                }
+            if (isFutureDate) {
+                // FUTURE DATE: Save as scheduled - NO balance change
+                await handleAddScheduledTransaction(amountValue, userId);
+                await loadScheduledTransactions();
+                alert(`📅 Scheduled transaction added for ${new Date(transactionForm.date).toLocaleDateString()}\n\nThis will NOT affect your balance until approved.`);
             } else {
-                if (isExpense) {
-                    transactionAmount = -Math.abs(amountValue);
-                    balanceChange = -Math.abs(amountValue);
-                } else {
-                    transactionAmount = Math.abs(amountValue);
-                    balanceChange = Math.abs(amountValue);
-                }
+                // TODAY/PAST: Add as regular - balance changes NOW
+                const newBalance = await handleAddRegularTransaction(amountValue, userId);
+                await loadAccountData(account.id);
+                alert(`✅ Transaction added successfully!\n\nNew balance: ${formatCurrency(newBalance)}`);
             }
-
-            const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
-                transactionForm.categoryId === 'inflow_ready_to_assign';
-
-            const transactionData = {
-                accountId: account.id,
-                date: transactionForm.date,
-                payee: transactionForm.payee,
-                description: transactionForm.payee,
-                amount: transactionAmount,
-                categoryId: isReadyToAssign ? null : transactionForm.categoryId,
-                memo: transactionForm.memo,
-                cleared: transactionForm.cleared ? 1 : 0
-            };
-
-            const transactionResult = await window.electronAPI.addTransaction(transactionData);
-
-            if (!transactionResult.success) {
-                setTransactionError(transactionResult.error || 'Failed to add transaction');
-                return;
-            }
-
-            const currentBalance = account.balance || 0;
-            const newBalance = currentBalance + balanceChange;
-
-            const updateResult = await window.electronAPI.updateAccount(
-                account.id,
-                userId,
-                { balance: newBalance }
-            );
-
-            if (!updateResult.success) {
-                setTransactionError('Transaction added but failed to update account balance.');
-                return;
-            }
-
-            await loadAccountData(account.id);
+            
             window.dispatchEvent(new CustomEvent('accounts-updated'));
             window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
 
             resetForm();
             setShowAddModal(false);
-            alert(`✅ Transaction added successfully!\n\nNew balance: ${formatCurrency(newBalance)}`);
             
         } catch (error) {
             console.error('Error adding transaction:', error);
-            setTransactionError('An unexpected error occurred: ' + error.message);
+            setTransactionError(error.message || 'An unexpected error occurred');
         } finally {
             setIsSubmitting(false);
         }
@@ -251,6 +380,10 @@ const AccountDetailPage = () => {
     }
 
     const filteredCategories = getFilteredCategories();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const selectedDate = new Date(transactionForm.date);
+    const isFutureDate = selectedDate > today;
 
     return (
         <div style={styles.container}>
@@ -275,6 +408,66 @@ const AccountDetailPage = () => {
                     </div>
                 </div>
             </div>
+
+            {/* Scheduled Transactions Section */}
+            {scheduledTransactions.length > 0 && (
+                <div style={styles.scheduledSection}>
+                    <div 
+                        style={styles.scheduledHeader} 
+                        onClick={() => setShowScheduledSection(!showScheduledSection)}
+                    >
+                        <span style={styles.scheduledHeaderLeft}>
+                            <span style={styles.scheduledIcon}>📅</span>
+                            <span style={styles.scheduledTitle}>Scheduled Transactions</span>
+                            <span style={styles.scheduledCount}>({scheduledTransactions.length})</span>
+                        </span>
+                        <span style={styles.scheduledToggle}>{showScheduledSection ? '▼' : '▶'}</span>
+                    </div>
+                    
+                    {showScheduledSection && (
+                        <div style={styles.scheduledList}>
+                            {scheduledTransactions.map(tx => {
+                                const category = categories.find(c => c.id === tx.categoryId);
+                                return (
+                                    <div key={tx.id} style={styles.scheduledItem}>
+                                        <div style={styles.scheduledDate}>
+                                            {new Date(tx.date).toLocaleDateString()}
+                                        </div>
+                                        <div style={styles.scheduledInfo}>
+                                            <div style={styles.scheduledPayee}>{tx.payee}</div>
+                                            <div style={styles.scheduledCategory}>
+                                                {category?.name || 'Uncategorized'}
+                                            </div>
+                                        </div>
+                                        <div style={{
+                                            ...styles.scheduledAmount,
+                                            color: tx.transactionType === 'outflow' ? '#F87171' : '#4ADE80'
+                                        }}>
+                                            {tx.transactionType === 'outflow' ? '-' : '+'}{formatCurrency(tx.amount)}
+                                        </div>
+                                        <div style={styles.scheduledActions}>
+                                            <button 
+                                                onClick={() => handleApproveScheduled(tx)} 
+                                                style={styles.approveButton}
+                                                disabled={refreshing}
+                                            >
+                                                ✅ Approve
+                                            </button>
+                                            <button 
+                                                onClick={() => handleRejectScheduled(tx)} 
+                                                style={styles.rejectButton}
+                                                disabled={refreshing}
+                                            >
+                                                ❌ Reject
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Add Transaction Button */}
             <div style={styles.transactionsHeader}>
@@ -310,7 +503,7 @@ const AccountDetailPage = () => {
                 )}
             </div>
 
-            {/* ADD TRANSACTION MODAL - WITH TRANSACTION TYPE AND CATEGORY DROPDOWNS */}
+            {/* Add Transaction Modal */}
             {showAddModal && (
                 <div style={styles.modalOverlay} onClick={() => setShowAddModal(false)}>
                     <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -328,7 +521,7 @@ const AccountDetailPage = () => {
                                 </div>
                             </div>
 
-                            {/* TRANSACTION TYPE DROPDOWN - NEW */}
+                            {/* Transaction Type Dropdown */}
                             <div style={styles.formGroup}>
                                 <label style={styles.label}>Transaction Type *</label>
                                 <select
@@ -343,11 +536,11 @@ const AccountDetailPage = () => {
                                     style={styles.select}
                                 >
                                     <option value="outflow">Outflow (Expense)</option>
-                                    <option value="inflow">Inflow (Income)</option>
+                                    <option value="inflow">Inflow (Income/Payment)</option>
                                 </select>
                             </div>
 
-                            {/* CATEGORY DROPDOWN - Changes based on Transaction Type */}
+                            {/* Category Dropdown */}
                             <div style={styles.formGroup}>
                                 <label style={styles.label}>Category *</label>
                                 <select
@@ -362,9 +555,6 @@ const AccountDetailPage = () => {
                                         </option>
                                     ))}
                                 </select>
-                                {transactionForm.transactionType === 'outflow' && filteredCategories.length === 0 && (
-                                    <div style={styles.hint}>⚠️ No categories found. Please create categories first.</div>
-                                )}
                             </div>
 
                             {/* Amount */}
@@ -393,6 +583,11 @@ const AccountDetailPage = () => {
                                     onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })}
                                     style={styles.input}
                                 />
+                                {isFutureDate && (
+                                    <div style={styles.futureDateWarning}>
+                                        📅 Future date detected. This will be saved as a <strong>scheduled transaction</strong> and will NOT affect your balance until approved on {new Date(transactionForm.date).toLocaleDateString()}.
+                                    </div>
+                                )}
                             </div>
 
                             {/* Payee */}
@@ -419,21 +614,23 @@ const AccountDetailPage = () => {
                                 />
                             </div>
 
-                            {/* Cleared Checkbox */}
-                            <div style={styles.checkboxGroup}>
-                                <label style={styles.checkboxLabel}>
-                                    <input
-                                        type="checkbox"
-                                        checked={transactionForm.cleared}
-                                        onChange={(e) => setTransactionForm({ ...transactionForm, cleared: e.target.checked })}
-                                        style={styles.checkbox}
-                                    />
-                                    Mark as cleared
-                                </label>
-                            </div>
+                            {/* Cleared Checkbox - only for non-future dates */}
+                            {!isFutureDate && (
+                                <div style={styles.checkboxGroup}>
+                                    <label style={styles.checkboxLabel}>
+                                        <input
+                                            type="checkbox"
+                                            checked={transactionForm.cleared}
+                                            onChange={(e) => setTransactionForm({ ...transactionForm, cleared: e.target.checked })}
+                                            style={styles.checkbox}
+                                        />
+                                        Mark as cleared
+                                    </label>
+                                </div>
+                            )}
 
-                            {/* Balance Preview */}
-                            {transactionForm.amount && parseFloat(transactionForm.amount) > 0 && (
+                            {/* Balance Preview - only for non-future dates */}
+                            {!isFutureDate && transactionForm.amount && parseFloat(transactionForm.amount) > 0 && (
                                 <div style={styles.balancePreview}>
                                     <div style={styles.balancePreviewLabel}>New Balance after transaction:</div>
                                     <div style={{
@@ -455,7 +652,7 @@ const AccountDetailPage = () => {
                         <div style={styles.modalFooter}>
                             <button style={styles.cancelModalButton} onClick={() => setShowAddModal(false)}>Cancel</button>
                             <button style={styles.submitButton} onClick={handleAddTransaction} disabled={isSubmitting}>
-                                {isSubmitting ? 'Adding...' : 'Add Transaction'}
+                                {isSubmitting ? 'Adding...' : (isFutureDate ? '📅 Schedule Transaction' : 'Add Transaction')}
                             </button>
                         </div>
                     </div>
@@ -527,6 +724,111 @@ const styles = {
     balance: {
         fontSize: '2rem',
         fontWeight: 'bold'
+    },
+    // Scheduled Transactions Styles
+    scheduledSection: {
+        maxWidth: '1200px',
+        margin: '0 auto 2rem',
+        background: '#1F2937',
+        borderRadius: '0.75rem',
+        border: '1px solid #374151',
+        overflow: 'hidden',
+    },
+    scheduledHeader: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '1rem 1.5rem',
+        background: '#111827',
+        cursor: 'pointer',
+        borderBottom: '1px solid #374151',
+    },
+    scheduledHeaderLeft: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
+    },
+    scheduledIcon: {
+        fontSize: '1.25rem',
+    },
+    scheduledTitle: {
+        fontSize: '1rem',
+        fontWeight: '600',
+        color: '#F59E0B',
+    },
+    scheduledCount: {
+        fontSize: '0.875rem',
+        color: '#9CA3AF',
+    },
+    scheduledToggle: {
+        fontSize: '0.75rem',
+        color: '#9CA3AF',
+    },
+    scheduledList: {
+        padding: '0.5rem',
+    },
+    scheduledItem: {
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0.75rem 1rem',
+        borderBottom: '1px solid #374151',
+        gap: '1rem',
+        ':last-child': {
+            borderBottom: 'none',
+        },
+    },
+    scheduledDate: {
+        width: '90px',
+        fontSize: '0.75rem',
+        color: '#9CA3AF',
+    },
+    scheduledInfo: {
+        flex: 2,
+    },
+    scheduledPayee: {
+        fontSize: '0.875rem',
+        color: 'white',
+        fontWeight: '500',
+    },
+    scheduledCategory: {
+        fontSize: '0.7rem',
+        color: '#6B7280',
+    },
+    scheduledAmount: {
+        fontSize: '0.875rem',
+        fontWeight: '600',
+        minWidth: '80px',
+        textAlign: 'right',
+    },
+    scheduledActions: {
+        display: 'flex',
+        gap: '0.5rem',
+    },
+    approveButton: {
+        padding: '0.25rem 0.75rem',
+        background: '#10B981',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.375rem',
+        fontSize: '0.7rem',
+        cursor: 'pointer',
+        ':disabled': {
+            opacity: 0.5,
+            cursor: 'not-allowed',
+        },
+    },
+    rejectButton: {
+        padding: '0.25rem 0.75rem',
+        background: '#EF4444',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.375rem',
+        fontSize: '0.7rem',
+        cursor: 'pointer',
+        ':disabled': {
+            opacity: 0.5,
+            cursor: 'not-allowed',
+        },
     },
     transactionsHeader: {
         maxWidth: '1200px',
@@ -699,6 +1001,15 @@ const styles = {
         color: 'white',
         fontSize: '0.875rem',
         cursor: 'pointer'
+    },
+    futureDateWarning: {
+        marginTop: '0.5rem',
+        padding: '0.5rem',
+        background: 'rgba(245, 158, 11, 0.1)',
+        border: '1px solid #F59E0B',
+        borderRadius: '0.25rem',
+        fontSize: '0.7rem',
+        color: '#F59E0B',
     },
     hint: {
         display: 'block',
