@@ -18,12 +18,45 @@ const AccountDetailPage = () => {
     const [showScheduledSection, setShowScheduledSection] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     
+    // Delete transaction states
+    const [selectedTransactions, setSelectedTransactions] = useState(new Set());
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+    
+    // Helper function to get today's date in local timezone without timezone offset
+    const getTodayLocalDate = () => {
+        const today = new Date();
+        const year = today.getFullYear();
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const day = String(today.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+    
+    // Helper function to format date for display without timezone conversion
+    const formatDisplayDate = (dateString) => {
+        if (!dateString) return '';
+        // Parse the date string as local date (YYYY-MM-DD)
+        const [year, month, day] = dateString.split('-');
+        return new Date(year, month - 1, day).toLocaleDateString();
+    };
+    
+    // Helper function to compare dates without timezone
+    const compareLocalDates = (dateString1, dateString2) => {
+        return dateString1 === dateString2;
+    };
+    
+    // Helper function to check if a date is in the future (local timezone)
+    const isFutureLocalDate = (dateString) => {
+        const today = getTodayLocalDate();
+        return dateString > today;
+    };
+    
     // Transaction form with Transaction Type
     const [transactionForm, setTransactionForm] = useState({
         transactionType: 'outflow',
         categoryId: '',
         amount: '',
-        date: new Date().toISOString().split('T')[0],
+        date: getTodayLocalDate(),
         payee: '',
         memo: '',
         cleared: true
@@ -62,6 +95,25 @@ const AccountDetailPage = () => {
         }
     };
 
+    // Calculate balance change for a transaction (for deletion)
+    const calculateBalanceChangeForTransaction = (transaction) => {
+        // When deleting, we reverse the effect: subtract if it was positive, add if it was negative
+        // This follows YNAB logic: removing a transaction should undo its impact on the balance
+        const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
+        
+        if (isCreditOrLoan) {
+            // For credit/loan accounts: positive amounts decrease balance, negative amounts increase balance
+            // So to reverse: if amount > 0 (payment), deleting should INCREASE balance (add positive)
+            // If amount < 0 (purchase), deleting should DECREASE balance (add negative)
+            return transaction.amount > 0 ? transaction.amount : transaction.amount;
+        } else {
+            // For regular accounts: positive amounts increase balance, negative amounts decrease balance
+            // So to reverse: if amount > 0 (income), deleting should DECREASE balance (subtract positive)
+            // If amount < 0 (expense), deleting should INCREASE balance (add positive)
+            return transaction.amount > 0 ? -transaction.amount : Math.abs(transaction.amount);
+        }
+    };
+
     // Load scheduled transactions
     const loadScheduledTransactions = async () => {
         try {
@@ -97,10 +149,10 @@ const AccountDetailPage = () => {
             const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
                 scheduledTx.categoryId === 'inflow_ready_to_assign';
 
-            // Step 1: Add to regular transactions
+            // Step 1: Add to regular transactions - use today's date in local format
             const transactionData = {
                 accountId: account.id,
-                date: new Date().toISOString().split('T')[0],
+                date: getTodayLocalDate(),
                 payee: scheduledTx.payee,
                 description: scheduledTx.payee,
                 amount: transactionAmount,
@@ -158,6 +210,94 @@ const AccountDetailPage = () => {
         }
     };
 
+    // Handle transaction selection
+    const handleSelectTransaction = (transactionId) => {
+        const newSelected = new Set(selectedTransactions);
+        if (newSelected.has(transactionId)) {
+            newSelected.delete(transactionId);
+        } else {
+            newSelected.add(transactionId);
+        }
+        setSelectedTransactions(newSelected);
+    };
+
+    // Handle select all
+    const handleSelectAll = () => {
+        if (selectedTransactions.size === transactions.length && transactions.length > 0) {
+            // Deselect all
+            setSelectedTransactions(new Set());
+        } else {
+            // Select all
+            const allIds = transactions.map(t => t.id);
+            setSelectedTransactions(new Set(allIds));
+        }
+    };
+
+    // Handle delete selected transactions
+    const handleDeleteSelected = async () => {
+        if (selectedTransactions.size === 0) {
+            alert('Please select at least one transaction to delete.');
+            return;
+        }
+
+        const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
+        const totalAmount = selectedTransactionsList.reduce((sum, t) => sum + t.amount, 0);
+        
+        setShowDeleteModal(true);
+    };
+
+    // Confirm deletion
+    const confirmDelete = async () => {
+        setIsDeleting(true);
+        try {
+            const userResult = await window.electronAPI.getCurrentUser();
+            if (!userResult?.success || !userResult?.data) {
+                alert('Please log in to delete transactions');
+                return;
+            }
+
+            const userId = userResult.data.id;
+            const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
+            
+            // Calculate total balance change
+            let totalBalanceChange = 0;
+            for (const transaction of selectedTransactionsList) {
+                totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
+            }
+
+            // Delete each transaction
+            for (const transaction of selectedTransactionsList) {
+                const deleteResult = await window.electronAPI.deleteTransaction(transaction.id);
+                if (!deleteResult.success) {
+                    throw new Error(`Failed to delete transaction ${transaction.id}: ${deleteResult.error}`);
+                }
+            }
+
+            // Update account balance
+            const currentBalance = account.balance || 0;
+            const newBalance = currentBalance + totalBalanceChange;
+            await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+
+            // Refresh data
+            await loadAccountData(account.id);
+            
+            // Clear selections
+            setSelectedTransactions(new Set());
+            setShowDeleteModal(false);
+            
+            // Trigger global updates
+            window.dispatchEvent(new CustomEvent('accounts-updated'));
+            window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+            
+            alert(`✅ Successfully deleted ${selectedTransactionsList.length} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
+        } catch (error) {
+            console.error('Error deleting transactions:', error);
+            alert('Error deleting transactions: ' + error.message);
+        } finally {
+            setIsDeleting(false);
+        }
+    };
+
     useEffect(() => {
         if (id) {
             loadAccountData(id);
@@ -209,7 +349,7 @@ const AccountDetailPage = () => {
             transactionType: 'outflow',
             categoryId: '',
             amount: '',
-            date: new Date().toISOString().split('T')[0],
+            date: getTodayLocalDate(),
             payee: '',
             memo: '',
             cleared: true
@@ -248,7 +388,7 @@ const AccountDetailPage = () => {
 
         const transactionData = {
             accountId: account.id,
-            date: transactionForm.date,
+            date: transactionForm.date, // Already in YYYY-MM-DD format
             payee: transactionForm.payee,
             description: transactionForm.payee,
             amount: transactionAmount,
@@ -273,7 +413,7 @@ const AccountDetailPage = () => {
     const handleAddScheduledTransaction = async (amountValue, userId) => {
         const scheduledData = {
             accountId: account.id,
-            date: transactionForm.date,
+            date: transactionForm.date, // Already in YYYY-MM-DD format
             payee: transactionForm.payee,
             amount: amountValue,
             transactionType: transactionForm.transactionType,
@@ -300,9 +440,7 @@ const AccountDetailPage = () => {
         setTransactionError('');
 
         const amountValue = parseFloat(transactionForm.amount);
-        const transactionDate = new Date(transactionForm.date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const isFuture = isFutureLocalDate(transactionForm.date);
         
         if (isNaN(amountValue) || amountValue === 0) {
             setTransactionError('Please enter a valid amount');
@@ -329,13 +467,15 @@ const AccountDetailPage = () => {
             }
 
             const userId = userResult.data.id;
-            const isFutureDate = transactionDate > today;
 
-            if (isFutureDate) {
+            if (isFuture) {
                 // FUTURE DATE: Save as scheduled - NO balance change
                 await handleAddScheduledTransaction(amountValue, userId);
                 await loadScheduledTransactions();
-                alert(`📅 Scheduled transaction added for ${new Date(transactionForm.date).toLocaleDateString()}\n\nThis will NOT affect your balance until approved.`);
+                // Format the date for display without timezone issues
+                const [year, month, day] = transactionForm.date.split('-');
+                const displayDate = new Date(year, month - 1, day).toLocaleDateString();
+                alert(`📅 Scheduled transaction added for ${displayDate}\n\nThis will NOT affect your balance until approved.`);
             } else {
                 // TODAY/PAST: Add as regular - balance changes NOW
                 const newBalance = await handleAddRegularTransaction(amountValue, userId);
@@ -380,10 +520,7 @@ const AccountDetailPage = () => {
     }
 
     const filteredCategories = getFilteredCategories();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const selectedDate = new Date(transactionForm.date);
-    const isFutureDate = selectedDate > today;
+    const isFutureDate = isFutureLocalDate(transactionForm.date);
 
     return (
         <div style={styles.container}>
@@ -431,7 +568,7 @@ const AccountDetailPage = () => {
                                 return (
                                     <div key={tx.id} style={styles.scheduledItem}>
                                         <div style={styles.scheduledDate}>
-                                            {new Date(tx.date).toLocaleDateString()}
+                                            {formatDisplayDate(tx.date)}
                                         </div>
                                         <div style={styles.scheduledInfo}>
                                             <div style={styles.scheduledPayee}>{tx.payee}</div>
@@ -469,12 +606,22 @@ const AccountDetailPage = () => {
                 </div>
             )}
 
-            {/* Add Transaction Button */}
+            {/* Add Transaction Button and Delete Controls */}
             <div style={styles.transactionsHeader}>
                 <h2 style={styles.transactionsTitle}>Transactions</h2>
-                <button onClick={() => setShowAddModal(true)} style={styles.addTransactionButton}>
-                    <span style={styles.buttonIcon}>+</span> Add Transaction
-                </button>
+                <div style={styles.headerButtons}>
+                    {selectedTransactions.size > 0 && (
+                        <button 
+                            onClick={handleDeleteSelected} 
+                            style={styles.deleteSelectedButton}
+                        >
+                            🗑️ Delete Selected ({selectedTransactions.size})
+                        </button>
+                    )}
+                    <button onClick={() => setShowAddModal(true)} style={styles.addTransactionButton}>
+                        <span style={styles.buttonIcon}>+</span> Add Transaction
+                    </button>
+                </div>
             </div>
 
             {/* Transaction List */}
@@ -487,19 +634,46 @@ const AccountDetailPage = () => {
                         >+ Add Your First Transaction</button> to get started.
                     </div>
                 ) : (
-                    transactions.map(transaction => {
-                        const category = categories.find(c => c.id === transaction.category_id);
-                        return (
-                            <div key={transaction.id} style={styles.transactionRow}>
-                                <div style={styles.transactionDate}>{new Date(transaction.date).toLocaleDateString()}</div>
-                                <div style={styles.transactionPayee}>{transaction.payee}</div>
-                                <div style={styles.transactionCategory}>{category?.name || (transaction.category_id === null ? 'Ready to Assign' : 'Uncategorized')}</div>
-                                <div style={{ ...styles.transactionAmount, color: transaction.amount < 0 ? '#F87171' : '#4ADE80' }}>
-                                    {formatCurrency(transaction.amount)}
-                                </div>
+                    <>
+                        {/* Header Row with Select All */}
+                        <div style={styles.transactionHeaderRow}>
+                            <div style={styles.checkboxCell}>
+                                <input
+                                    type="checkbox"
+                                    checked={selectedTransactions.size === transactions.length && transactions.length > 0}
+                                    onChange={handleSelectAll}
+                                    style={styles.checkbox}
+                                />
                             </div>
-                        );
-                    })
+                            <div style={styles.transactionDateHeader}>Date</div>
+                            <div style={styles.transactionPayeeHeader}>Payee</div>
+                            <div style={styles.transactionCategoryHeader}>Category</div>
+                            <div style={styles.transactionAmountHeader}>Amount</div>
+                        </div>
+                        
+                        {/* Transaction Rows */}
+                        {transactions.map(transaction => {
+                            const category = categories.find(c => c.id === transaction.category_id);
+                            return (
+                                <div key={transaction.id} style={styles.transactionRow}>
+                                    <div style={styles.checkboxCell}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedTransactions.has(transaction.id)}
+                                            onChange={() => handleSelectTransaction(transaction.id)}
+                                            style={styles.checkbox}
+                                        />
+                                    </div>
+                                    <div style={styles.transactionDate}>{formatDisplayDate(transaction.date)}</div>
+                                    <div style={styles.transactionPayee}>{transaction.payee}</div>
+                                    <div style={styles.transactionCategory}>{category?.name || (transaction.category_id === null ? 'Ready to Assign' : 'Uncategorized')}</div>
+                                    <div style={{ ...styles.transactionAmount, color: transaction.amount < 0 ? '#F87171' : '#4ADE80' }}>
+                                        {formatCurrency(transaction.amount)}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </>
                 )}
             </div>
 
@@ -585,7 +759,7 @@ const AccountDetailPage = () => {
                                 />
                                 {isFutureDate && (
                                     <div style={styles.futureDateWarning}>
-                                        📅 Future date detected. This will be saved as a <strong>scheduled transaction</strong> and will NOT affect your balance until approved on {new Date(transactionForm.date).toLocaleDateString()}.
+                                        📅 Future date detected. This will be saved as a <strong>scheduled transaction</strong> and will NOT affect your balance until approved on {formatDisplayDate(transactionForm.date)}.
                                     </div>
                                 )}
                             </div>
@@ -658,6 +832,68 @@ const AccountDetailPage = () => {
                     </div>
                 </div>
             )}
+
+            {/* Delete Confirmation Modal */}
+            {showDeleteModal && (
+                <div style={styles.modalOverlay} onClick={() => !isDeleting && setShowDeleteModal(false)}>
+                    <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+                        <div style={styles.modalHeader}>
+                            <h3 style={styles.modalTitle}>Confirm Delete</h3>
+                            <button style={styles.closeButton} onClick={() => !isDeleting && setShowDeleteModal(false)}>✕</button>
+                        </div>
+                        
+                        <div style={styles.modalBody}>
+                            <p style={styles.confirmText}>
+                                Are you sure you want to delete <strong>{selectedTransactions.size}</strong> transaction(s)?
+                            </p>
+                            <div style={styles.confirmDetails}>
+                                <div style={styles.confirmDetailItem}>
+                                    <span>Current Balance:</span>
+                                    <strong>{formatCurrency(account.balance)}</strong>
+                                </div>
+                                {(() => {
+                                    const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
+                                    const totalImpact = selectedTransactionsList.reduce((sum, t) => sum + calculateBalanceChangeForTransaction(t), 0);
+                                    return (
+                                        <div style={styles.confirmDetailItem}>
+                                            <span>Balance Change:</span>
+                                            <strong style={{ color: totalImpact >= 0 ? '#4ADE80' : '#F87171' }}>
+                                                {totalImpact >= 0 ? '+' : ''}{formatCurrency(totalImpact)}
+                                            </strong>
+                                        </div>
+                                    );
+                                })()}
+                                <div style={styles.confirmDetailItem}>
+                                    <span>New Balance:</span>
+                                    <strong style={{ color: '#4ADE80' }}>
+                                        {formatCurrency(account.balance + transactions.filter(t => selectedTransactions.has(t.id)).reduce((sum, t) => sum + calculateBalanceChangeForTransaction(t), 0))}
+                                    </strong>
+                                </div>
+                            </div>
+                            <p style={styles.confirmWarning}>
+                                ⚠️ This action cannot be undone.
+                            </p>
+                        </div>
+                        
+                        <div style={styles.modalFooter}>
+                            <button 
+                                style={styles.cancelModalButton} 
+                                onClick={() => setShowDeleteModal(false)}
+                                disabled={isDeleting}
+                            >
+                                Cancel
+                            </button>
+                            <button 
+                                style={styles.deleteConfirmButton} 
+                                onClick={confirmDelete}
+                                disabled={isDeleting}
+                            >
+                                {isDeleting ? 'Deleting...' : `Delete ${selectedTransactions.size} Transaction(s)`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -690,7 +926,7 @@ const styles = {
         color: '#9CA3AF',
         fontSize: '1rem',
         padding: '0.5rem 1rem',
-        background: '#1F2937',
+        background: '#1E3A8A',
         borderRadius: '0.5rem',
         border: '1px solid #374151',
         cursor: 'pointer'
@@ -729,7 +965,7 @@ const styles = {
     scheduledSection: {
         maxWidth: '1200px',
         margin: '0 auto 2rem',
-        background: '#1F2937',
+        background: '#1E3A8A',
         borderRadius: '0.75rem',
         border: '1px solid #374151',
         overflow: 'hidden',
@@ -739,9 +975,9 @@ const styles = {
         justifyContent: 'space-between',
         alignItems: 'center',
         padding: '1rem 1.5rem',
-        background: '#111827',
+        background: '#1E3A8A',
         cursor: 'pointer',
-        borderBottom: '1px solid #374151',
+        borderBottom: '1px solid #1E3A8A',
     },
     scheduledHeaderLeft: {
         display: 'flex',
@@ -771,7 +1007,7 @@ const styles = {
         display: 'flex',
         alignItems: 'center',
         padding: '0.75rem 1rem',
-        borderBottom: '1px solid #374151',
+        borderBottom: '1px solid #1E3A8A',
         gap: '1rem',
         ':last-child': {
             borderBottom: 'none',
@@ -843,8 +1079,26 @@ const styles = {
         color: 'white',
         margin: 0
     },
+    headerButtons: {
+        display: 'flex',
+        gap: '1rem',
+        alignItems: 'center'
+    },
     addTransactionButton: {
         background: '#10B981',
+        color: 'white',
+        border: 'none',
+        padding: '0.75rem 1.5rem',
+        borderRadius: '0.5rem',
+        fontSize: '1rem',
+        fontWeight: '600',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem'
+    },
+    deleteSelectedButton: {
+        background: '#EF4444',
         color: 'white',
         border: 'none',
         padding: '0.75rem 1.5rem',
@@ -863,36 +1117,75 @@ const styles = {
     transactionsList: {
         maxWidth: '1200px',
         margin: '0 auto',
-        background: '#1F2937',
+        background: '#1E3A8A',
         borderRadius: '0.75rem',
         overflow: 'hidden'
+    },
+    transactionHeaderRow: {
+        display: 'flex',
+        alignItems: 'center',
+        padding: '1rem 1.5rem',
+        borderBottom: '1px solid #1E3A8A',
+        gap: '1rem',
+        background: '#1E3A8A',
+        fontWeight: '600',
+        color: '#9CA3AF',
+        fontSize: '0.875rem'
     },
     transactionRow: {
         display: 'flex',
         alignItems: 'center',
         padding: '1rem 1.5rem',
-        borderBottom: '1px solid #374151',
-        gap: '1rem'
+        borderBottom: '1px solid #1E3A8A',
+        gap: '1rem',
+        transition: 'background-color 0.2s',
+        ':hover': {
+            background: '#1E3A8A'
+        }
+    },
+    checkboxCell: {
+        width: '40px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    },
+    checkbox: {
+        width: '18px',
+        height: '18px',
+        cursor: 'pointer'
     },
     transactionDate: {
         width: '100px',
         color: '#9CA3AF',
         fontSize: '0.875rem'
     },
+    transactionDateHeader: {
+        width: '100px'
+    },
     transactionPayee: {
         flex: 2,
         color: 'white',
         fontWeight: '500'
+    },
+    transactionPayeeHeader: {
+        flex: 2
     },
     transactionCategory: {
         flex: 1,
         color: '#9CA3AF',
         fontSize: '0.875rem'
     },
+    transactionCategoryHeader: {
+        flex: 1
+    },
     transactionAmount: {
         width: '120px',
         textAlign: 'right',
         fontWeight: '600'
+    },
+    transactionAmountHeader: {
+        width: '120px',
+        textAlign: 'right'
     },
     emptyTransactions: {
         padding: '3rem',
@@ -923,7 +1216,7 @@ const styles = {
         backdropFilter: 'blur(4px)'
     },
     modalContent: {
-        background: '#1F2937',
+        background: '#1E3A8A',
         borderRadius: '1rem',
         width: '90%',
         maxWidth: '500px',
@@ -937,7 +1230,7 @@ const styles = {
         justifyContent: 'space-between',
         alignItems: 'center',
         padding: '1.5rem',
-        borderBottom: '1px solid #374151'
+        borderBottom: '1px solid #1E3A8A'
     },
     modalTitle: {
         fontSize: '1.25rem',
@@ -963,7 +1256,7 @@ const styles = {
         display: 'flex',
         gap: '1rem',
         padding: '1.5rem',
-        borderTop: '1px solid #374151'
+        borderTop: '1px solid #1E3A8A'
     },
     formGroup: {
         marginBottom: '1rem'
@@ -977,7 +1270,7 @@ const styles = {
     },
     accountDisplay: {
         padding: '0.75rem',
-        background: '#111827',
+        background: '#1E3A8A',
         border: '1px solid #374151',
         borderRadius: '0.5rem',
         color: 'white',
@@ -986,7 +1279,7 @@ const styles = {
     input: {
         width: '100%',
         padding: '0.75rem',
-        background: '#111827',
+        background: '#1E3A8A',
         border: '1px solid #374151',
         borderRadius: '0.5rem',
         color: 'white',
@@ -995,7 +1288,7 @@ const styles = {
     select: {
         width: '100%',
         padding: '0.75rem',
-        background: '#111827',
+        background: '#1E3A8A',
         border: '1px solid #374151',
         borderRadius: '0.5rem',
         color: 'white',
@@ -1031,7 +1324,7 @@ const styles = {
     modalInput: {
         width: '100%',
         padding: '0.75rem 0.75rem 0.75rem 2rem',
-        background: '#111827',
+        background: '#1E3A8A',
         border: '1px solid #374151',
         borderRadius: '0.5rem',
         color: 'white',
@@ -1048,15 +1341,10 @@ const styles = {
         fontSize: '0.875rem',
         cursor: 'pointer'
     },
-    checkbox: {
-        width: '1rem',
-        height: '1rem',
-        cursor: 'pointer'
-    },
     balancePreview: {
         marginTop: '1rem',
         padding: '0.75rem',
-        background: '#111827',
+        background: '#1E3A8A',
         borderRadius: '0.5rem',
         border: '1px solid #374151',
         textAlign: 'center'
@@ -1102,9 +1390,48 @@ const styles = {
         fontWeight: '600',
         cursor: 'pointer'
     },
+    deleteConfirmButton: {
+        flex: 1,
+        padding: '0.75rem',
+        background: '#EF4444',
+        color: 'white',
+        border: 'none',
+        borderRadius: '0.5rem',
+        fontSize: '0.875rem',
+        fontWeight: '600',
+        cursor: 'pointer'
+    },
+    confirmText: {
+        color: 'white',
+        marginBottom: '1rem',
+        fontSize: '1rem'
+    },
+    confirmDetails: {
+        background: '#1E3A8A',
+        padding: '1rem',
+        borderRadius: '0.5rem',
+        marginBottom: '1rem'
+    },
+    confirmDetailItem: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        padding: '0.5rem 0',
+        color: '#9CA3AF',
+        fontSize: '0.875rem',
+        borderBottom: '1px solid #374151',
+        ':last-child': {
+            borderBottom: 'none'
+        }
+    },
+    confirmWarning: {
+        color: '#F87171',
+        fontSize: '0.875rem',
+        textAlign: 'center',
+        marginTop: '1rem'
+    },
     loadingContainer: {
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
+        background: 'linear-gradient(135deg, #1E3A8A 0%, #1E3A8A 100%)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -1122,7 +1449,7 @@ const styles = {
     },
     errorContainer: {
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
+        background: 'linear-gradient(135deg, #1E3A8A 0%, #1E3A8A 100%)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
