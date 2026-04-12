@@ -1,6 +1,7 @@
 // src/views/CreditCardManager.jsx
 import React, { useState, useEffect } from 'react';
 import EditAccountModal from './EditAccountModal';
+import { QRCodeCanvas } from 'qrcode.react';
 
 function CreditCardManager({
   cards = [],
@@ -15,11 +16,13 @@ function CreditCardManager({
   const [filter, setFilter] = useState('all');
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
-  
-  // New state for Zero Interest Accelerator
+
+  // State for Zero Interest Accelerator
   const [showAccelerator, setShowAccelerator] = useState(false);
   const [targetMonths, setTargetMonths] = useState(12);
   const [acceleratorPlan, setAcceleratorPlan] = useState(null);
+  const [showQR, setShowQR] = useState(false);
+  const [qrValue, setQrValue] = useState('');
 
   // Debug: log cards when they change
   useEffect(() => {
@@ -31,7 +34,8 @@ function CreditCardManager({
         interest_rate: c.interest_rate,
         apr: c.apr,
         account_number: c.account_number,
-        account_holder_name: c.account_holder_name
+        account_holder_name: c.account_holder_name,
+        institution: c.institution
       })));
     }
   }, [cards]);
@@ -42,12 +46,10 @@ function CreditCardManager({
     const aprValue = card.interest_rate ?? card.apr ?? 18.99;
     const monthlyRate = aprValue / 100 / 12;
     const minPayment = card.minimum_payment || card.minimumPayment || Math.max(25, balance * 0.02);
-    
-    // Calculate months to payoff with minimum payment
+
     let monthsWithMin = 0;
     let totalInterestMin = 0;
-    let remainingBalance = balance;
-    
+
     if (monthlyRate === 0) {
       monthsWithMin = Math.ceil(balance / minPayment);
       totalInterestMin = 0;
@@ -61,12 +63,11 @@ function CreditCardManager({
       }
       totalInterestMin = monthsWithMin * minPayment - balance;
     }
-    
-    // Calculate accelerated payment for target months
+
     let targetPayment = null;
     let targetTotalInterest = null;
     let canAchieve = true;
-    
+
     if (targetMonths > 0 && monthlyRate > 0) {
       const r = monthlyRate;
       const n = targetMonths;
@@ -81,11 +82,11 @@ function CreditCardManager({
       targetTotalInterest = 0;
       if (targetPayment < minPayment) canAchieve = false;
     }
-    
+
     const interestSaved = totalInterestMin - targetTotalInterest;
     const extraPerMonth = targetPayment ? targetPayment - minPayment : 0;
     const monthsSaved = monthsWithMin - targetMonths;
-    
+
     return {
       balance,
       minPayment,
@@ -99,6 +100,94 @@ function CreditCardManager({
       canAchieve,
       aprValue
     };
+  };
+
+  // SMART BANK ROUTER (NO GOOGLE FALLBACK)
+  const getBankUrl = (card) => {
+    if (card.payment_url) return card.payment_url;
+
+    const name = (card.institution || card.name || '').toLowerCase();
+
+    const routes = [
+      { match: ['chase'], url: 'https://www.chase.com/payments' },
+      { match: ['american express', 'amex'], url: 'https://www.americanexpress.com/en-us/account/payments/' },
+      { match: ['capital one'], url: 'https://www.capitalone.com/credit-cards/online-banking/' },
+      { match: ['citi'], url: 'https://www.citi.com/credit-cards/credit-card-payment' },
+      { match: ['discover'], url: 'https://www.discover.com/credit-cards/member-benefits/online-banking.html' },
+      { match: ['bank of america'], url: 'https://www.bankofamerica.com/online-banking/bill-pay/' },
+      { match: ['wells fargo'], url: 'https://www.wellsfargo.com/online-banking/bill-pay/' }
+    ];
+
+    const found = routes.find(r => r.match.some(m => name.includes(m)));
+    return found?.url || null;
+  };
+
+  // BUILD PAYMENT INTENT ENGINE
+  const buildPaymentIntent = (card, type, amount) => {
+    if (!card) return null;
+
+    return {
+      cardId: card.id,
+      paymentType: type,
+      amount,
+      bankUrl: getBankUrl(card),
+      last4: card.account_number?.slice(-4) || "N/A",
+      institution: card.institution || "Unknown",
+      cardName: card.name,
+      timestamp: new Date().toISOString()
+    };
+  };
+
+  // SMART PAY EXECUTOR
+  const handleSmartPay = (card, type, amount) => {
+    const payment = buildPaymentIntent(card, type, amount);
+    if (!payment) return;
+
+    console.log('⚡ Smart Pay Executed:', payment);
+
+    if (!payment.bankUrl) {
+      const qrData = JSON.stringify({
+        cardName: payment.cardName,
+        amount: payment.amount,
+        paymentType: payment.paymentType,
+        last4: payment.last4,
+        timestamp: payment.timestamp
+      });
+      setQrValue(qrData);
+      setShowQR(true);
+      return;
+    }
+
+    if (window.electronAPI?.openExternal) {
+      window.electronAPI.openExternal(payment.bankUrl);
+    } else {
+      window.open(payment.bankUrl, '_blank');
+    }
+  };
+
+  // Legacy handlers for compatibility
+  const handlePayOnComputer = (card) => {
+    const url = getBankUrl(card);
+    if (!url) {
+      alert('⚠️ No bank payment link available for this card.');
+      return;
+    }
+    console.log('Opening URL:', url);
+    if (window.electronAPI?.openExternal) {
+      window.electronAPI.openExternal(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  };
+
+  const handlePayOnPhone = (card) => {
+    const url = getBankUrl(card);
+    if (!url) {
+      alert('⚠️ No bank link available for this card.');
+      return;
+    }
+    setQrValue(url);
+    setShowQR(true);
   };
 
   // Handle card selection and calculate accelerator plan
@@ -122,7 +211,7 @@ function CreditCardManager({
   // Handle applying accelerator payment
   const handleApplyAccelerator = async (card) => {
     if (!acceleratorPlan || !acceleratorPlan.targetPayment) return;
-    
+
     if (onMakePayment) {
       const result = await onMakePayment({
         cardId: card.id,
@@ -139,9 +228,8 @@ function CreditCardManager({
     }
   };
 
-  // Handle adding a new card (opens EditAccountModal in "add" mode)
+  // Handle adding a new card
   const handleAddNewCard = () => {
-    // Create a temporary card object with default credit card values
     const newCardTemplate = {
       id: 'new',
       name: '',
@@ -177,11 +265,8 @@ function CreditCardManager({
       return;
     }
 
-    // Check if this is a new card (temporary ID 'new')
     if (cardId === 'new') {
-      // Create new card
       try {
-        // Get current user
         const userResult = await window.electronAPI.getCurrentUser();
         if (!userResult?.success || !userResult?.data) {
           alert('You must be logged in to create a credit card');
@@ -190,13 +275,11 @@ function CreditCardManager({
 
         const userId = userResult.data.id;
 
-        // Validate required fields
         if (!updatedData.name || updatedData.name.trim() === '') {
           alert('Please enter a card name');
           return;
         }
 
-        // Handle balance correctly - convert positive user input to negative for database
         let balanceValue = 0;
         if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
           const parsedBalance = parseFloat(updatedData.balance);
@@ -205,7 +288,6 @@ function CreditCardManager({
           }
         }
 
-        // Prepare credit card data
         const cardData = {
           name: updatedData.name.trim(),
           type: 'credit',
@@ -226,20 +308,15 @@ function CreditCardManager({
           currency: 'USD'
         };
 
-        console.log('📝 Creating credit card with data:', cardData);
-
         const result = await window.electronAPI.createAccount(cardData);
-        console.log('createAccount result:', result);
 
         if (result && result.success) {
-          console.log('✅ Credit card created successfully:', result.data);
           setShowEditModal(false);
           setEditingCard(null);
           window.dispatchEvent(new CustomEvent('accounts-updated'));
           alert('✅ Credit card created successfully!');
         } else {
           const errorMsg = result?.error || 'Unknown error occurred';
-          console.error('❌ Failed to create credit card:', errorMsg);
           alert(`Failed to create credit card: ${errorMsg}`);
         }
       } catch (error) {
@@ -247,21 +324,16 @@ function CreditCardManager({
         alert(`Error creating credit card: ${error.message}`);
       }
     } else {
-      // Update existing card
       try {
-        // Get current user FIRST
         const userResult = await window.electronAPI.getCurrentUser();
         if (!userResult?.success || !userResult?.data) {
           alert('You must be logged in');
           return;
         }
-        
+
         const userId = userResult.data.id;
-        
-        // Build update payload with only changed fields
         let updatePayload = {};
 
-        // Only include fields that have values
         if (updatedData.name !== undefined && updatedData.name !== '') updatePayload.name = updatedData.name;
         if (updatedData.institution !== undefined) updatePayload.institution = updatedData.institution;
         if (updatedData.credit_limit !== undefined && updatedData.credit_limit !== '') {
@@ -278,7 +350,6 @@ function CreditCardManager({
         if (updatedData.account_holder_name !== undefined) updatePayload.account_holder_name = updatedData.account_holder_name;
         if (updatedData.notes !== undefined) updatePayload.notes = updatedData.notes;
 
-        // Handle balance specially - convert to negative
         if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
           const parsedBalance = parseFloat(updatedData.balance);
           if (!isNaN(parsedBalance)) {
@@ -288,29 +359,20 @@ function CreditCardManager({
           updatePayload.balance = 0;
         }
 
-        // Ensure we have at least one field to update
         if (Object.keys(updatePayload).length === 0) {
-          console.error('❌ No fields to update');
           alert('No changes to save');
           return;
         }
 
-        console.log('📝 Updating credit card with payload:', updatePayload);
-        console.log('📝 Card ID:', cardId);
-        console.log('📝 User ID:', userId);
-
         const result = await window.electronAPI.updateAccount(cardId, userId, updatePayload);
-        console.log('updateAccount result:', result);
 
         if (result && result.success) {
-          console.log('✅ Credit card updated successfully');
           setShowEditModal(false);
           setEditingCard(null);
           window.dispatchEvent(new CustomEvent('accounts-updated'));
           alert('✅ Credit card updated successfully!');
         } else {
           const errorMsg = result?.error || 'Unknown error occurred';
-          console.error('❌ Failed to update credit card:', errorMsg);
           alert(`Failed to update credit card: ${errorMsg}`);
         }
       } catch (error) {
@@ -334,7 +396,6 @@ function CreditCardManager({
     const daysUntilDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24)) : 999;
     const utilization = (Math.abs(card.balance) / (card.limit || card.credit_limit || 1000)) * 100;
 
-    // Use interest_rate, fallback to apr, then default
     const aprValue = card.interest_rate ?? card.apr ?? 18.99;
     const monthlyRate = aprValue / 100 / 12;
     const interestIfNotPaid = Math.abs(card.balance) * monthlyRate;
@@ -366,6 +427,7 @@ function CreditCardManager({
     });
   };
 
+  // Original payment handler (kept for modal)
   const handlePayment = (cardId) => {
     const card = cards.find(c => c.id === cardId);
     const stats = calculateCardStats(card);
@@ -444,6 +506,16 @@ function CreditCardManager({
     return stats.isOverdue || stats.isDueSoon;
   }).length;
 
+  // Get card issuer icon helper
+  const getCardIssuerIcon = (cardNumber) => {
+    const firstDigit = cardNumber?.replace(/\D/g, '')[0];
+    if (firstDigit === '4') return { icon: '💳', name: 'Visa', color: '#1a3c6e' };
+    if (firstDigit === '5') return { icon: '💳', name: 'Mastercard', color: '#cc0000' };
+    if (firstDigit === '3') return { icon: '💳', name: 'Amex', color: '#006fcf' };
+    if (firstDigit === '6') return { icon: '💳', name: 'Discover', color: '#ff6600' };
+    return { icon: '💳', name: 'Card', color: '#4B5563' };
+  };
+
   return (
     <div style={styles.container}>
       {/* Header */}
@@ -453,7 +525,9 @@ function CreditCardManager({
           <p style={styles.subtitle}>Manage all your credit cards in one place</p>
         </div>
         <div style={styles.headerActions}>
-          <button onClick={onOpenPlanner} style={styles.plannerButton}>📈 Open Planner</button>
+          {onOpenPlanner && (
+            <button onClick={onOpenPlanner} style={styles.plannerButton}>📈 Open Planner</button>
+          )}
           <button onClick={handleAddNewCard} style={styles.addButton}>➕ Add Credit Card</button>
         </div>
       </div>
@@ -532,6 +606,7 @@ function CreditCardManager({
             const stats = calculateCardStats(card);
             const isSelected = selectedCard === card.id;
             const accelerator = calculateAcceleratorPlan(card);
+            const issuer = getCardIssuerIcon(card.account_number);
 
             return (
               <div
@@ -556,7 +631,9 @@ function CreditCardManager({
                 <div style={styles.cardHeader}>
                   <div>
                     <h3 style={styles.cardName}>{card.name}</h3>
-                    <div style={styles.cardInstitution}>{card.institution || 'Credit Card'}</div>
+                    <div style={styles.cardInstitution}>
+                      {issuer.icon} {issuer.name} • {card.institution || 'Credit Card'}
+                    </div>
                     {card.account_number && (
                       <div style={styles.accountNumber}>•••• {card.account_number.slice(-4)}</div>
                     )}
@@ -585,7 +662,7 @@ function CreditCardManager({
 
                 {/* Due Date */}
                 <div style={{ ...styles.dueDateSection, background: stats.isOverdue ? '#EF444420' : stats.isDueSoon ? '#F59E0B20' : 'transparent' }}>
-                  <span>Due: {card.dueDate || card.due_date ? new Date(card.dueDate || card.due_date).toLocaleDateString() : 'Not set'}</span>
+                  <span>📅 Due: {card.dueDate || card.due_date ? new Date(card.dueDate || card.due_date).toLocaleDateString() : 'Not set'}</span>
                   <span style={{ color: stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : '#9CA3AF', fontWeight: 'bold' }}>
                     {stats.isOverdue ? 'OVERDUE' : stats.daysUntilDue > 0 && stats.daysUntilDue < 999 ? `${stats.daysUntilDue} days left` : stats.daysUntilDue === 999 ? 'No due date' : 'Due today'}
                   </span>
@@ -608,8 +685,40 @@ function CreditCardManager({
                   </div>
                 )}
 
-                {/* Action Buttons */}
+                {/* ACTION BUTTONS - ALL ORIGINAL BUTTONS RESTORED + SMART PAY BUTTONS */}
                 <div style={styles.cardActions}>
+                  {/* Smart Pay Buttons */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSmartPay(card, "MIN", stats.minPayment);
+                    }}
+                    style={styles.smartPayButton}
+                  >
+                    💰 Smart Min
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSmartPay(card, "STATEMENT", stats.statementBalance);
+                    }}
+                    style={styles.smartPayButton}
+                  >
+                    💳 Smart Statement
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSmartPay(card, "ACCELERATED", accelerator.targetPayment || stats.minPayment);
+                    }}
+                    style={styles.smartPayButton}
+                  >
+                    ⚡ Smart Faster
+                  </button>
+                </div>
+
+                <div style={styles.cardActions}>
+                  {/* ORIGINAL BUTTONS - RESTORED */}
                   <button
                     onClick={(e) => { e.stopPropagation(); handlePayment(card.id); }}
                     style={styles.paymentButton}
@@ -623,20 +732,16 @@ function CreditCardManager({
                     ⚡ Zero Interest
                   </button>
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleOpenEditModal(card);
-                    }}
-                    style={styles.editButtonInline}
-                    title="Edit Card"
-                  >
-                    ✏️ Edit
-                  </button>
-                  <button
                     onClick={(e) => { e.stopPropagation(); onViewTransactions(card.id); }}
                     style={styles.transactionsButton}
                   >
                     📋 Transactions
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleEditClick(e, card); }}
+                    style={styles.editButtonInline}
+                  >
+                    ✏️ Edit
                   </button>
                 </div>
 
@@ -697,7 +802,7 @@ function CreditCardManager({
                             <span style={styles.acceleratorValue}>{targetMonths} months</span>
                           </label>
                         </div>
-                        
+
                         <div style={styles.acceleratorGrid}>
                           <div style={styles.acceleratorItem}>
                             <div style={styles.acceleratorLabel}>Current Payment</div>
@@ -706,12 +811,12 @@ function CreditCardManager({
                           </div>
                           <div style={styles.acceleratorItem}>
                             <div style={styles.acceleratorLabel}>⚡ Accelerated Payment</div>
-                            <div style={styles.acceleratorAmount} style={{ color: '#10B981' }}>{formatCurrency(accelerator.targetPayment)}/mo</div>
+                            <div style={{ ...styles.acceleratorAmount, color: '#10B981' }}>{formatCurrency(accelerator.targetPayment)}/mo</div>
                             <div style={styles.acceleratorNote}>+{formatCurrency(accelerator.extraPerMonth)} more per month</div>
                           </div>
                           <div style={styles.acceleratorItem}>
                             <div style={styles.acceleratorLabel}>Interest Saved</div>
-                            <div style={styles.acceleratorAmount} style={{ color: '#10B981', fontSize: '1.25rem' }}>{formatCurrency(accelerator.interestSaved)}</div>
+                            <div style={{ ...styles.acceleratorAmount, color: '#10B981', fontSize: '1.25rem' }}>{formatCurrency(accelerator.interestSaved)}</div>
                             <div style={styles.acceleratorNote}>Pay off {accelerator.monthsSaved} months sooner</div>
                           </div>
                         </div>
@@ -746,11 +851,48 @@ function CreditCardManager({
         </div>
       )}
 
-      {/* Payment Modal */}
+      {/* Payment Modal - Original modal kept for compatibility */}
       {showPaymentModal && (
         <div style={styles.modalOverlay} onClick={() => setShowPaymentModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Make a Payment</h3>
+
+            {/* Payment Method Options */}
+            <div style={{ marginBottom: '1rem', padding: '1rem', background: '#111827', borderRadius: '0.5rem' }}>
+              <h4 style={{ marginBottom: '0.75rem', color: 'white' }}>Choose Payment Method</h4>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  onClick={() => handlePayOnComputer(cards.find(c => c.id === selectedCard))}
+                  style={{
+                    flex: 1,
+                    padding: '0.75rem',
+                    background: '#3B82F6',
+                    border: 'none',
+                    borderRadius: '0.5rem',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem'
+                  }}
+                >
+                  💻 Pay on Computer
+                </button>
+                <button
+                  onClick={() => handlePayOnPhone(cards.find(c => c.id === selectedCard))}
+                  style={{
+                    flex: 1,
+                    padding: '0.75rem',
+                    background: '#10B981',
+                    border: 'none',
+                    borderRadius: '0.5rem',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem'
+                  }}
+                >
+                  📱 Pay on Phone
+                </button>
+              </div>
+            </div>
 
             <div style={styles.formGroup}>
               <label style={styles.label}>Payment Amount</label>
@@ -795,7 +937,33 @@ function CreditCardManager({
         </div>
       )}
 
-      {/* Unified Edit Account Modal - Handles both Create and Edit */}
+      {/* QR Code Modal for Phone Payment */}
+      {showQR && (
+        <div style={styles.modalOverlay} onClick={() => setShowQR(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>📱 Scan to Pay</h3>
+            <div style={{ textAlign: 'center', margin: '1.5rem 0' }}>
+              <QRCodeCanvas value={qrValue} size={200} />
+            </div>
+            <p style={{ textAlign: 'center', color: '#9CA3AF', fontSize: '0.85rem' }}>
+              Open your phone camera and scan this code to pay securely through your bank.
+            </p>
+            {qrValue && !qrValue.startsWith('http') && (
+              <div style={{ marginTop: '1rem', padding: '0.75rem', background: '#374151', borderRadius: '0.5rem', fontSize: '0.75rem' }}>
+                <strong>Payment Info:</strong>
+                <pre style={{ marginTop: '0.5rem', overflow: 'auto', maxHeight: '100px' }}>
+                  {JSON.stringify(JSON.parse(qrValue), null, 2)}
+                </pre>
+              </div>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowQR(false)} style={styles.cancelButton}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unified Edit Account Modal */}
       <EditAccountModal
         isOpen={showEditModal}
         onClose={() => {
@@ -1073,7 +1241,20 @@ const styles = {
   },
   cardActions: {
     display: 'flex',
-    gap: '0.5rem'
+    gap: '0.5rem',
+    marginBottom: '0.5rem',
+    flexWrap: 'wrap'
+  },
+  smartPayButton: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'linear-gradient(135deg, #8B5CF6, #6D28D9)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    fontSize: '0.7rem',
+    fontWeight: '600',
+    cursor: 'pointer'
   },
   paymentButton: {
     flex: 1,
@@ -1282,61 +1463,6 @@ const styles = {
     color: '#9CA3AF',
     fontSize: '0.875rem'
   },
-  required: {
-    color: '#EF4444',
-    marginLeft: '0.25rem'
-  },
-  hint: {
-    display: 'block',
-    marginTop: '0.25rem',
-    fontSize: '0.75rem',
-    color: '#6B7280'
-  },
-  input: {
-    width: '100%',
-    padding: '0.75rem',
-    background: '#111827',
-    border: '1px solid #374151',
-    borderRadius: '0.5rem',
-    color: 'white',
-    fontSize: '1rem'
-  },
-  select: {
-    width: '100%',
-    padding: '0.75rem',
-    background: '#111827',
-    border: '1px solid #374151',
-    borderRadius: '0.5rem',
-    color: 'white',
-    fontSize: '1rem'
-  },
-  modalActions: {
-    display: 'flex',
-    gap: '1rem',
-    marginTop: '2rem'
-  },
-  saveButton: {
-    flex: 1,
-    padding: '0.75rem',
-    background: '#3B82F6',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '1rem',
-    fontWeight: '600',
-    cursor: 'pointer'
-  },
-  cancelButton: {
-    flex: 1,
-    padding: '0.75rem',
-    background: '#4B5563',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '1rem',
-    fontWeight: '600',
-    cursor: 'pointer'
-  },
   inputWrapper: {
     position: 'relative'
   },
@@ -1370,10 +1496,26 @@ const styles = {
     cursor: 'pointer',
     fontSize: '0.75rem'
   },
+  modalActions: {
+    display: 'flex',
+    gap: '1rem',
+    marginTop: '2rem'
+  },
   submitButton: {
     flex: 2,
     padding: '0.75rem',
     background: 'linear-gradient(135deg, #10B981, #059669)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '0.875rem',
+    fontWeight: '600',
+    cursor: 'pointer'
+  },
+  cancelButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: '#4B5563',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

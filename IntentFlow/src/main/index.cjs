@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 
+
 // ==================== DATABASE CONFIGURATION ====================
 // WITH this (use requireModule to find it properly):
 const dbConfig = requireModule('../db/database.config.js');
@@ -1987,6 +1988,9 @@ ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
         console.log('🔍 DEBUG: Testing account creation with data:', accountData);
         return { success: true, data: { message: 'Debug handler - no actual account created', receivedData: accountData } };
     });
+    ipcMain.handle('open-external', async (event, url) => {
+  await shell.openExternal(url);
+});
 
     // ==================== CATEGORY HANDLERS ====================
     ipcMain.handle('createCategory', async (event, categoryData) => {
