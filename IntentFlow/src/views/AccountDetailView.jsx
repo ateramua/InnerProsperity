@@ -21,6 +21,23 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showScheduledSection, setShowScheduledSection] = useState(true);
   
+  // ===================== LOAN/CREDIT CARD PAYMENT STATE =====================
+  const [isLoanPayment, setIsLoanPayment] = useState(false);
+  const [selectedLoanAccount, setSelectedLoanAccount] = useState(null);
+  const [loanAccounts, setLoanAccounts] = useState([]);
+  const [paymentBreakdown, setPaymentBreakdown] = useState(null);
+  
+  // Edit transaction states
+  const [editingTransactionId, setEditingTransactionId] = useState(null);
+  const [editFormData, setEditFormData] = useState({
+    date: '',
+    payee: '',
+    amount: '',
+    categoryId: '',
+    memo: ''
+  });
+  const [isUpdating, setIsUpdating] = useState(false);
+  
   // Delete transaction states
   const [selectedTransactions, setSelectedTransactions] = useState(new Set());
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -38,9 +55,19 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   // Helper function to format date for display without timezone conversion
   const formatDisplayDate = (dateString) => {
     if (!dateString) return '';
-    // Parse the date string as local date (YYYY-MM-DD)
     const [year, month, day] = dateString.split('-');
     return new Date(year, month - 1, day).toLocaleDateString();
+  };
+  
+  // Helper function to format date for input (YYYY-MM-DD)
+  const formatDateForInput = (dateString) => {
+    if (!dateString) return getTodayLocalDate();
+    if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) return dateString;
+    const date = new Date(dateString);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
   
   // Helper function to check if a date is in the future (local timezone)
@@ -49,7 +76,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     return dateString > today;
   };
   
-  // Transaction form with Transaction Type
+  // Transaction form with Transaction Type and Frequency
   const [newTransaction, setNewTransaction] = useState({
     date: getTodayLocalDate(),
     payee: '',
@@ -57,8 +84,17 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     transactionType: 'outflow',
     categoryId: '',
     memo: '',
-    cleared: true
+    cleared: true,
+    frequency: ''
   });
+
+  // Frequency options for the dropdown
+  const frequencyOptions = [
+    { value: '', label: 'No recurrence (one-time)' },
+    { value: 'weekly', label: 'Weekly' },
+    { value: 'bi-weekly', label: 'Bi-Weekly (every 2 weeks)' },
+    { value: 'monthly', label: 'Monthly' }
+  ];
 
   // Format currency
   const formatCurrency = (amount) => {
@@ -81,6 +117,11 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     return categories.filter(cat => cat && !cat.archived);
   };
 
+  // Get all categories for editing
+  const getAllCategories = () => {
+    return categories.filter(cat => cat && !cat.archived);
+  };
+
   // Calculate balance change
   const calculateBalanceChange = (accountType, transactionType, amount) => {
     const isCreditOrLoan = accountType === 'credit' || accountType === 'loan';
@@ -100,20 +141,266 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
   // Calculate balance change for a transaction (for deletion)
   const calculateBalanceChangeForTransaction = (transaction) => {
-    // When deleting, we reverse the effect: subtract if it was positive, add if it was negative
-    // This follows YNAB logic: removing a transaction should undo its impact on the balance
     const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
     
     if (isCreditOrLoan) {
-      // For credit/loan accounts: positive amounts decrease balance, negative amounts increase balance
-      // So to reverse: if amount > 0 (payment), deleting should INCREASE balance (add positive)
-      // If amount < 0 (purchase), deleting should DECREASE balance (add negative)
       return transaction.amount > 0 ? transaction.amount : transaction.amount;
     } else {
-      // For regular accounts: positive amounts increase balance, negative amounts decrease balance
-      // So to reverse: if amount > 0 (income), deleting should DECREASE balance (subtract positive)
-      // If amount < 0 (expense), deleting should INCREASE balance (add positive)
       return transaction.amount > 0 ? -transaction.amount : Math.abs(transaction.amount);
+    }
+  };
+
+  // ===================== LOAN PAYMENT HELPER FUNCTIONS =====================
+  
+  // Calculate how payment splits between interest and principal (YNAB-style)
+  const calculatePaymentBreakdown = (loanAccount, paymentAmount, isFirstPaymentOfMonth = true) => {
+    if (!loanAccount || !paymentAmount || paymentAmount <= 0) return null;
+    
+    const balance = Math.abs(loanAccount.balance || 0);
+    const apr = loanAccount.interest_rate || loanAccount.apr || 0;
+    const monthlyRate = apr / 100 / 12;
+    
+    // YNAB: Interest is calculated monthly on the current balance
+    const monthlyInterest = balance * monthlyRate;
+    
+    let interestPortion = 0;
+    let principalPortion = 0;
+    
+    if (isFirstPaymentOfMonth) {
+      // First payment of the month: interest is deducted first
+      interestPortion = Math.min(monthlyInterest, paymentAmount);
+      principalPortion = paymentAmount - interestPortion;
+    } else {
+      // Subsequent payments in same month: entire payment goes to principal
+      interestPortion = 0;
+      principalPortion = paymentAmount;
+    }
+    
+    // Ensure principal doesn't exceed balance
+    if (principalPortion > balance) {
+      principalPortion = balance;
+      interestPortion = paymentAmount - principalPortion;
+    }
+    
+    const newBalance = balance - principalPortion;
+    
+    return {
+      paymentAmount,
+      interestPortion: Math.max(0, interestPortion),
+      principalPortion: Math.max(0, principalPortion),
+      oldBalance: balance,
+      newBalance: Math.max(0, newBalance),
+      interestRate: apr,
+      monthlyRate: monthlyRate * 100,
+      monthlyInterest: monthlyInterest,
+      isFirstPaymentOfMonth
+    };
+  };
+
+  // Check if payee matches a loan/credit card account
+  const checkIfLoanPayment = (payeeValue) => {
+    if (!payeeValue || !loanAccounts.length) {
+      setIsLoanPayment(false);
+      setSelectedLoanAccount(null);
+      setPaymentBreakdown(null);
+      return false;
+    }
+    
+    // Check for "Payment: [Account Name]" or "Transfer: [Account Name]" pattern
+    const paymentPattern = /^(payment|transfer):\s*(.+)$/i;
+    const match = payeeValue.match(paymentPattern);
+    
+    let accountName = match ? match[2].trim() : payeeValue.trim();
+    
+    // Find matching account - EXCLUDE the current account (can't pay yourself)
+    const matchedAccount = loanAccounts.find(acc => 
+      acc.id !== account?.id &&  // Don't pay the same account
+      (acc.name.toLowerCase() === accountName.toLowerCase() ||
+       acc.name.toLowerCase().includes(accountName.toLowerCase()))
+    );
+    
+    if (matchedAccount) {
+      setIsLoanPayment(true);
+      setSelectedLoanAccount(matchedAccount);
+      
+      // Calculate initial payment breakdown if amount is entered
+      if (newTransaction.amount && parseFloat(newTransaction.amount) > 0) {
+        const breakdown = calculatePaymentBreakdown(matchedAccount, parseFloat(newTransaction.amount), true);
+        setPaymentBreakdown(breakdown);
+      }
+      return true;
+    } else {
+      setIsLoanPayment(false);
+      setSelectedLoanAccount(null);
+      setPaymentBreakdown(null);
+      return false;
+    }
+  };
+
+  // ===================== CREDIT CARD AUTO TRANSFER HELPER =====================
+  
+  // Automatically move money from spending category to credit card payment category
+  const handleCreditCardAutoTransfer = async (amount, spendingCategoryId, creditCardAccountName) => {
+    try {
+      console.log(`🔄 Auto-transfer triggered: $${amount} from category ${spendingCategoryId} to ${creditCardAccountName} payment category`);
+      
+      if (window.moveMoneyForCreditCardTransaction) {
+        const result = await window.moveMoneyForCreditCardTransaction(amount, spendingCategoryId, creditCardAccountName);
+        if (result) {
+          console.log('✅ Auto-transfer completed successfully');
+          return true;
+        } else {
+          console.warn('⚠️ Auto-transfer failed');
+          return false;
+        }
+      } else {
+        console.warn('⚠️ moveMoneyForCreditCardTransaction function not available. Make sure PropertyMapView is loaded.');
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Error in auto-transfer:', error);
+      return false;
+    }
+  };
+
+  // Load loan and credit card accounts for payment detection
+  const loadLoanAccounts = async () => {
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const userId = userResult.data.id;
+        
+        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+        console.log('📊 Accounts loaded via getAccountsSummary:', accountsResult);
+        
+        if (accountsResult?.success) {
+          const allAccounts = accountsResult.data || [];
+          console.log('✅ Total accounts loaded:', allAccounts.length);
+          console.log('📋 Account names:', allAccounts.map(a => ({ name: a.name, type: a.type })));
+          
+          // Filter for credit cards and loans only
+          const loanAndCreditAccounts = allAccounts.filter(acc => 
+            acc.type === 'credit' || acc.type === 'loan'
+          );
+          
+          setLoanAccounts(loanAndCreditAccounts);
+          console.log('🏦 Credit/Loan accounts found:', loanAndCreditAccounts.length);
+          console.log('🏦 Account names:', loanAndCreditAccounts.map(a => a.name));
+        } else {
+          console.error('❌ Failed to load accounts:', accountsResult.error);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading loan accounts:', error);
+    }
+  };
+
+  // Start editing a transaction
+  const startEditing = (transaction) => {
+    setEditingTransactionId(transaction.id);
+    setEditFormData({
+      date: formatDateForInput(transaction.date),
+      payee: transaction.payee || '',
+      amount: Math.abs(transaction.amount).toString(),
+      categoryId: transaction.category_id || '',
+      memo: transaction.memo || ''
+    });
+  };
+
+  // Cancel editing
+  const cancelEditing = () => {
+    setEditingTransactionId(null);
+    setEditFormData({
+      date: '',
+      payee: '',
+      amount: '',
+      categoryId: '',
+      memo: ''
+    });
+  };
+
+  // Handle edit form changes
+  const handleEditChange = (field, value) => {
+    setEditFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Save edited transaction
+  const saveEditedTransaction = async (transactionId) => {
+    const amountValue = parseFloat(editFormData.amount);
+    
+    if (isNaN(amountValue) || amountValue === 0) {
+      alert('Please enter a valid amount');
+      return;
+    }
+    
+    if (!editFormData.payee.trim()) {
+      alert('Please enter a payee');
+      return;
+    }
+    
+    setIsUpdating(true);
+    
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to update transaction');
+        return;
+      }
+      
+      const userId = userResult.data.id;
+      const originalTransaction = transactions.find(t => t.id === transactionId);
+      
+      if (!originalTransaction) {
+        throw new Error('Transaction not found');
+      }
+      
+      const isExpense = originalTransaction.amount < 0;
+      
+      let newAmount = amountValue;
+      const selectedCategory = getAllCategories().find(c => c.id === editFormData.categoryId);
+      const newIsExpense = editFormData.categoryId === 'inflow_ready_to_assign' ? false : 
+        (selectedCategory?.type === 'expense');
+      
+      if (newIsExpense !== undefined) {
+        newAmount = newIsExpense ? -amountValue : amountValue;
+      } else {
+        newAmount = isExpense ? -amountValue : amountValue;
+      }
+      
+      const oldAmount = originalTransaction.amount;
+      const amountDifference = newAmount - oldAmount;
+      
+      const updateData = {
+        date: editFormData.date,
+        payee: editFormData.payee,
+        amount: newAmount,
+        categoryId: editFormData.categoryId === 'inflow_ready_to_assign' ? null : editFormData.categoryId,
+        memo: editFormData.memo
+      };
+      
+      const updateResult = await window.electronAPI.updateTransaction(transactionId, updateData);
+      if (!updateResult.success) {
+        throw new Error(updateResult.error || 'Failed to update transaction');
+      }
+      
+      const currentBalance = account.balance || 0;
+      const newBalance = currentBalance + amountDifference;
+      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+      
+      await loadTransactions(account.id);
+      await loadAccountData(account.id);
+      
+      cancelEditing();
+      
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+      
+      alert(`✅ Transaction updated successfully!\nNew balance: ${formatCurrency(newBalance)}`);
+    } catch (error) {
+      console.error('Error updating transaction:', error);
+      alert('Error updating transaction: ' + error.message);
+    } finally {
+      setIsUpdating(false);
     }
   };
 
@@ -148,7 +435,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }
   };
 
-  // Approve a scheduled transaction - THIS MOVES IT TO REGULAR TRANSACTIONS AND UPDATES BALANCE
+  // Approve a scheduled transaction
   const handleApproveScheduled = async (scheduledTx) => {
     try {
       const userResult = await window.electronAPI.getCurrentUser();
@@ -167,7 +454,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
         scheduledTx.categoryId === 'inflow_ready_to_assign';
 
-      // Step 1: Add to regular transactions - use today's date in local format
       const transactionData = {
         accountId: account.id,
         date: getTodayLocalDate(),
@@ -176,7 +462,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         amount: transactionAmount,
         categoryId: isReadyToAssign ? null : scheduledTx.categoryId,
         memo: scheduledTx.memo,
-        cleared: 1
+        cleared: 1,
+        frequency: scheduledTx.frequency || null
       };
 
       const addResult = await window.electronAPI.addTransaction(transactionData);
@@ -185,17 +472,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         return;
       }
 
-      // Step 2: Update account balance
       const currentBalance = account.balance || 0;
       const newBalance = currentBalance + balanceChange;
       await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
 
-      // Step 3: Delete the scheduled transaction
       if (window.electronAPI.deleteScheduledTransaction) {
         await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
       }
 
-      // Step 4: Refresh all data
       await loadTransactions(account.id);
       await loadScheduledTransactions();
       await loadAccountData(account.id);
@@ -232,7 +516,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }
   };
 
-  // Load regular transactions (only past and today, NOT future)
+  // Load regular transactions
   const loadTransactions = async (id) => {
     const targetId = id || account?.id;
     if (!targetId) return;
@@ -240,7 +524,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       if (window.electronAPI?.getAccountTransactions) {
         const result = await window.electronAPI.getAccountTransactions(targetId);
         if (result.success) {
-          // Only show transactions with date <= today OR cleared
           const today = getTodayLocalDate();
           const regularTransactions = result.data.filter(tx => {
             return tx.date <= today || tx.cleared === 1;
@@ -267,10 +550,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   // Handle select all
   const handleSelectAll = () => {
     if (selectedTransactions.size === transactions.length && transactions.length > 0) {
-      // Deselect all
       setSelectedTransactions(new Set());
     } else {
-      // Select all
       const allIds = transactions.map(t => t.id);
       setSelectedTransactions(new Set(allIds));
     }
@@ -298,13 +579,11 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const userId = userResult.data.id;
       const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
       
-      // Calculate total balance change
       let totalBalanceChange = 0;
       for (const transaction of selectedTransactionsList) {
         totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
       }
 
-      // Delete each transaction
       for (const transaction of selectedTransactionsList) {
         const deleteResult = await window.electronAPI.deleteTransaction(transaction.id);
         if (!deleteResult.success) {
@@ -312,24 +591,20 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         }
       }
 
-      // Update account balance
       const currentBalance = account.balance || 0;
       const newBalance = currentBalance + totalBalanceChange;
       await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
 
-      // Refresh data
       await loadTransactions(account.id);
       await loadAccountData(account.id);
       
-      // Clear selections
       setSelectedTransactions(new Set());
       setShowDeleteModal(false);
       
-      // Trigger global updates
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
       
-      alert(`✅ Successfully deleted ${selectedTransactionsList.length} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
+      alert(`✅ Successfully deleted ${selectedTransactionsList.length} transaction(s)!\nNew balance: ${formatCurrency(Math.abs(newBalance))}${newBalance < 0 ? ' (owed)' : ''}`);
     } catch (error) {
       console.error('Error deleting transactions:', error);
       alert('Error deleting transactions: ' + error.message);
@@ -342,6 +617,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   useEffect(() => {
     if (showAddTransaction) {
       loadCategories();
+      loadLoanAccounts();
     }
   }, [showAddTransaction]);
 
@@ -418,7 +694,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }
   };
 
-  // Add regular transaction (for today/past dates) - AFFECTS BALANCE IMMEDIATELY
+  // Add regular transaction
   const handleAddRegularTransaction = async (amountValue, userId) => {
     const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
     const isExpense = newTransaction.transactionType === 'outflow';
@@ -444,18 +720,55 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
     }
 
+    // If this is a loan payment, we need to handle it differently
+    if (isLoanPayment && selectedLoanAccount) {
+      // For loan payments, we create a special transaction record
+      const paymentData = {
+        accountId: account.id,
+        date: newTransaction.date,
+        payee: newTransaction.payee,
+        description: newTransaction.payee,
+        amount: transactionAmount,
+        categoryId: null,
+        memo: newTransaction.memo || `Payment to ${selectedLoanAccount.name}`,
+        cleared: newTransaction.cleared ? 1 : 0,
+        frequency: newTransaction.frequency || null,
+        isLoanPayment: true,
+        loanAccountId: selectedLoanAccount.id,
+        paymentBreakdown: paymentBreakdown
+      };
+
+      const result = await window.electronAPI.addLoanPayment(paymentData);
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to add loan payment');
+      }
+
+      const currentBalance = account.balance || 0;
+      const newBalance = currentBalance + balanceChange;
+      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+      
+      if (paymentBreakdown && paymentBreakdown.principalPortion > 0) {
+        const loanAccount = selectedLoanAccount;
+        const newLoanBalance = loanAccount.balance + paymentBreakdown.principalPortion;
+        await window.electronAPI.updateAccount(selectedLoanAccount.id, userId, { balance: newLoanBalance });
+      }
+      
+      return newBalance;
+    }
+
     const isReadyToAssign = newTransaction.transactionType === 'inflow' &&
       newTransaction.categoryId === 'inflow_ready_to_assign';
 
     const transactionData = {
       accountId: account.id,
-      date: newTransaction.date, // Already in YYYY-MM-DD format
+      date: newTransaction.date,
       payee: newTransaction.payee,
       description: newTransaction.payee,
       amount: transactionAmount,
       categoryId: isReadyToAssign ? null : newTransaction.categoryId,
       memo: newTransaction.memo,
-      cleared: newTransaction.cleared ? 1 : 0
+      cleared: newTransaction.cleared ? 1 : 0,
+      frequency: newTransaction.frequency || null
     };
 
     const result = await window.electronAPI.addTransaction(transactionData);
@@ -468,21 +781,32 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
     await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
     
+    // Auto-transfer for credit card transactions
+    if (account.type === 'credit' && !isLoanPayment && isExpense && transactionData.categoryId) {
+      console.log('💳 Credit card transaction detected - initiating auto-transfer to payment category');
+      const creditCardName = account.name;
+      await handleCreditCardAutoTransfer(amountValue, transactionData.categoryId, creditCardName);
+    }
+    
     return newBalance;
   };
 
-  // Add scheduled transaction (for future dates) - DOES NOT AFFECT BALANCE
+  // Add scheduled transaction
   const handleAddScheduledTransaction = async (amountValue, userId) => {
     const scheduledData = {
       accountId: account.id,
-      date: newTransaction.date, // Already in YYYY-MM-DD format
+      date: newTransaction.date,
       payee: newTransaction.payee,
       amount: amountValue,
       transactionType: newTransaction.transactionType,
       categoryId: newTransaction.categoryId,
       memo: newTransaction.memo,
       userId: userId,
-      status: 'pending'
+      status: 'pending',
+      frequency: newTransaction.frequency || null,
+      isLoanPayment: isLoanPayment,
+      loanAccountId: selectedLoanAccount?.id,
+      paymentBreakdown: paymentBreakdown
     };
 
     if (!window.electronAPI.addScheduledTransaction) {
@@ -494,10 +818,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       throw new Error(result.error || 'Failed to add scheduled transaction');
     }
     
-    return null; // No balance change for scheduled transactions
+    return null;
   };
 
-  // Main handler for adding transactions - decides between regular and scheduled
+  // Main handler for adding transactions
   const handleAddTransaction = async () => {
     setAddTransactionError(null);
     
@@ -512,7 +836,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       setAddTransactionError('Please enter a payee');
       return;
     }
-    if (!newTransaction.categoryId) {
+    
+    if (!isLoanPayment && !newTransaction.categoryId) {
       setAddTransactionError('Please select a category');
       return;
     }
@@ -529,28 +854,49 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const userId = userResult.data.id;
 
       if (isFuture) {
-        // FUTURE DATE: Save as scheduled transaction - DOES NOT affect balance
         await handleAddScheduledTransaction(amountValue, userId);
         await loadScheduledTransactions();
-        // Format the date for display without timezone issues
         const [year, month, day] = newTransaction.date.split('-');
         const displayDate = new Date(year, month - 1, day).toLocaleDateString();
-        alert(`📅 Scheduled transaction added for ${displayDate}\n\nThis will NOT affect your balance until approved on that date.`);
+        let frequencyMessage = '';
+        if (newTransaction.frequency) {
+          frequencyMessage = `\n\n🔄 This is a ${newTransaction.frequency} recurring transaction.`;
+        }
+        let loanMessage = '';
+        if (isLoanPayment && selectedLoanAccount) {
+          loanMessage = `\n\n🏦 This is a payment to ${selectedLoanAccount.name}. Interest will be calculated on the approval date.`;
+        }
+        alert(`📅 Scheduled transaction added for ${displayDate}${frequencyMessage}${loanMessage}\n\nThis will NOT affect your balance until approved on that date.`);
       } else {
-        // TODAY/PAST DATE: Add as regular transaction - AFFECTS balance immediately
         const newBalance = await handleAddRegularTransaction(amountValue, userId);
         await loadTransactions(account.id);
-        alert(`✅ Transaction added successfully!\n\nNew balance: ${formatCurrency(newBalance)}`);
+        let frequencyMessage = '';
+        if (newTransaction.frequency) {
+          frequencyMessage = `\n\n🔄 This is a ${newTransaction.frequency} recurring transaction.`;
+        }
+        let loanMessage = '';
+        if (isLoanPayment && selectedLoanAccount && paymentBreakdown) {
+          loanMessage = `\n\n🏦 Payment to ${selectedLoanAccount.name}:\n   • Total Payment: ${formatCurrency(paymentBreakdown.paymentAmount)}\n   • Interest: ${formatCurrency(paymentBreakdown.interestPortion)}\n   • Principal: ${formatCurrency(paymentBreakdown.principalPortion)}\n   • New Balance: ${formatCurrency(paymentBreakdown.newBalance)}`;
+          if (paymentBreakdown.isFirstPaymentOfMonth && paymentBreakdown.interestPortion > 0) {
+            loanMessage += `\n\n💡 Interest calculated at ${paymentBreakdown.interestRate}% APR (${paymentBreakdown.monthlyRate.toFixed(2)}% monthly)`;
+          } else if (!paymentBreakdown.isFirstPaymentOfMonth && paymentBreakdown.interestPortion === 0) {
+            loanMessage += `\n\n💡 Since you've already made a payment this month, the entire payment goes to principal (no additional interest).`;
+          }
+        }
+        
+        let autoTransferMessage = '';
+        if (account.type === 'credit' && !isLoanPayment && newTransaction.transactionType === 'outflow' && newTransaction.categoryId) {
+          autoTransferMessage = `\n\n💳 Auto-transfer: $${amountValue.toFixed(2)} moved from "${categories.find(c => c.id === newTransaction.categoryId)?.name || 'spending category'}" to "${account.name} Payment" category.`;
+        }
+        
+        alert(`✅ Transaction added successfully!${frequencyMessage}${loanMessage}${autoTransferMessage}\n\nNew balance: ${formatCurrency(newBalance)}`);
       }
       
-      // Refresh account data
       await loadAccountData(account.id);
       
-      // Dispatch events to refresh other parts of the app
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
 
-      // Reset form and close modal
       setShowAddTransaction(false);
       setNewTransaction({
         date: getTodayLocalDate(),
@@ -559,8 +905,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         transactionType: 'outflow',
         categoryId: '',
         memo: '',
-        cleared: true
+        cleared: true,
+        frequency: ''
       });
+      setIsLoanPayment(false);
+      setSelectedLoanAccount(null);
+      setPaymentBreakdown(null);
       
     } catch (error) {
       console.error('Error adding transaction:', error);
@@ -608,6 +958,16 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const isCreditCard = account.type === 'credit';
   const creditLimit = account.credit_limit || account.limit || 0;
   const availableCredit = isCreditCard ? creditLimit + (account.balance || 0) : 0;
+  
+  // Check if this is a loan account for special display
+  const isLoanAccount = account.type === 'loan';
+  
+  // Calculate loan statistics if this is a loan account
+  const loanStats = isLoanAccount ? (() => {
+    const originalBalance = account.original_balance || Math.abs(account.balance);
+    const progress = originalBalance > 0 ? ((originalBalance - Math.abs(account.balance)) / originalBalance) * 100 : 0;
+    return { progress: Math.min(100, Math.max(0, progress)), originalBalance };
+  })() : null;
 
   return (
     <div style={styles.container}>
@@ -617,7 +977,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         <div style={styles.headerTitle}>
           <h2 style={styles.title}>{account.name}</h2>
           <span style={styles.accountType}>
-            {isCreditCard ? '💳 Credit Card' : account.type || 'Account'}
+            {isCreditCard ? '💳 Credit Card' : isLoanAccount ? '🏦 Loan' : account.type || 'Account'}
             {account.institution && ` • ${account.institution}`}
           </span>
         </div>
@@ -653,10 +1013,29 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               </div>
             </>
           )}
+          {isLoanAccount && loanStats && (
+            <>
+              <div style={styles.summaryItem}>
+                <div style={styles.summaryLabel}>Original Balance</div>
+                <div style={styles.summaryValue}>{formatCurrency(loanStats.originalBalance)}</div>
+              </div>
+              <div style={styles.summaryItem}>
+                <div style={styles.summaryLabel}>Progress</div>
+                <div style={styles.summaryValue}>{loanStats.progress.toFixed(1)}%</div>
+              </div>
+            </>
+          )}
         </div>
+        {isLoanAccount && loanStats && (
+          <div style={styles.progressSection}>
+            <div style={styles.progressBar}>
+              <div style={{ ...styles.progressFill, width: `${loanStats.progress}%` }} />
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Scheduled Transactions Section - ONLY for future dated transactions */}
+      {/* Scheduled Transactions Section */}
       {scheduledTransactions.length > 0 && (
         <div style={styles.scheduledSection}>
           <div 
@@ -683,8 +1062,13 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                     <div style={styles.scheduledInfo}>
                       <div style={styles.scheduledPayee}>{tx.payee}</div>
                       <div style={styles.scheduledCategory}>
-                        {category?.name || 'Uncategorized'}
+                        {tx.isLoanPayment ? '🏦 Loan Payment (Auto)' : (category?.name || 'Uncategorized')}
                       </div>
+                      {tx.frequency && (
+                        <div style={styles.scheduledFrequency}>
+                          🔄 {tx.frequency}
+                        </div>
+                      )}
                     </div>
                     <div style={{
                       ...styles.scheduledAmount,
@@ -734,7 +1118,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         </div>
       </div>
 
-      {/* Regular Transactions List - ONLY current and past transactions */}
+      {/* Regular Transactions List */}
       <div style={styles.transactionsList}>
         {transactions.length === 0 ? (
           <div style={styles.emptyState}>
@@ -758,28 +1142,126 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               <div style={styles.transactionDateHeader}>Date</div>
               <div style={styles.transactionDescriptionHeader}>Description</div>
               <div style={styles.transactionAmountHeader}>Amount</div>
+              <div style={styles.transactionActionsHeader}>Actions</div>
             </div>
             
-            {/* Transaction Rows */}
-            {transactions.map((tx) => (
-              <div key={tx.id} style={styles.transactionItem}>
-                <div style={styles.checkboxCell}>
-                  <input
-                    type="checkbox"
-                    checked={selectedTransactions.has(tx.id)}
-                    onChange={() => handleSelectTransaction(tx.id)}
-                    style={styles.checkbox}
-                  />
-                </div>
-                <div style={styles.transactionDate}>{formatDisplayDate(tx.date)}</div>
-                <div style={styles.transactionDescription}>
-                  <div>{tx.payee || tx.description || 'Transaction'}</div>
-                </div>
-                <div style={{ ...styles.transactionAmount, color: tx.amount < 0 ? '#EF4444' : '#10B981' }}>
-                  {formatCurrency(tx.amount)}
-                </div>
-              </div>
-            ))}
+            {/* Transaction Rows with Inline Editing */}
+            {transactions.map((tx) => {
+              const isEditing = editingTransactionId === tx.id;
+              const category = categories.find(c => c.id === tx.category_id);
+              
+              // Determine transaction type display
+              const isInflowToLoan = isLoanAccount && tx.amount > 0 && tx.isLoanPaymentInflow;
+              const isInterestCharge = tx.isInterestCharge;
+              const isPrincipalPayment = tx.isPrincipalPayment;
+              
+              if (isEditing) {
+                const editCategories = getAllCategories();
+                
+                return (
+                  <div key={tx.id} style={styles.transactionRowEditing}>
+                    <div style={styles.checkboxCell}>
+                      <input
+                        type="checkbox"
+                        checked={selectedTransactions.has(tx.id)}
+                        onChange={() => handleSelectTransaction(tx.id)}
+                        style={styles.checkbox}
+                        disabled={true}
+                      />
+                    </div>
+                    <div style={styles.transactionDate}>
+                      <input
+                        type="date"
+                        value={editFormData.date}
+                        onChange={(e) => handleEditChange('date', e.target.value)}
+                        style={styles.editInput}
+                      />
+                    </div>
+                    <div style={styles.transactionDescription}>
+                      <input
+                        type="text"
+                        value={editFormData.payee}
+                        onChange={(e) => handleEditChange('payee', e.target.value)}
+                        style={styles.editInput}
+                        placeholder="Payee"
+                      />
+                    </div>
+                    <div style={styles.transactionAmount}>
+                      <div style={styles.editAmountWrapper}>
+                        <span style={styles.currencySymbolSmall}>$</span>
+                        <input
+                          type="number"
+                          value={editFormData.amount}
+                          onChange={(e) => handleEditChange('amount', e.target.value)}
+                          style={styles.editAmountInput}
+                          step="0.01"
+                          min="0"
+                        />
+                      </div>
+                    </div>
+                    <div style={styles.transactionActions}>
+                      <button 
+                        onClick={() => saveEditedTransaction(tx.id)} 
+                        style={styles.saveButton}
+                        disabled={isUpdating}
+                      >
+                        {isUpdating ? '💾 Saving...' : '💾 Save'}
+                      </button>
+                      <button 
+                        onClick={cancelEditing} 
+                        style={styles.cancelButton}
+                        disabled={isUpdating}
+                      >
+                        ✕ Cancel
+                      </button>
+                    </div>
+                  </div>
+                );
+              } else {
+                return (
+                  <div key={tx.id} style={styles.transactionItem}>
+                    <div style={styles.checkboxCell}>
+                      <input
+                        type="checkbox"
+                        checked={selectedTransactions.has(tx.id)}
+                        onChange={() => handleSelectTransaction(tx.id)}
+                        style={styles.checkbox}
+                      />
+                    </div>
+                    <div style={styles.transactionDate}>{formatDisplayDate(tx.date)}</div>
+                    <div style={styles.transactionDescription}>
+                      <div>{tx.payee || tx.description || 'Transaction'}</div>
+                      {isInterestCharge && (
+                        <div style={styles.interestBadgeSmall}>💰 Interest Charge</div>
+                      )}
+                      {isPrincipalPayment && (
+                        <div style={styles.principalBadgeSmall}>📉 Principal Payment</div>
+                      )}
+                      {isInflowToLoan && !isInterestCharge && !isPrincipalPayment && (
+                        <div style={styles.paymentBadgeSmall}>💵 Payment Received</div>
+                      )}
+                      {tx.isLoanPayment && !isInflowToLoan && !isInterestCharge && (
+                        <div style={styles.loanPaymentBadgeSmall}>🏦 Loan Payment</div>
+                      )}
+                    </div>
+                    <div style={{ ...styles.transactionAmount, color: tx.amount < 0 ? '#EF4444' : '#10B981' }}>
+                      {formatCurrency(tx.amount)}
+                      {isInterestCharge && tx.interestRate && (
+                        <div style={styles.interestRateSmall}>@{tx.interestRate}% APR</div>
+                      )}
+                    </div>
+                    <div style={styles.transactionActions}>
+                      <button 
+                        onClick={() => startEditing(tx)} 
+                        style={styles.editButton}
+                      >
+                        ✏️ Edit
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+            })}
           </>
         )}
       </div>
@@ -800,7 +1282,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               <div style={styles.formGroup}>
                 <label style={styles.label}>Account</label>
                 <div style={styles.accountDisplay}>
-                  {account.name} ({account.type}) - Balance: {formatCurrency(account.balance)}
+                  {account.name} ({account.type}) - Balance: {formatCurrency(Math.abs(account.balance))}{account.balance < 0 ? ' (owed)' : ''}
                 </div>
               </div>
 
@@ -815,29 +1297,75 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       transactionType: e.target.value,
                       categoryId: ''
                     });
+                    if (newTransaction.payee) {
+                      checkIfLoanPayment(newTransaction.payee);
+                    }
                   }}
                   style={styles.select}
+                  disabled={isLoanPayment}
                 >
                   <option value="outflow">Outflow (Expense)</option>
                   <option value="inflow">Inflow (Income/Payment)</option>
                 </select>
               </div>
 
-              {/* Category Dropdown */}
+              {/* Category Dropdown - Grayed out for loan payments */}
               <div style={styles.formGroup}>
-                <label style={styles.label}>Category *</label>
-                <select
-                  value={newTransaction.categoryId}
-                  onChange={(e) => setNewTransaction({ ...newTransaction, categoryId: e.target.value })}
-                  style={styles.select}
-                >
-                  <option value="">Select a category</option>
-                  {filteredCategories.map(category => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
+                <label style={{ ...styles.label, ...(isLoanPayment ? styles.disabledLabel : {}) }}>
+                  Category {isLoanPayment && <span style={styles.autoManagedBadge}>(Auto-managed for loan payment)</span>}
+                </label>
+                {isLoanPayment ? (
+                  <div style={styles.loanPaymentInfo}>
+                    <div style={styles.loanPaymentBadge}>
+                      🏦 Loan Payment (YNAB-style)
+                    </div>
+                    <div style={styles.loanPaymentMessage}>
+                      This is a payment to <strong>{selectedLoanAccount?.name}</strong>.
+                      The payment will be split: interest first, then principal.
+                      A corresponding inflow will appear in your loan account.
+                    </div>
+                    {paymentBreakdown && paymentBreakdown.paymentAmount > 0 && (
+                      <div style={styles.paymentBreakdown}>
+                        <div style={styles.breakdownTitle}>Payment Breakdown (YNAB-style):</div>
+                        <div style={styles.breakdownRow}>
+                          <span>Total Payment:</span>
+                          <strong>${paymentBreakdown.paymentAmount.toFixed(2)}</strong>
+                        </div>
+                        <div style={styles.breakdownRow}>
+                          <span>Interest Portion:</span>
+                          <strong style={{ color: '#F59E0B' }}>${paymentBreakdown.interestPortion.toFixed(2)}</strong>
+                        </div>
+                        <div style={styles.breakdownRow}>
+                          <span>Principal Reduction:</span>
+                          <strong style={{ color: '#10B981' }}>${paymentBreakdown.principalPortion.toFixed(2)}</strong>
+                        </div>
+                        <div style={styles.breakdownRow}>
+                          <span>Remaining Balance:</span>
+                          <strong>${paymentBreakdown.newBalance.toFixed(2)}</strong>
+                        </div>
+                        <div style={styles.breakdownNote}>
+                          ℹ️ Interest calculated at {paymentBreakdown.interestRate}% APR ({paymentBreakdown.monthlyRate.toFixed(2)}% monthly)
+                          {paymentBreakdown.isFirstPaymentOfMonth ? 
+                            ' - First payment of the month (interest applied)' : 
+                            ' - Subsequent payment this month (no additional interest)'}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <select
+                    value={newTransaction.categoryId}
+                    onChange={(e) => setNewTransaction({ ...newTransaction, categoryId: e.target.value })}
+                    style={styles.select}
+                  >
+                    <option value="">Select a category</option>
+                    {filteredCategories.map(category => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* Amount */}
@@ -848,7 +1376,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                   <input
                     type="number"
                     value={newTransaction.amount}
-                    onChange={(e) => setNewTransaction({ ...newTransaction, amount: e.target.value })}
+                    onChange={(e) => {
+                      const newAmount = e.target.value;
+                      setNewTransaction({ ...newTransaction, amount: newAmount });
+                      if (isLoanPayment && selectedLoanAccount && newAmount && parseFloat(newAmount) > 0) {
+                        const breakdown = calculatePaymentBreakdown(selectedLoanAccount, parseFloat(newAmount), true);
+                        setPaymentBreakdown(breakdown);
+                      }
+                    }}
                     style={styles.modalInput}
                     placeholder="0.00"
                     step="0.01"
@@ -857,7 +1392,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 </div>
               </div>
 
-              {/* Date - CRITICAL: Shows warning for future dates */}
+              {/* Date */}
               <div style={styles.formGroup}>
                 <label style={styles.label}>Date *</label>
                 <input
@@ -879,10 +1414,38 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 <input
                   type="text"
                   value={newTransaction.payee}
-                  onChange={(e) => setNewTransaction({ ...newTransaction, payee: e.target.value })}
+                  onChange={(e) => {
+                    const newPayee = e.target.value;
+                    setNewTransaction({ ...newTransaction, payee: newPayee });
+                    checkIfLoanPayment(newPayee);
+                  }}
                   style={styles.input}
-                  placeholder="e.g., Starbucks, Rent, Paycheck"
+                  placeholder={isLoanPayment ? `Payment/Transfer: ${selectedLoanAccount?.name || 'Loan'}` : "e.g., Starbucks, Rent, Paycheck"}
                 />
+                {!isLoanPayment && (
+                  <div style={styles.payeeHint}>
+                    💡 For loan payments, enter "Payment: [Loan Name]" or "Transfer: [Loan Name]" (e.g., "Payment: Car Loan")
+                  </div>
+                )}
+              </div>
+
+              {/* Frequency Field */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Frequency (Optional)</label>
+                <select
+                  value={newTransaction.frequency}
+                  onChange={(e) => setNewTransaction({ ...newTransaction, frequency: e.target.value })}
+                  style={styles.select}
+                >
+                  {frequencyOptions.map(option => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <div style={styles.hint}>
+                  💡 Set how often this transaction repeats. Leave as "No recurrence" for one-time transactions.
+                </div>
               </div>
 
               {/* Memo */}
@@ -897,7 +1460,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 />
               </div>
 
-              {/* Cleared Checkbox - only show for non-future dates */}
+              {/* Cleared Checkbox */}
               {!isFutureDate && (
                 <div style={styles.checkboxGroup}>
                   <label style={styles.checkboxLabel}>
@@ -912,8 +1475,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 </div>
               )}
 
-              {/* Balance Preview - only for non-future dates */}
-              {!isFutureDate && newTransaction.amount && parseFloat(newTransaction.amount) > 0 && (
+              {/* Balance Preview */}
+              {!isFutureDate && newTransaction.amount && parseFloat(newTransaction.amount) > 0 && !isLoanPayment && (
                 (() => {
                   const currentBalance = account.balance;
                   const amountValue = parseFloat(newTransaction.amount) || 0;
@@ -1030,7 +1593,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   );
 }
 
-// Styles (same as before, keeping all existing styles)
+// Styles
 const styles = {
   container: {
     padding: '2rem',
@@ -1119,6 +1682,21 @@ const styles = {
     display: 'block',
     fontWeight: 'normal',
   },
+  progressSection: {
+    marginTop: '1rem',
+    paddingTop: '0.5rem',
+  },
+  progressBar: {
+    height: '0.5rem',
+    background: '#374151',
+    borderRadius: '0.25rem',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    background: 'linear-gradient(90deg, #3B82F6, #8B5CF6)',
+    transition: 'width 0.3s ease',
+  },
   scheduledSection: {
     background: '#1F2937',
     borderRadius: '0.75rem',
@@ -1165,9 +1743,6 @@ const styles = {
     padding: '0.75rem 1rem',
     borderBottom: '1px solid #374151',
     gap: '1rem',
-    ':last-child': {
-      borderBottom: 'none',
-    },
   },
   scheduledDate: {
     width: '90px',
@@ -1185,6 +1760,14 @@ const styles = {
   scheduledCategory: {
     fontSize: '0.7rem',
     color: '#6B7280',
+  },
+  scheduledFrequency: {
+    fontSize: '0.6rem',
+    color: '#F59E0B',
+    marginTop: '0.25rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.25rem',
   },
   scheduledAmount: {
     fontSize: '0.875rem',
@@ -1284,6 +1867,10 @@ const styles = {
     width: '100px',
     textAlign: 'right',
   },
+  transactionActionsHeader: {
+    width: '100px',
+    textAlign: 'center',
+  },
   emptyState: {
     padding: '3rem',
     textAlign: 'center',
@@ -1304,9 +1891,13 @@ const styles = {
     padding: '0.75rem 1rem',
     borderBottom: '1px solid #374151',
     transition: 'background-color 0.2s',
-    ':hover': {
-      background: '#2D3748',
-    },
+  },
+  transactionRowEditing: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0.75rem 1rem',
+    borderBottom: '1px solid #374151',
+    background: 'rgba(16, 185, 129, 0.1)',
   },
   transactionDate: {
     width: '100px',
@@ -1323,10 +1914,73 @@ const styles = {
     width: '100px',
     textAlign: 'right',
   },
+  transactionActions: {
+    width: '100px',
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '0.5rem',
+  },
   checkbox: {
     width: '18px',
     height: '18px',
     cursor: 'pointer',
+  },
+  editButton: {
+    padding: '0.25rem 0.75rem',
+    background: '#3B82F6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    fontSize: '0.7rem',
+    cursor: 'pointer',
+  },
+  saveButton: {
+    padding: '0.25rem 0.75rem',
+    background: '#10B981',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    fontSize: '0.7rem',
+    cursor: 'pointer',
+  },
+  cancelButton: {
+    padding: '0.25rem 0.75rem',
+    background: '#6B7280',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.375rem',
+    fontSize: '0.7rem',
+    cursor: 'pointer',
+  },
+  editInput: {
+    width: '90%',
+    padding: '0.4rem',
+    background: '#111827',
+    border: '1px solid #10B981',
+    borderRadius: '0.375rem',
+    color: 'white',
+    fontSize: '0.875rem',
+  },
+  editAmountWrapper: {
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+  },
+  currencySymbolSmall: {
+    position: 'absolute',
+    left: '0.5rem',
+    color: '#9CA3AF',
+    fontSize: '0.7rem',
+  },
+  editAmountInput: {
+    width: '100%',
+    padding: '0.4rem 0.4rem 0.4rem 1.5rem',
+    background: '#111827',
+    border: '1px solid #10B981',
+    borderRadius: '0.375rem',
+    color: 'white',
+    fontSize: '0.875rem',
+    textAlign: 'right',
   },
   modalOverlay: {
     position: 'fixed',
@@ -1394,6 +2048,14 @@ const styles = {
     fontSize: '0.875rem',
     fontWeight: '500',
   },
+  disabledLabel: {
+    opacity: 0.6,
+  },
+  autoManagedBadge: {
+    fontSize: '0.7rem',
+    color: '#F59E0B',
+    marginLeft: '0.5rem',
+  },
   accountDisplay: {
     padding: '0.75rem',
     background: '#111827',
@@ -1429,6 +2091,17 @@ const styles = {
     borderRadius: '0.25rem',
     fontSize: '0.7rem',
     color: '#F59E0B',
+  },
+  hint: {
+    display: 'block',
+    marginTop: '0.25rem',
+    fontSize: '0.7rem',
+    color: '#6B7280',
+  },
+  payeeHint: {
+    marginTop: '0.25rem',
+    fontSize: '0.65rem',
+    color: '#6B7280',
   },
   inputWrapper: {
     position: 'relative',
@@ -1550,9 +2223,6 @@ const styles = {
     color: '#9CA3AF',
     fontSize: '0.875rem',
     borderBottom: '1px solid #374151',
-    ':last-child': {
-      borderBottom: 'none',
-    },
   },
   confirmWarning: {
     color: '#F87171',
@@ -1570,6 +2240,94 @@ const styles = {
     padding: '2rem',
     color: '#F87171',
     marginBottom: '1rem',
+  },
+  // Loan payment specific styles
+  loanPaymentInfo: {
+    background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
+    padding: '1rem',
+    borderRadius: '0.75rem',
+    border: '1px solid #F59E0B',
+  },
+  loanPaymentBadge: {
+    fontSize: '0.7rem',
+    color: '#F59E0B',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    marginBottom: '0.5rem',
+    fontWeight: 'bold',
+  },
+  loanPaymentMessage: {
+    fontSize: '0.875rem',
+    color: '#9CA3AF',
+    marginBottom: '0.75rem',
+  },
+  loanPaymentBadgeSmall: {
+    fontSize: '0.6rem',
+    color: '#F59E0B',
+    marginTop: '0.25rem',
+    display: 'inline-block',
+    background: 'rgba(245, 158, 11, 0.1)',
+    padding: '0.125rem 0.375rem',
+    borderRadius: '0.25rem',
+  },
+  interestBadgeSmall: {
+    fontSize: '0.6rem',
+    color: '#F59E0B',
+    marginTop: '0.25rem',
+    display: 'inline-block',
+    background: 'rgba(245, 158, 11, 0.1)',
+    padding: '0.125rem 0.375rem',
+    borderRadius: '0.25rem',
+  },
+  principalBadgeSmall: {
+    fontSize: '0.6rem',
+    color: '#10B981',
+    marginTop: '0.25rem',
+    display: 'inline-block',
+    background: 'rgba(16, 185, 129, 0.1)',
+    padding: '0.125rem 0.375rem',
+    borderRadius: '0.25rem',
+  },
+  paymentBadgeSmall: {
+    fontSize: '0.6rem',
+    color: '#3B82F6',
+    marginTop: '0.25rem',
+    display: 'inline-block',
+    background: 'rgba(59, 130, 246, 0.1)',
+    padding: '0.125rem 0.375rem',
+    borderRadius: '0.25rem',
+  },
+  interestRateSmall: {
+    fontSize: '0.55rem',
+    color: '#9CA3AF',
+    marginTop: '0.125rem',
+    textAlign: 'right',
+  },
+  paymentBreakdown: {
+    background: '#111827',
+    padding: '0.75rem',
+    borderRadius: '0.5rem',
+    marginTop: '0.75rem',
+  },
+  breakdownTitle: {
+    fontSize: '0.75rem',
+    fontWeight: 'bold',
+    color: '#9CA3AF',
+    marginBottom: '0.5rem',
+    textTransform: 'uppercase',
+  },
+  breakdownRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '0.25rem 0',
+    fontSize: '0.875rem',
+    borderBottom: '1px solid #374151',
+  },
+  breakdownNote: {
+    fontSize: '0.65rem',
+    color: '#6B7280',
+    marginTop: '0.5rem',
+    textAlign: 'center',
   },
 };
 

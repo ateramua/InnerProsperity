@@ -1,6 +1,15 @@
 // src/views/CashAccountsView.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/router';
+
+// ✅ HELPER FUNCTIONS
+const parseNumber = (value, fallback = null) => {
+  const num = parseFloat(value);
+  return !isNaN(num) ? num : fallback;
+};
+
+const cleanString = (value) => value?.trim() || null;
+const cleanNumberString = (value) => value?.replace(/\s/g, '') || null;
 
 const CashAccountsView = ({ accounts: propAccounts }) => {
   const router = useRouter();
@@ -118,7 +127,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     setEditFormData({
       name: editingAccount.name || '',
       balance: editingAccount.balance !== undefined && editingAccount.balance !== null
-        ? Math.abs(editingAccount.balance).toString()
+        ? editingAccount.balance.toString()
         : '',
       institution: editingAccount.institution || '',
       account_number: editingAccount.account_number || '',
@@ -139,9 +148,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     setEditErrors({});
   };
 
+  // ✅ FIXED: loadAccounts with error reset + safer flow
   const loadAccounts = async (force = false) => {
     console.log('💰 CashAccountsView - Loading accounts...');
     setLoading(true);
+    setError(null);
 
     try {
       if (!force && propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
@@ -180,12 +191,13 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     }
   };
 
-  // Masking helpers
+  // ✅ FIXED: safer masking helper
   const maskNumber = (number) => {
-    if (!number || number.length === 0) return '';
-    if (number.length <= 4) return number;
-    const asterisks = '•'.repeat(Math.min(number.length - 4, 12));
-    return asterisks + number.slice(-4);
+    if (!number) return '';
+    const str = String(number);
+    if (str.length <= 4) return str;
+    const maskLength = Math.min(str.length - 4, 12);
+    return '•'.repeat(maskLength) + str.slice(-4);
   };
 
   const formatAccountNumber = (value) => {
@@ -202,7 +214,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const validateInlineForm = () => {
     const newErrors = {};
-    if (!inlineFormData.name.trim()) newErrors.name = 'Account name is required';
+    if (!inlineFormData.name?.trim()) newErrors.name = 'Account name is required';
     if (!inlineFormData.account_number) newErrors.account_number = 'Account number is required';
     if (!inlineFormData.routing_number) newErrors.routing_number = 'Routing number is required';
     setInlineErrors(newErrors);
@@ -211,7 +223,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const validateEditForm = () => {
     const newErrors = {};
-    if (!editFormData.name.trim()) newErrors.name = 'Account name is required';
+    if (!editFormData.name?.trim()) newErrors.name = 'Account name is required';
     setEditErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -271,6 +283,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     setDisplayDebitCardNumber(maskNumber(formatted.replace(/\s/g, '')));
   };
 
+  // ✅ FIXED: handleCreateInlineAccount with safe parsing and unified event name
   const handleCreateInlineAccount = async () => {
     if (!validateInlineForm()) return;
 
@@ -285,19 +298,19 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       const userId = userResult.data.id;
 
       const accountData = {
-        name: inlineFormData.name.trim(),
+        name: cleanString(inlineFormData.name),
         type: inlineFormData.type,
         accountTypeCategory: 'budget',
-        balance: parseFloat(inlineFormData.balance) || 0,
+        balance: parseNumber(inlineFormData.balance, 0),
         currency: 'USD',
-        institution: inlineFormData.institution.trim() || null,
-        account_number: inlineFormData.account_number.replace(/\s/g, '') || null,
-        routing_number: inlineFormData.routing_number || null,
-        debit_card_number: inlineFormData.debit_card_number.replace(/\s/g, '') || null,
-        daily_withdrawal_limit: inlineFormData.daily_withdrawal_limit ? parseFloat(inlineFormData.daily_withdrawal_limit) : null,
-        overdraft_protection: inlineFormData.overdraft_protection,
-        interest_rate: inlineFormData.interest_rate ? parseFloat(inlineFormData.interest_rate) : null,
-        notes: inlineFormData.notes.trim() || null,
+        institution: cleanString(inlineFormData.institution),
+        account_number: cleanNumberString(inlineFormData.account_number),
+        routing_number: cleanString(inlineFormData.routing_number),
+        debit_card_number: cleanNumberString(inlineFormData.debit_card_number),
+        daily_withdrawal_limit: parseNumber(inlineFormData.daily_withdrawal_limit),
+        overdraft_protection: !!inlineFormData.overdraft_protection,
+        interest_rate: parseNumber(inlineFormData.interest_rate),
+        notes: cleanString(inlineFormData.notes),
         userId: userId
       };
 
@@ -310,7 +323,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         setShowInlineModal(false);
         resetInlineForm();
         await loadAccounts(true);
-        window.dispatchEvent(new Event('accounts-changed'));
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
         alert('✅ Account created successfully!');
       } else {
         console.error('❌ Failed to create account:', result.error);
@@ -324,12 +337,20 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     }
   };
 
+  // ✅ FIXED: handleUpdateAccount with safe parsing and NO forced negative balance
   const handleUpdateAccount = async () => {
     if (!validateEditForm()) return;
 
+    if (!editingAccount?.id) {
+      alert('No account selected');
+      return;
+    }
+
     setIsEditing(true);
+
     try {
       const userResult = await window.electronAPI.getCurrentUser();
+
       if (!userResult?.success || !userResult?.data) {
         alert('You must be logged in');
         return;
@@ -338,21 +359,27 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       const userId = userResult.data.id;
 
       const updates = {
-        name: editFormData.name.trim(),
-        balance: editFormData.balance ? -Math.abs(parseFloat(editFormData.balance)) : 0,
-        institution: editFormData.institution.trim() || null,
-        account_number: editFormData.account_number.replace(/\s/g, '') || null,
-        routing_number: editFormData.routing_number || null,
-        debit_card_number: editFormData.debit_card_number.replace(/\s/g, '') || null,
-        daily_withdrawal_limit: editFormData.daily_withdrawal_limit ? parseFloat(editFormData.daily_withdrawal_limit) : null,
-        overdraft_protection: editFormData.overdraft_protection,
-        interest_rate: editFormData.interest_rate ? parseFloat(editFormData.interest_rate) : null,
-        notes: editFormData.notes.trim() || null
+        name: cleanString(editFormData.name),
+        balance: parseNumber(editFormData.balance, 0),
+        institution: cleanString(editFormData.institution),
+        account_number: cleanNumberString(editFormData.account_number),
+        routing_number: cleanString(editFormData.routing_number),
+        debit_card_number: cleanNumberString(editFormData.debit_card_number),
+        daily_withdrawal_limit: parseNumber(editFormData.daily_withdrawal_limit),
+        overdraft_protection: !!editFormData.overdraft_protection,
+        interest_rate: parseNumber(editFormData.interest_rate),
+        notes: cleanString(editFormData.notes)
       };
 
       console.log('📝 Updating account:', editingAccount.id, updates);
 
-      const result = await window.electronAPI.updateAccount(editingAccount.id, userId, updates);
+      const result = await window.electronAPI.updateAccount(
+        editingAccount.id,
+        userId,
+        updates
+      );
+
+      console.log('API result:', result);
 
       if (result.success) {
         alert('✅ Account updated successfully');
@@ -361,16 +388,17 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         await loadAccounts(true);
         window.dispatchEvent(new CustomEvent('accounts-updated'));
       } else {
-        alert('❌ Error updating account: ' + result.error);
+        alert('❌ Error updating account: ' + (result.error || 'Unknown error'));
       }
     } catch (error) {
       console.error('Error updating account:', error);
-      alert('❌ Error updating account: ' + error.message);
+      alert('❌ Error updating account: ' + (error.message || 'Unknown error'));
     } finally {
       setIsEditing(false);
     }
   };
 
+  // ✅ FIXED: handleDeleteAccount with unified event name
   const handleDeleteAccount = async (accountId, accountName) => {
     if (!window.confirm(`Are you sure you want to delete "${accountName}"? This action cannot be undone.`)) {
       return;
@@ -391,7 +419,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         setShowEditModal(false);
         setEditingAccount(null);
         await loadAccounts(true);
-        window.dispatchEvent(new Event('accounts-changed'));
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
       } else {
         alert('Failed to delete account: ' + result.error);
       }
@@ -410,16 +438,29 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     router.push(`/accounts/${accountId}`);
   };
 
+  // ✅ FIXED: safer formatCurrency
   const formatCurrency = (amount) => {
+    const value = typeof amount === 'number' ? amount : 0;
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD'
-    }).format(amount || 0);
+    }).format(value);
   };
 
   const getAccountIcon = (type) => {
     return type === 'checking' ? '🏦' : '💰';
   };
+
+  // ✅ Memoized filtered accounts for performance
+  const checkingAccounts = useMemo(() => 
+    accounts.filter(a => a.type === 'checking'),
+    [accounts]
+  );
+
+  const savingsAccounts = useMemo(() => 
+    accounts.filter(a => a.type === 'savings'),
+    [accounts]
+  );
 
   // Determine if showing bank fields
   const showBankFields = inlineFormData.type === 'checking' || inlineFormData.type === 'savings';
@@ -466,9 +507,9 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
       <div style={styles.accountsContainer}>
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>CHECKING ACCOUNTS</h2>
+          <h2 style={styles.sectionHeaderTitle}>CHECKING ACCOUNTS</h2>
           <div style={styles.accountList}>
-            {accounts.filter(a => a.type === 'checking').map(account => (
+            {checkingAccounts.map(account => (
               <div
                 key={account.id}
                 style={styles.accountRow}
@@ -506,7 +547,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 </div>
               </div>
             ))}
-            {accounts.filter(a => a.type === 'checking').length === 0 && (
+            {checkingAccounts.length === 0 && (
               <div style={styles.emptyState}>
                 No checking accounts yet. Click "New Account" to add one.
               </div>
@@ -515,9 +556,9 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         </div>
 
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>SAVINGS ACCOUNTS</h2>
+          <h2 style={styles.sectionHeaderTitle}>SAVINGS ACCOUNTS</h2>
           <div style={styles.accountList}>
-            {accounts.filter(a => a.type === 'savings').map(account => (
+            {savingsAccounts.map(account => (
               <div
                 key={account.id}
                 style={styles.accountRow}
@@ -555,7 +596,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 </div>
               </div>
             ))}
-            {accounts.filter(a => a.type === 'savings').length === 0 && (
+            {savingsAccounts.length === 0 && (
               <div style={styles.emptyState}>
                 No savings accounts yet. Click "New Account" to add one.
               </div>
@@ -985,7 +1026,7 @@ const styles = {
   section: {
     marginBottom: '1rem'
   },
-  sectionTitle: {
+  sectionHeaderTitle: {
     fontSize: '1.25rem',
     fontWeight: '600',
     marginBottom: '1rem',

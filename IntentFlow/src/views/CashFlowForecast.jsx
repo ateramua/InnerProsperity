@@ -759,4 +759,4 @@ const styles = {
     }
 };
 
-export default CashFlowForecast;
+export default CashFlowForecast;`   `

@@ -1,475 +1,589 @@
-// src/views/CreditCardManager.jsx
+// src/views/LoanManager.jsx
 import React, { useState, useEffect } from 'react';
 import EditAccountModal from './EditAccountModal';
-import { QRCodeCanvas } from 'qrcode.react';
 
-function CreditCardManager({
-  cards = [],
-  transactions = [],
+function LoanManager({
+  loans = [],
   onMakePayment,
-  onViewTransactions,
-  onOpenPlanner
+  onEditLoan,
+  onAddLoan,
+  onViewDetails,
+  onOpenStrategist,
+  onDeleteLoan,
 }) {
-  const [selectedCard, setSelectedCard] = useState(null);
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState({});
+  const [selectedLoan, setSelectedLoan] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [editingCard, setEditingCard] = useState(null);
+  const [editingLoan, setEditingLoan] = useState(null);
+  
+  // ===================== LOAN PAYMENT MODAL STATE =====================
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [selectedPaymentLoan, setSelectedPaymentLoan] = useState(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
+  const [paymentMemo, setPaymentMemo] = useState('');
+  const [paymentBreakdown, setPaymentBreakdown] = useState(null);
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [availableCashAccounts, setAvailableCashAccounts] = useState([]);
+  const [selectedSourceAccountId, setSelectedSourceAccountId] = useState('');
+  
+  // ===================== LOAN PAIRING STATE =====================
+  const [availableCategories, setAvailableCategories] = useState([]);
+  const [categoryGroups, setCategoryGroups] = useState([]);
+  const [pairingOption, setPairingOption] = useState('skip');
+  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [selectedGroupId, setSelectedGroupId] = useState('');
+  const [isLoadingCategories, setIsLoadingCategories] = useState(false);
 
-  // State for Zero Interest Accelerator
-  const [showAccelerator, setShowAccelerator] = useState(false);
-  const [targetMonths, setTargetMonths] = useState(12);
-  const [acceleratorPlan, setAcceleratorPlan] = useState(null);
-  const [showQR, setShowQR] = useState(false);
-  const [qrValue, setQrValue] = useState('');
+  // Form state for new loan
+  const [newLoanData, setNewLoanData] = useState({
+    name: '',
+    type: 'loan',
+    loan_type: 'personal',
+    institution: '',
+    account_number: '',
+    account_holder_name: '',
+    balance: 0,
+    original_balance: null,
+    interest_rate: null,
+    monthly_payment: null,
+    term_months: null,
+    due_date: '',
+    notes: ''
+  });
 
-  // Debug: log cards when they change
-  useEffect(() => {
-    if (cards.length > 0) {
-      console.table(cards.map(c => ({
-        id: c.id,
-        name: c.name,
-        balance: c.balance,
-        interest_rate: c.interest_rate,
-        apr: c.apr,
-        account_number: c.account_number,
-        account_holder_name: c.account_holder_name,
-        institution: c.institution
-      })));
-    }
-  }, [cards]);
-
-  // Calculate Zero Interest Accelerator plan for a card
-  const calculateAcceleratorPlan = (card) => {
-    const balance = Math.abs(card.balance || 0);
-    const aprValue = card.interest_rate ?? card.apr ?? 18.99;
-    const monthlyRate = aprValue / 100 / 12;
-    const minPayment = card.minimum_payment || card.minimumPayment || Math.max(25, balance * 0.02);
-
-    let monthsWithMin = 0;
-    let totalInterestMin = 0;
-
-    if (monthlyRate === 0) {
-      monthsWithMin = Math.ceil(balance / minPayment);
-      totalInterestMin = 0;
-    } else {
-      if (minPayment > balance * monthlyRate) {
-        monthsWithMin = Math.ceil(
-          -Math.log(1 - (balance * monthlyRate) / minPayment) / Math.log(1 + monthlyRate)
-        );
-      } else {
-        monthsWithMin = Infinity;
-      }
-      totalInterestMin = monthsWithMin * minPayment - balance;
-    }
-
-    let targetPayment = null;
-    let targetTotalInterest = null;
-    let canAchieve = true;
-
-    if (targetMonths > 0 && monthlyRate > 0) {
-      const r = monthlyRate;
-      const n = targetMonths;
-      targetPayment = (r * balance) / (1 - Math.pow(1 + r, -n));
-      if (targetPayment < minPayment) {
-        targetPayment = minPayment;
-        canAchieve = false;
-      }
-      targetTotalInterest = targetPayment * n - balance;
-    } else if (targetMonths > 0) {
-      targetPayment = balance / targetMonths;
-      targetTotalInterest = 0;
-      if (targetPayment < minPayment) canAchieve = false;
-    }
-
-    const interestSaved = totalInterestMin - targetTotalInterest;
-    const extraPerMonth = targetPayment ? targetPayment - minPayment : 0;
-    const monthsSaved = monthsWithMin - targetMonths;
-
-    return {
-      balance,
-      minPayment,
-      monthsWithMin: isFinite(monthsWithMin) ? monthsWithMin : 999,
-      totalInterestMin: isFinite(totalInterestMin) ? totalInterestMin : 999999,
-      targetPayment,
-      targetTotalInterest,
-      interestSaved: Math.max(0, interestSaved),
-      extraPerMonth: Math.max(0, extraPerMonth),
-      monthsSaved: Math.max(0, monthsSaved),
-      canAchieve,
-      aprValue
-    };
-  };
-
-  // SMART BANK ROUTER (NO GOOGLE FALLBACK)
-  const getBankUrl = (card) => {
-    if (card.payment_url) return card.payment_url;
-
-    const name = (card.institution || card.name || '').toLowerCase();
-
-    const routes = [
-      { match: ['chase'], url: 'https://www.chase.com/payments' },
-      { match: ['american express', 'amex'], url: 'https://www.americanexpress.com/en-us/account/payments/' },
-      { match: ['capital one'], url: 'https://www.capitalone.com/credit-cards/online-banking/' },
-      { match: ['citi'], url: 'https://www.citi.com/credit-cards/credit-card-payment' },
-      { match: ['discover'], url: 'https://www.discover.com/credit-cards/member-benefits/online-banking.html' },
-      { match: ['bank of america'], url: 'https://www.bankofamerica.com/online-banking/bill-pay/' },
-      { match: ['wells fargo'], url: 'https://www.wellsfargo.com/online-banking/bill-pay/' }
-    ];
-
-    const found = routes.find(r => r.match.some(m => name.includes(m)));
-    return found?.url || null;
-  };
-
-  // BUILD PAYMENT INTENT ENGINE
-  const buildPaymentIntent = (card, type, amount) => {
-    if (!card) return null;
-
-    return {
-      cardId: card.id,
-      paymentType: type,
-      amount,
-      bankUrl: getBankUrl(card),
-      last4: card.account_number?.slice(-4) || "N/A",
-      institution: card.institution || "Unknown",
-      cardName: card.name,
-      timestamp: new Date().toISOString()
-    };
-  };
-
-  // SMART PAY EXECUTOR
-  const handleSmartPay = (card, type, amount) => {
-    const payment = buildPaymentIntent(card, type, amount);
-    if (!payment) return;
-
-    console.log('⚡ Smart Pay Executed:', payment);
-
-    if (!payment.bankUrl) {
-      const qrData = JSON.stringify({
-        cardName: payment.cardName,
-        amount: payment.amount,
-        paymentType: payment.paymentType,
-        last4: payment.last4,
-        timestamp: payment.timestamp
-      });
-      setQrValue(qrData);
-      setShowQR(true);
-      return;
-    }
-
-    if (window.electronAPI?.openExternal) {
-      window.electronAPI.openExternal(payment.bankUrl);
-    } else {
-      window.open(payment.bankUrl, '_blank');
-    }
-  };
-
-  // Legacy handlers for compatibility
-  const handlePayOnComputer = (card) => {
-    const url = getBankUrl(card);
-    if (!url) {
-      alert('⚠️ No bank payment link available for this card.');
-      return;
-    }
-    console.log('Opening URL:', url);
-    if (window.electronAPI?.openExternal) {
-      window.electronAPI.openExternal(url);
-    } else {
-      window.open(url, '_blank');
-    }
-  };
-
-  const handlePayOnPhone = (card) => {
-    const url = getBankUrl(card);
-    if (!url) {
-      alert('⚠️ No bank link available for this card.');
-      return;
-    }
-    setQrValue(url);
-    setShowQR(true);
-  };
-
-  // Handle card selection and calculate accelerator plan
-  const handleCardSelect = (card) => {
-    setSelectedCard(selectedCard === card.id ? null : card.id);
-    if (selectedCard !== card.id) {
-      const plan = calculateAcceleratorPlan(card);
-      setAcceleratorPlan(plan);
-    }
-  };
-
-  // Handle opening accelerator for a card
-  const handleOpenAccelerator = (e, card) => {
-    e.stopPropagation();
-    const plan = calculateAcceleratorPlan(card);
-    setAcceleratorPlan(plan);
-    setSelectedCard(card.id);
-    setShowAccelerator(true);
-  };
-
-  // Handle applying accelerator payment
-  const handleApplyAccelerator = async (card) => {
-    if (!acceleratorPlan || !acceleratorPlan.targetPayment) return;
-
-    if (onMakePayment) {
-      const result = await onMakePayment({
-        cardId: card.id,
-        amount: acceleratorPlan.targetPayment,
-        date: new Date().toISOString().split('T')[0],
-        accountId: card.id,
-        isAccelerated: true
-      });
-      if (result?.success) {
-        setShowAccelerator(false);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert(`✅ Accelerated payment of $${acceleratorPlan.targetPayment.toFixed(2)} scheduled! You'll save $${acceleratorPlan.interestSaved.toFixed(2)} in interest.`);
-      }
-    }
-  };
-
-  // Handle adding a new card
-  const handleAddNewCard = () => {
-    const newCardTemplate = {
-      id: 'new',
-      name: '',
-      type: 'credit',
-      balance: '',
-      credit_limit: '',
-      limit: '',
-      interest_rate: '18.99',
-      apr: '18.99',
-      due_date: '',
-      dueDate: '',
-      institution: '',
-      account_number: '',
-      account_holder_name: '',
-      notes: ''
-    };
-    setEditingCard(newCardTemplate);
-    setShowEditModal(true);
-  };
-
-  const handleOpenEditModal = (card) => {
-    console.log('Opening edit modal for card:', card);
-    setEditingCard(card);
-    setShowEditModal(true);
-  };
-
-  const handleSaveEdit = async (cardId, updatedData) => {
-    console.log('📥 CreditCardManager handleSaveEdit received:', cardId, updatedData);
-
-    if (!updatedData) {
-      console.error('❌ updatedData is undefined in handleSaveEdit');
-      alert('Error: No data to save');
-      return;
-    }
-
-    if (cardId === 'new') {
-      try {
-        const userResult = await window.electronAPI.getCurrentUser();
-        if (!userResult?.success || !userResult?.data) {
-          alert('You must be logged in to create a credit card');
-          return;
-        }
-
+  // Load categories for pairing
+  const loadCategoriesForPairing = async () => {
+    setIsLoadingCategories(true);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
         const userId = userResult.data.id;
-
-        if (!updatedData.name || updatedData.name.trim() === '') {
-          alert('Please enter a card name');
-          return;
+        
+        const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+        if (groupsResult?.success) {
+          setCategoryGroups(groupsResult.data || []);
         }
-
-        let balanceValue = 0;
-        if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
-          const parsedBalance = parseFloat(updatedData.balance);
-          if (!isNaN(parsedBalance)) {
-            balanceValue = -Math.abs(parsedBalance);
+        
+        const categoriesResult = await window.electronAPI.getCategories(userId);
+        if (categoriesResult?.success) {
+          const availableCats = (categoriesResult.data || []).filter(cat => 
+            !cat.archived && !cat.is_loan_payment_category
+          );
+          setAvailableCategories(availableCats);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading categories for pairing:', error);
+    } finally {
+      setIsLoadingCategories(false);
+    }
+  };
+  
+  // Load cash accounts (checking/savings) for payment source
+  const loadCashAccounts = async () => {
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const userId = userResult.data.id;
+        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+        if (accountsResult?.success) {
+          const cashAccounts = accountsResult.data.filter(acc => 
+            acc.type === 'checking' || acc.type === 'savings'
+          );
+          setAvailableCashAccounts(cashAccounts);
+          if (cashAccounts.length > 0 && !selectedSourceAccountId) {
+            setSelectedSourceAccountId(cashAccounts[0].id);
           }
         }
-
-        const cardData = {
-          name: updatedData.name.trim(),
-          type: 'credit',
-          account_type_category: 'credit',
-          balance: balanceValue,
-          credit_limit: updatedData.credit_limit ? parseFloat(updatedData.credit_limit) : 0,
-          limit: updatedData.credit_limit ? parseFloat(updatedData.credit_limit) : 0,
-          interest_rate: updatedData.interest_rate ? parseFloat(updatedData.interest_rate) : 18.99,
-          apr: updatedData.interest_rate ? parseFloat(updatedData.interest_rate) : 18.99,
-          due_date: updatedData.due_date || null,
-          dueDate: updatedData.due_date || null,
-          institution: updatedData.institution?.trim() || null,
-          account_number: updatedData.account_number?.trim() || null,
-          account_holder_name: updatedData.account_holder_name?.trim() || null,
-          notes: updatedData.notes?.trim() || null,
-          user_id: userId,
-          userId: userId,
-          currency: 'USD'
-        };
-
-        const result = await window.electronAPI.createAccount(cardData);
-
-        if (result && result.success) {
-          setShowEditModal(false);
-          setEditingCard(null);
-          window.dispatchEvent(new CustomEvent('accounts-updated'));
-          alert('✅ Credit card created successfully!');
-        } else {
-          const errorMsg = result?.error || 'Unknown error occurred';
-          alert(`Failed to create credit card: ${errorMsg}`);
-        }
-      } catch (error) {
-        console.error('❌ Error creating credit card:', error);
-        alert(`Error creating credit card: ${error.message}`);
       }
-    } else {
-      try {
-        const userResult = await window.electronAPI.getCurrentUser();
-        if (!userResult?.success || !userResult?.data) {
-          alert('You must be logged in');
-          return;
-        }
-
-        const userId = userResult.data.id;
-        let updatePayload = {};
-
-        if (updatedData.name !== undefined && updatedData.name !== '') updatePayload.name = updatedData.name;
-        if (updatedData.institution !== undefined) updatePayload.institution = updatedData.institution;
-        if (updatedData.credit_limit !== undefined && updatedData.credit_limit !== '') {
-          updatePayload.credit_limit = parseFloat(updatedData.credit_limit) || 0;
-          updatePayload.limit = parseFloat(updatedData.credit_limit) || 0;
-        }
-        if (updatedData.interest_rate !== undefined && updatedData.interest_rate !== '') {
-          updatePayload.interest_rate = parseFloat(updatedData.interest_rate) || 18.99;
-          updatePayload.apr = parseFloat(updatedData.interest_rate) || 18.99;
-        }
-        if (updatedData.due_date !== undefined) updatePayload.due_date = updatedData.due_date;
-        if (updatedData.dueDate !== undefined) updatePayload.dueDate = updatedData.dueDate;
-        if (updatedData.account_number !== undefined) updatePayload.account_number = updatedData.account_number;
-        if (updatedData.account_holder_name !== undefined) updatePayload.account_holder_name = updatedData.account_holder_name;
-        if (updatedData.notes !== undefined) updatePayload.notes = updatedData.notes;
-
-        if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
-          const parsedBalance = parseFloat(updatedData.balance);
-          if (!isNaN(parsedBalance)) {
-            updatePayload.balance = -Math.abs(parsedBalance);
-          }
-        } else if (updatedData.balance === '') {
-          updatePayload.balance = 0;
-        }
-
-        if (Object.keys(updatePayload).length === 0) {
-          alert('No changes to save');
-          return;
-        }
-
-        const result = await window.electronAPI.updateAccount(cardId, userId, updatePayload);
-
-        if (result && result.success) {
-          setShowEditModal(false);
-          setEditingCard(null);
-          window.dispatchEvent(new CustomEvent('accounts-updated'));
-          alert('✅ Credit card updated successfully!');
-        } else {
-          const errorMsg = result?.error || 'Unknown error occurred';
-          alert(`Failed to update credit card: ${errorMsg}`);
-        }
-      } catch (error) {
-        console.error('❌ Error updating credit card:', error);
-        alert(`Error updating credit card: ${error.message}`);
-      }
+    } catch (error) {
+      console.error('Error loading cash accounts:', error);
     }
   };
 
-  // Calculate card statistics
-  const calculateCardStats = (card) => {
-    const cardTransactions = transactions.filter(t => t.account_id === card.id);
-    const now = new Date();
-    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const statementBalance = cardTransactions
-      .filter(t => t.date >= firstOfMonth)
-      .reduce((sum, t) => sum + t.amount, 0);
-    const minPayment = card.minimum_payment || card.minimumPayment || Math.max(25, Math.abs(card.balance) * 0.02);
-    const dueDate = new Date(card.dueDate || card.due_date);
-    const today = new Date();
-    const daysUntilDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24)) : 999;
-    const utilization = (Math.abs(card.balance) / (card.limit || card.credit_limit || 1000)) * 100;
-
-    const aprValue = card.interest_rate ?? card.apr ?? 18.99;
-    const monthlyRate = aprValue / 100 / 12;
-    const interestIfNotPaid = Math.abs(card.balance) * monthlyRate;
-
+  // Calculate payment breakdown (YNAB-style: interest first, then principal)
+  const calculatePaymentBreakdown = (loan, amount) => {
+    if (!loan || !amount || amount <= 0) return null;
+    
+    const balance = Math.abs(loan.balance || 0);
+    const apr = loan.interest_rate || loan.apr || 0;
+    const monthlyRate = apr / 100 / 12;
+    const monthlyInterest = balance * monthlyRate;
+    
+    let interestPortion = Math.min(monthlyInterest, amount);
+    let principalPortion = amount - interestPortion;
+    
+    if (principalPortion > balance) {
+      principalPortion = balance;
+      interestPortion = amount - principalPortion;
+    }
+    
+    const newBalance = balance - principalPortion;
+    
     return {
-      statementBalance: Math.abs(statementBalance || card.lastStatementBalance || card.balance),
-      minPayment: Math.round(minPayment * 100) / 100,
-      daysUntilDue,
-      isDueSoon: daysUntilDue <= 7 && daysUntilDue > 0,
-      isOverdue: daysUntilDue < 0,
-      utilization: Math.min(utilization, 100),
-      utilizationColor: utilization > 80 ? '#EF4444' : utilization > 50 ? '#F59E0B' : '#10B981',
-      interestIfNotPaid: Math.round(interestIfNotPaid * 100) / 100,
+      paymentAmount: amount,
+      interestPortion: Math.max(0, interestPortion),
+      principalPortion: Math.max(0, principalPortion),
+      oldBalance: balance,
+      newBalance: Math.max(0, newBalance),
+      interestRate: apr,
+      monthlyRate: monthlyRate * 100,
+      monthlyInterest
     };
   };
-
-  // Filter cards based on selection
-  const getFilteredCards = () => {
-    return cards.filter(card => {
-      const stats = calculateCardStats(card);
-      switch (filter) {
-        case 'urgent':
-          return stats.isOverdue;
-        case 'due-soon':
-          return stats.isDueSoon && !stats.isOverdue;
-        default:
-          return true;
-      }
-    });
+  
+  // Handle payment amount change - recalculate breakdown
+  const handlePaymentAmountChange = (e) => {
+    const amount = parseFloat(e.target.value) || 0;
+    setPaymentAmount(e.target.value);
+    if (selectedPaymentLoan && amount > 0) {
+      const breakdown = calculatePaymentBreakdown(selectedPaymentLoan, amount);
+      setPaymentBreakdown(breakdown);
+    } else {
+      setPaymentBreakdown(null);
+    }
   };
-
-  // Original payment handler (kept for modal)
-  const handlePayment = (cardId) => {
-    const card = cards.find(c => c.id === cardId);
-    const stats = calculateCardStats(card);
-    setSelectedCard(cardId);
-    setPaymentAmount({
-      amount: stats.statementBalance,
-      minPayment: stats.minPayment,
-      cardId
-    });
+  
+  // Open payment modal for a loan
+  const handleOpenPaymentModal = (loan) => {
+    setSelectedPaymentLoan(loan);
+    setPaymentAmount('');
+    setPaymentDate(new Date().toISOString().split('T')[0]);
+    setPaymentMemo('');
+    setPaymentBreakdown(null);
+    loadCashAccounts();
     setShowPaymentModal(true);
   };
-
-  const submitPayment = async () => {
-    if (onMakePayment) {
-      const result = await onMakePayment({
-        cardId: selectedCard,
-        amount: paymentAmount.amount,
-        date: new Date().toISOString().split('T')[0],
-        accountId: selectedCard
-      });
-      if (result?.success) {
-        setShowPaymentModal(false);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
+  
+  // Submit loan payment
+  const handleSubmitPayment = async () => {
+    const amount = parseFloat(paymentAmount);
+    if (isNaN(amount) || amount <= 0) {
+      alert('Please enter a valid payment amount');
+      return;
+    }
+    
+    if (!selectedSourceAccountId) {
+      alert('Please select a source account');
+      return;
+    }
+    
+    setIsSubmittingPayment(true);
+    
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to make a payment');
+        return;
       }
+      
+      const userId = userResult.data.id;
+      const breakdown = calculatePaymentBreakdown(selectedPaymentLoan, amount);
+      
+      // 1. Create outflow transaction in source account (checking/savings)
+      const outflowTransactionData = {
+        accountId: selectedSourceAccountId,
+        date: paymentDate,
+        payee: `Payment/Transfer: ${selectedPaymentLoan.name}`,
+        description: `Payment/Transfer: ${selectedPaymentLoan.name}`,
+        amount: -amount,
+        categoryId: selectedPaymentLoan.paired_category_id || null,
+        memo: paymentMemo || `Loan payment to ${selectedPaymentLoan.name}`,
+        cleared: 1,
+        isLoanPayment: true,
+        loanAccountId: selectedPaymentLoan.id,
+        paymentBreakdown: breakdown
+      };
+      
+      const outflowResult = await window.electronAPI.addTransaction(outflowTransactionData);
+      if (!outflowResult.success) {
+        throw new Error(outflowResult.error || 'Failed to create payment transaction');
+      }
+      
+      // 2. Create inflow transaction in loan account (principal reduction)
+      const inflowTransactionData = {
+        accountId: selectedPaymentLoan.id,
+        date: paymentDate,
+        payee: `Payment/Transfer: ${availableCashAccounts.find(a => a.id === selectedSourceAccountId)?.name || 'Payment'}`,
+        description: `Payment/Transfer: ${availableCashAccounts.find(a => a.id === selectedSourceAccountId)?.name || 'Payment'}`,
+        amount: breakdown.principalPortion,
+        categoryId: null,
+        memo: paymentMemo || `Payment from ${availableCashAccounts.find(a => a.id === selectedSourceAccountId)?.name}`,
+        cleared: 1,
+        isLoanPaymentInflow: true,
+        sourceAccountId: selectedSourceAccountId,
+        isPrincipalPayment: true
+      };
+      
+      const inflowResult = await window.electronAPI.addTransaction(inflowTransactionData);
+      if (!inflowResult.success) {
+        throw new Error(inflowResult.error || 'Failed to create loan inflow transaction');
+      }
+      
+      // 3. Create interest transaction if applicable
+      if (breakdown.interestPortion > 0) {
+        const interestTransactionData = {
+          accountId: selectedPaymentLoan.id,
+          date: paymentDate,
+          payee: `Interest Charge - ${selectedPaymentLoan.name}`,
+          description: `Interest Charge - ${selectedPaymentLoan.name}`,
+          amount: -breakdown.interestPortion,
+          categoryId: null,
+          memo: `Monthly interest at ${breakdown.interestRate}% APR`,
+          cleared: 1,
+          isInterestCharge: true,
+          interestRate: breakdown.interestRate,
+          interestAmount: breakdown.interestPortion
+        };
+        
+        await window.electronAPI.addTransaction(interestTransactionData);
+      }
+      
+      // 4. Update source account balance
+      const sourceAccount = availableCashAccounts.find(a => a.id === selectedSourceAccountId);
+      if (sourceAccount) {
+        const newSourceBalance = (sourceAccount.balance || 0) - amount;
+        await window.electronAPI.updateAccount(selectedSourceAccountId, userId, { balance: newSourceBalance });
+      }
+      
+      // 5. Update loan account balance
+      const newLoanBalance = (selectedPaymentLoan.balance || 0) + breakdown.principalPortion;
+      await window.electronAPI.updateAccount(selectedPaymentLoan.id, userId, { balance: newLoanBalance });
+      
+      // 6. Refresh the page
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+      
+      // 7. Show success message
+      alert(`✅ Payment of $${amount.toFixed(2)} recorded to ${selectedPaymentLoan.name}!\n\n` +
+        `• Interest: $${breakdown.interestPortion.toFixed(2)}\n` +
+        `• Principal: $${breakdown.principalPortion.toFixed(2)}\n` +
+        `• New Balance: $${breakdown.newBalance.toFixed(2)}`);
+      
+      setShowPaymentModal(false);
+      setSelectedPaymentLoan(null);
+      setPaymentAmount('');
+      setPaymentBreakdown(null);
+      
+    } catch (error) {
+      console.error('Error making loan payment:', error);
+      alert('Error making payment: ' + error.message);
+    } finally {
+      setIsSubmittingPayment(false);
     }
   };
 
-  const handleEditClick = (e, card) => {
-    e.stopPropagation();
-    handleOpenEditModal(card);
+  // Load categories when modal opens
+  useEffect(() => {
+    if (showAddModal) {
+      loadCategoriesForPairing();
+      setPairingOption('skip');
+      setSelectedCategoryId('');
+      setNewCategoryName('');
+      setSelectedGroupId('');
+    }
+  }, [showAddModal]);
+
+  const getFilteredLoans = () => {
+    if (filter === 'all') return loans;
+    return loans.filter(loan => loan.type?.toLowerCase().includes(filter) ||
+      loan.loan_type?.toLowerCase().includes(filter));
   };
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2
-    }).format(Math.abs(amount || 0));
+  const calculateLoanStats = (loan) => {
+    const originalBalance = loan.original_balance || Math.abs(loan.balance);
+    const progress = ((originalBalance - Math.abs(loan.balance)) / originalBalance) * 100;
+    const monthlyPayment = loan.monthly_payment || loan.monthlyPayment;
+    const remainingMonths = loan.remainingPayments ||
+      Math.ceil(Math.abs(loan.balance) / (monthlyPayment || 1));
+    const totalInterest = (monthlyPayment * remainingMonths) - Math.abs(loan.balance);
+    return {
+      progress: Math.max(0, Math.min(100, progress)),
+      remainingMonths,
+      totalInterest,
+      payoffDate: new Date(Date.now() + remainingMonths * 30 * 24 * 60 * 60 * 1000)
+    };
   };
 
-  const handleDeleteCard = async (cardId) => {
-    if (!window.confirm('Are you sure you want to delete this credit card? This action cannot be undone.')) {
+  const createPairedCategory = async (userId, loanName) => {
+    try {
+      const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+      let loanPaymentGroup = null;
+      
+      if (groupsResult?.success) {
+        loanPaymentGroup = groupsResult.data.find(g => 
+          g.name === 'Loan Payments' || g.name.toLowerCase() === 'loan payments'
+        );
+      }
+      
+      if (!loanPaymentGroup) {
+        const createGroupResult = await window.electronAPI.createCategoryGroup(
+          userId,
+          'Loan Payments',
+          (groupsResult?.data?.length || 0)
+        );
+        if (createGroupResult?.success) {
+          loanPaymentGroup = createGroupResult.data;
+        }
+      }
+      
+      if (!loanPaymentGroup) {
+        console.error('Could not create Loan Payments group');
+        return null;
+      }
+      
+      const categoryData = {
+        name: loanName,
+        assigned: 0,
+        group_id: loanPaymentGroup.id,
+        user_id: userId,
+        target_amount: 0,
+        target_type: 'monthly_debt_payment',
+        target_date: null,
+        priority: 2,
+        archived: 0,
+        is_loan_payment_category: 1
+      };
+      
+      const result = await window.electronAPI.createCategory(categoryData);
+      if (result?.success) {
+        console.log(`✅ Created loan payment category "${loanName}" in Loan Payments group`);
+        return result.data;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error creating paired category:', error);
+      return null;
+    }
+  };
+
+  const handleCreateLoan = async () => {
+    try {
+      if (!newLoanData.name.trim()) {
+        alert('Please enter a loan name');
+        return;
+      }
+
+      if (!newLoanData.balance || newLoanData.balance <= 0) {
+        alert('Please enter a valid loan balance');
+        return;
+      }
+
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in to create a loan');
+        return;
+      }
+
+      const userId = userResult.data.id;
+      
+      let pairedCategoryId = null;
+      
+      if (pairingOption === 'existing' && selectedCategoryId) {
+        pairedCategoryId = selectedCategoryId;
+        await window.electronAPI.updateCategory(selectedCategoryId, {
+          is_loan_payment_category: 1,
+          target_type: 'monthly_debt_payment'
+        });
+        alert(`✅ Loan will be paired with existing category.`);
+      } else if (pairingOption === 'new' && newCategoryName.trim()) {
+        let targetGroupId = selectedGroupId;
+        
+        if (!targetGroupId) {
+          const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+          let loanPaymentGroup = groupsResult?.data?.find(g => 
+            g.name === 'Loan Payments' || g.name.toLowerCase() === 'loan payments'
+          );
+          
+          if (!loanPaymentGroup) {
+            const createGroupResult = await window.electronAPI.createCategoryGroup(
+              userId,
+              'Loan Payments',
+              (groupsResult?.data?.length || 0)
+            );
+            if (createGroupResult?.success) {
+              loanPaymentGroup = createGroupResult.data;
+            }
+          }
+          targetGroupId = loanPaymentGroup?.id;
+        }
+        
+        if (targetGroupId) {
+          const categoryData = {
+            name: newCategoryName.trim(),
+            assigned: 0,
+            group_id: targetGroupId,
+            user_id: userId,
+            target_amount: 0,
+            target_type: 'monthly_debt_payment',
+            target_date: null,
+            priority: 2,
+            archived: 0,
+            is_loan_payment_category: 1
+          };
+          
+          const categoryResult = await window.electronAPI.createCategory(categoryData);
+          if (categoryResult?.success) {
+            pairedCategoryId = categoryResult.data.id;
+            alert(`✅ New category "${newCategoryName}" created and paired with this loan.`);
+          }
+        }
+      }
+
+      const loanData = {
+        name: newLoanData.name.trim(),
+        type: 'loan',
+        loan_type: newLoanData.loan_type,
+        account_type_category: 'loan',
+        balance: -Math.abs(parseFloat(newLoanData.balance)),
+        original_balance: newLoanData.original_balance ? parseFloat(newLoanData.original_balance) : null,
+        interest_rate: newLoanData.interest_rate ? parseFloat(newLoanData.interest_rate) : null,
+        monthly_payment: newLoanData.monthly_payment ? parseFloat(newLoanData.monthly_payment) : null,
+        term_months: newLoanData.term_months ? parseInt(newLoanData.term_months) : null,
+        due_date: newLoanData.due_date || null,
+        institution: newLoanData.institution.trim() || null,
+        account_number: newLoanData.account_number.trim() || null,
+        account_holder_name: newLoanData.account_holder_name.trim() || null,
+        notes: newLoanData.notes.trim() || null,
+        user_id: userId,
+        currency: 'USD',
+        paired_category_id: pairedCategoryId
+      };
+
+      console.log('📝 Creating loan with data:', loanData);
+
+      const result = await window.electronAPI.createAccount(loanData);
+
+      if (result.success) {
+        console.log('✅ Loan created successfully:', result.data);
+        setShowAddModal(false);
+
+        setNewLoanData({
+          name: '',
+          type: 'loan',
+          loan_type: 'personal',
+          institution: '',
+          account_number: '',
+          account_holder_name: '',
+          balance: 0,
+          original_balance: null,
+          interest_rate: null,
+          monthly_payment: null,
+          term_months: null,
+          due_date: '',
+          notes: ''
+        });
+
+        setPairingOption('skip');
+        setSelectedCategoryId('');
+        setNewCategoryName('');
+        setSelectedGroupId('');
+
+        if (onAddLoan) {
+          await onAddLoan(result.data);
+        }
+
+        window.dispatchEvent(new Event('accounts-changed'));
+        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+        
+        const pairingMessage = pairedCategoryId 
+          ? `\n\n📋 A payment category has been paired with this loan. You can now set a Monthly Debt Payment target in your budget.`
+          : `\n\nℹ️ You can pair a category with this loan later by editing the loan account.`;
+        
+        alert(`✅ Loan created successfully!${pairingMessage}`);
+      } else {
+        console.error('❌ Failed to create loan:', result.error);
+        alert(`Failed to create loan: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('❌ Error creating loan:', error);
+      alert(`Error: ${error.message}`);
+    }
+  };
+
+  const handleEditClick = (loan) => {
+    console.log('✏️ Opening EditAccountModal for loan:', loan);
+
+    const loanWithAllFields = {
+      id: loan.id,
+      name: loan.name || '',
+      type: 'loan',
+      balance: loan.balance || 0,
+      interest_rate: loan.interest_rate || loan.interestRate || null,
+      due_date: loan.due_date || null,
+      institution: loan.institution || loan.lender || '',
+      account_number: loan.account_number || '',
+      account_holder_name: loan.account_holder_name || '',
+      notes: loan.notes || '',
+      original_balance: loan.original_balance || null,
+      term_months: loan.term_months || null,
+      monthly_payment: loan.monthly_payment || loan.monthlyPayment || null,
+      loan_type: loan.loan_type || loan.type || 'personal',
+      paired_category_id: loan.paired_category_id || null
+    };
+
+    setEditingLoan(loanWithAllFields);
+    setShowEditModal(true);
+  };
+
+  const handleSaveEdit = async (accountId, updatedData) => {
+    console.log('📥 Saving loan edit from EditAccountModal:', accountId, updatedData);
+
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('You must be logged in');
+        return;
+      }
+
+      const userId = userResult.data.id;
+      
+      const updatePayload = {
+        name: updatedData.name,
+        type: 'loan',
+        account_type_category: 'loan',
+        institution: updatedData.institution || null,
+        account_number: updatedData.account_number || null,
+        account_holder_name: updatedData.account_holder_name || null,
+        notes: updatedData.notes || null,
+        balance: -Math.abs(parseFloat(updatedData.balance) || 0),
+        interest_rate: updatedData.interest_rate ? parseFloat(updatedData.interest_rate) : null,
+        due_date: updatedData.due_date || null,
+        original_balance: updatedData.original_balance ? parseFloat(updatedData.original_balance) : null,
+        term_months: updatedData.term_months ? parseInt(updatedData.term_months) : null,
+        payment_amount: updatedData.monthly_payment ? parseFloat(updatedData.monthly_payment) : null,
+        monthly_payment: updatedData.monthly_payment ? parseFloat(updatedData.monthly_payment) : null,
+        loan_type: updatedData.loan_type || 'personal',
+        paired_category_id: updatedData.paired_category_id || null
+      };
+
+      console.log('📝 Updating loan with payload:', updatePayload);
+
+      const result = await window.electronAPI.updateAccount(accountId, userId, updatePayload);
+
+      if (result && result.success) {
+        console.log('✅ Loan updated successfully');
+        setShowEditModal(false);
+        setEditingLoan(null);
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+        alert('✅ Loan updated successfully!');
+      } else {
+        const errorMsg = result?.error || 'Unknown error occurred';
+        console.error('❌ Failed to update loan:', errorMsg);
+        alert(`Failed to update loan: ${errorMsg}`);
+      }
+    } catch (error) {
+      console.error('❌ Error updating loan:', error);
+      alert(`Error updating loan: ${error.message}`);
+    }
+  };
+
+  const handleDeleteLoanAccount = async (accountId) => {
+    if (!window.confirm('Are you sure you want to delete this loan? This action cannot be undone.')) {
       return;
     }
 
@@ -479,56 +593,44 @@ function CreditCardManager({
         alert('You must be logged in');
         return;
       }
-      const userId = userResult.data.id;
 
-      const result = await window.electronAPI.deleteAccount(cardId, userId);
+      const userId = userResult.data.id;
+      const result = await window.electronAPI.deleteAccount(accountId, userId);
 
       if (result && result.success) {
         setShowEditModal(false);
-        setEditingCard(null);
+        setEditingLoan(null);
         window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Credit card deleted successfully!');
+        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+        alert('✅ Loan deleted successfully!');
       } else {
-        alert('Failed to delete credit card: ' + (result?.error || 'Unknown error'));
+        alert('Failed to delete loan: ' + (result?.error || 'Unknown error'));
       }
     } catch (error) {
-      console.error('Error deleting credit card:', error);
+      console.error('Error deleting loan:', error);
       alert('Error: ' + error.message);
     }
   };
 
-  const filteredCards = getFilteredCards();
-  const totalBalance = cards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0);
-  const totalLimit = cards.reduce((sum, c) => sum + (c.limit || c.credit_limit || 0), 0);
-  const overallUtilization = totalLimit > 0 ? (totalBalance / totalLimit) * 100 : 0;
-  const urgentCount = cards.filter(c => {
-    const stats = calculateCardStats(c);
-    return stats.isOverdue || stats.isDueSoon;
-  }).length;
-
-  // Get card issuer icon helper
-  const getCardIssuerIcon = (cardNumber) => {
-    const firstDigit = cardNumber?.replace(/\D/g, '')[0];
-    if (firstDigit === '4') return { icon: '💳', name: 'Visa', color: '#1a3c6e' };
-    if (firstDigit === '5') return { icon: '💳', name: 'Mastercard', color: '#cc0000' };
-    if (firstDigit === '3') return { icon: '💳', name: 'Amex', color: '#006fcf' };
-    if (firstDigit === '6') return { icon: '💳', name: 'Discover', color: '#ff6600' };
-    return { icon: '💳', name: 'Card', color: '#4B5563' };
-  };
+  const filteredLoans = getFilteredLoans();
+  const totalBalance = loans.reduce((sum, l) => sum + Math.abs(l.balance || 0), 0);
+  const totalMonthlyPayment = loans.reduce((sum, l) => sum + (l.monthly_payment || l.monthlyPayment || 0), 0);
 
   return (
     <div style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
         <div>
-          <h2 style={styles.title}>💳 Credit Card Dashboard</h2>
-          <p style={styles.subtitle}>Manage all your credit cards in one place</p>
+          <h2 style={styles.title}>🏦 Loan Manager</h2>
+          <p style={styles.subtitle}>Track and manage all your loans</p>
         </div>
         <div style={styles.headerActions}>
-          {onOpenPlanner && (
-            <button onClick={onOpenPlanner} style={styles.plannerButton}>📈 Open Planner</button>
-          )}
-          <button onClick={handleAddNewCard} style={styles.addButton}>➕ Add Credit Card</button>
+          <button onClick={onOpenStrategist} style={styles.strategistButton}>
+            🎯 Open Loan Strategist
+          </button>
+          <button onClick={() => setShowAddModal(true)} style={styles.addButton}>
+            ➕ Add Loan
+          </button>
         </div>
       </div>
 
@@ -537,29 +639,31 @@ function CreditCardManager({
         <div style={styles.summaryCard}>
           <div style={styles.summaryIcon}>💰</div>
           <div style={styles.summaryContent}>
-            <div style={styles.summaryLabel}>Total Balance</div>
-            <div style={styles.summaryValue}>{formatCurrency(totalBalance)}</div>
+            <div style={styles.summaryLabel}>Total Loan Balance</div>
+            <div style={styles.summaryValue}>${totalBalance.toFixed(2)}</div>
           </div>
         </div>
         <div style={styles.summaryCard}>
           <div style={styles.summaryIcon}>📊</div>
           <div style={styles.summaryContent}>
-            <div style={styles.summaryLabel}>Total Credit Limit</div>
-            <div style={styles.summaryValue}>{formatCurrency(totalLimit)}</div>
+            <div style={styles.summaryLabel}>Monthly Payments</div>
+            <div style={styles.summaryValue}>${totalMonthlyPayment.toFixed(2)}</div>
           </div>
         </div>
         <div style={styles.summaryCard}>
           <div style={styles.summaryIcon}>📈</div>
           <div style={styles.summaryContent}>
-            <div style={styles.summaryLabel}>Overall Utilization</div>
-            <div style={styles.summaryValue}>{overallUtilization.toFixed(1)}%</div>
+            <div style={styles.summaryLabel}>Average Interest</div>
+            <div style={styles.summaryValue}>
+              {(loans.reduce((sum, l) => sum + (l.interest_rate || l.interestRate || 0), 0) / (loans.length || 1)).toFixed(1)}%
+            </div>
           </div>
         </div>
         <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>⚠️</div>
+          <div style={styles.summaryIcon}>⏱️</div>
           <div style={styles.summaryContent}>
-            <div style={styles.summaryLabel}>Need Attention</div>
-            <div style={styles.summaryValue}>{urgentCount}</div>
+            <div style={styles.summaryLabel}>Total Loans</div>
+            <div style={styles.summaryValue}>{loans.length}</div>
           </div>
         </div>
       </div>
@@ -570,279 +674,192 @@ function CreditCardManager({
           onClick={() => setFilter('all')}
           style={{ ...styles.filterTab, ...(filter === 'all' ? styles.activeFilter : {}) }}
         >
-          All Cards ({cards.length})
+          All Loans ({loans.length})
         </button>
         <button
-          onClick={() => setFilter('due-soon')}
-          style={{ ...styles.filterTab, ...(filter === 'due-soon' ? styles.activeFilter : {}) }}
+          onClick={() => setFilter('auto')}
+          style={{ ...styles.filterTab, ...(filter === 'auto' ? styles.activeFilter : {}) }}
         >
-          Due Soon ({cards.filter(c => { const s = calculateCardStats(c); return s.isDueSoon && !s.isOverdue; }).length})
+          Auto ({loans.filter(l => (l.type?.toLowerCase().includes('auto') || l.loan_type === 'auto')).length})
         </button>
         <button
-          onClick={() => setFilter('urgent')}
-          style={{ ...styles.filterTab, ...(filter === 'urgent' ? styles.activeFilter : {}) }}
+          onClick={() => setFilter('student')}
+          style={{ ...styles.filterTab, ...(filter === 'student' ? styles.activeFilter : {}) }}
         >
-          Overdue ({cards.filter(c => { const s = calculateCardStats(c); return s.isOverdue; }).length})
+          Student ({loans.filter(l => (l.type?.toLowerCase().includes('student') || l.loan_type === 'student')).length})
+        </button>
+        <button
+          onClick={() => setFilter('personal')}
+          style={{ ...styles.filterTab, ...(filter === 'personal' ? styles.activeFilter : {}) }}
+        >
+          Personal ({loans.filter(l => (l.type?.toLowerCase().includes('personal') || l.loan_type === 'personal')).length})
         </button>
       </div>
 
-      {/* Cards Grid */}
-      {filteredCards.length === 0 ? (
+      {/* Loans Grid */}
+      {filteredLoans.length === 0 ? (
         <div style={styles.emptyState}>
-          <div style={styles.emptyIcon}>💳</div>
-          <h3 style={styles.emptyTitle}>No credit cards found</h3>
+          <div style={styles.emptyIcon}>🏦</div>
+          <h3 style={styles.emptyTitle}>No loans found</h3>
           <p style={styles.emptyText}>
-            {filter === 'all' ? 'Get started by adding your first credit card' : 'No cards match the selected filter'}
+            {filter === 'all'
+              ? 'Add your first loan to start tracking'
+              : 'No loans match the selected filter'}
           </p>
           {filter === 'all' && (
-            <button onClick={handleAddNewCard} style={styles.emptyAddButton}>
-              ➕ Add Your First Credit Card
+            <button onClick={() => setShowAddModal(true)} style={styles.emptyAddButton}>
+              ➕ Add Your First Loan
             </button>
           )}
         </div>
       ) : (
-        <div style={styles.cardsGrid}>
-          {filteredCards.map(card => {
-            const stats = calculateCardStats(card);
-            const isSelected = selectedCard === card.id;
-            const accelerator = calculateAcceleratorPlan(card);
-            const issuer = getCardIssuerIcon(card.account_number);
+        <div style={styles.loansGrid}>
+          {filteredLoans.map(loan => {
+            const stats = calculateLoanStats(loan);
+            const isSelected = selectedLoan === loan.id;
+            const hasPairedCategory = !!loan.paired_category_id;
 
             return (
               <div
-                key={card.id}
+                key={loan.id}
                 style={{
-                  ...styles.cardItem,
-                  ...(isSelected ? styles.selectedCard : {}),
-                  borderLeft: `4px solid ${stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : stats.utilizationColor}`
+                  ...styles.loanCard,
+                  ...(isSelected ? styles.selectedLoan : {}),
+                  borderLeft: hasPairedCategory ? '4px solid #10B981' : '4px solid #F59E0B'
                 }}
-                onClick={() => handleCardSelect(card)}
+                onClick={() => setSelectedLoan(isSelected ? null : loan.id)}
               >
-                {/* Edit Button - Positioned at top right */}
-                <button
-                  onClick={(e) => handleEditClick(e, card)}
-                  style={styles.editButton}
-                  title="Edit Card"
-                >
-                  ✏️
-                </button>
-
-                {/* Card Header */}
-                <div style={styles.cardHeader}>
+                {hasPairedCategory && (
+                  <div style={styles.pairedBadge}>
+                    🔗 Paired with category
+                  </div>
+                )}
+                
+                <div style={styles.loanHeader}>
                   <div>
-                    <h3 style={styles.cardName}>{card.name}</h3>
-                    <div style={styles.cardInstitution}>
-                      {issuer.icon} {issuer.name} • {card.institution || 'Credit Card'}
-                    </div>
-                    {card.account_number && (
-                      <div style={styles.accountNumber}>•••• {card.account_number.slice(-4)}</div>
-                    )}
-                    {card.account_holder_name && (
-                      <div style={styles.cardHolderName}>Holder: {card.account_holder_name}</div>
-                    )}
+                    <h3 style={styles.loanName}>{loan.name}</h3>
+                    <div style={styles.loanLender}>{loan.lender || loan.institution || 'Lender'}</div>
                   </div>
-                  <div style={{ ...styles.utilizationBadge, background: stats.utilizationColor + '20', color: stats.utilizationColor }}>
-                    {stats.utilization.toFixed(1)}% utilized
-                  </div>
+                  <div style={styles.loanRate}>{loan.interest_rate || loan.interestRate || 0}%</div>
                 </div>
 
-                {/* Balance */}
                 <div style={styles.balanceSection}>
                   <div style={styles.balanceLabel}>Current Balance</div>
-                  <div style={{ ...styles.balanceAmount, color: card.balance < 0 ? '#EF4444' : '#10B981' }}>
-                    {formatCurrency(card.balance)}
+                  <div style={styles.balanceAmount}>
+                    ${Math.abs(loan.balance).toFixed(2)}
                   </div>
-                  <div style={styles.limitText}>of {formatCurrency(card.limit || card.credit_limit || 0)} limit</div>
                 </div>
 
-                {/* Progress Bar */}
-                <div style={styles.progressBar}>
-                  <div style={{ ...styles.progressFill, width: `${Math.min(stats.utilization, 100)}%`, background: stats.utilizationColor }} />
-                </div>
-
-                {/* Due Date */}
-                <div style={{ ...styles.dueDateSection, background: stats.isOverdue ? '#EF444420' : stats.isDueSoon ? '#F59E0B20' : 'transparent' }}>
-                  <span>📅 Due: {card.dueDate || card.due_date ? new Date(card.dueDate || card.due_date).toLocaleDateString() : 'Not set'}</span>
-                  <span style={{ color: stats.isOverdue ? '#EF4444' : stats.isDueSoon ? '#F59E0B' : '#9CA3AF', fontWeight: 'bold' }}>
-                    {stats.isOverdue ? 'OVERDUE' : stats.daysUntilDue > 0 && stats.daysUntilDue < 999 ? `${stats.daysUntilDue} days left` : stats.daysUntilDue === 999 ? 'No due date' : 'Due today'}
-                  </span>
-                </div>
-
-                {/* Quick Stats */}
-                <div style={styles.quickStats}>
-                  <div style={styles.stat}><span>Min Payment</span><strong>{formatCurrency(stats.minPayment)}</strong></div>
-                  <div style={styles.stat}>
-                    <span>APR</span>
-                    <strong>{card.interest_rate ?? card.apr ?? 18.99}%</strong>
+                <div style={styles.progressSection}>
+                  <div style={styles.progressLabel}>
+                    <span>Progress: {stats.progress.toFixed(1)}%</span>
+                    <span>{stats.remainingMonths} months left</span>
                   </div>
-                  <div style={styles.stat}><span>Interest</span><strong style={{ color: '#F59E0B' }}>{formatCurrency(stats.interestIfNotPaid)}/mo</strong></div>
+                  <div style={styles.progressBar}>
+                    <div style={{ ...styles.progressFill, width: `${stats.progress}%` }} />
+                  </div>
                 </div>
 
-                {/* Zero Interest Accelerator Badge */}
-                {accelerator.targetPayment && accelerator.targetPayment > stats.minPayment && (
-                  <div style={styles.acceleratorBadge}>
-                    ⚡ Save {formatCurrency(accelerator.interestSaved)} by paying {formatCurrency(accelerator.extraPerMonth)} more/month
+                <div style={styles.loanDetails}>
+                  <div style={styles.detailItem}>
+                    <span>Monthly Payment</span>
+                    <strong>${(loan.monthly_payment || loan.monthlyPayment || 0).toFixed(2)}</strong>
+                  </div>
+                  <div style={styles.detailItem}>
+                    <span>Term</span>
+                    <strong>{loan.term_months || loan.term || 'N/A'} months</strong>
+                  </div>
+                  <div style={styles.detailItem}>
+                    <span>Payoff Date</span>
+                    <strong>{stats.payoffDate.toLocaleDateString()}</strong>
+                  </div>
+                </div>
+
+                {(loan.account_number || loan.account_holder_name) && (
+                  <div style={styles.additionalDetails}>
+                    {loan.account_number && (
+                      <div style={styles.detailBadge}>
+                        Acct: ••••{loan.account_number.slice(-4)}
+                      </div>
+                    )}
+                    {loan.account_holder_name && (
+                      <div style={styles.detailBadge}>
+                        Holder: {loan.account_holder_name}
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {/* ACTION BUTTONS - ALL ORIGINAL BUTTONS RESTORED + SMART PAY BUTTONS */}
-                <div style={styles.cardActions}>
-                  {/* Smart Pay Buttons */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSmartPay(card, "MIN", stats.minPayment);
-                    }}
-                    style={styles.smartPayButton}
-                  >
-                    💰 Smart Min
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSmartPay(card, "STATEMENT", stats.statementBalance);
-                    }}
-                    style={styles.smartPayButton}
-                  >
-                    💳 Smart Statement
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSmartPay(card, "ACCELERATED", accelerator.targetPayment || stats.minPayment);
-                    }}
-                    style={styles.smartPayButton}
-                  >
-                    ⚡ Smart Faster
-                  </button>
-                </div>
+                {hasPairedCategory && (
+                  <div style={styles.pairedInfo}>
+                    <span style={styles.pairedInfoIcon}>📋</span>
+                    <span style={styles.pairedInfoText}>
+                      Paired with budget category. Set a Monthly Debt Payment target in your budget.
+                    </span>
+                  </div>
+                )}
 
-                <div style={styles.cardActions}>
-                  {/* ORIGINAL BUTTONS - RESTORED */}
+                <div style={styles.loanActions}>
                   <button
-                    onClick={(e) => { e.stopPropagation(); handlePayment(card.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenPaymentModal(loan);
+                    }}
                     style={styles.paymentButton}
                   >
                     💰 Make Payment
                   </button>
                   <button
-                    onClick={(e) => handleOpenAccelerator(e, card)}
-                    style={styles.acceleratorButton}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEditClick(loan);
+                    }}
+                    style={styles.editButton}
+                    title="Edit Loan"
                   >
-                    ⚡ Zero Interest
+                    ✏️ Edit
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); onViewTransactions(card.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onViewDetails && onViewDetails(loan.id);
+                    }}
                     style={styles.transactionsButton}
                   >
                     📋 Transactions
                   </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleEditClick(e, card); }}
-                    style={styles.editButtonInline}
-                  >
-                    ✏️ Edit
-                  </button>
                 </div>
-
-                {/* Expanded Details */}
+                
                 {isSelected && (
                   <div style={styles.expandedDetails}>
-                    <h4 style={styles.expandedTitle}>Payment Strategy</h4>
-                    <div style={styles.strategyGrid}>
-                      <div style={styles.strategyCard}>
-                        <div style={styles.strategyLabel}>Pay in Full By</div>
-                        <div style={styles.strategyValue}>
-                          {card.dueDate || card.due_date ? new Date(card.dueDate || card.due_date).toLocaleDateString() : 'No due date set'}
-                        </div>
-                        <div style={styles.strategyNote}>
-                          Save {formatCurrency(stats.interestIfNotPaid)} in interest
-                        </div>
+                    <h4 style={styles.expandedTitle}>Amortization Preview</h4>
+                    <div style={styles.amortizationGrid}>
+                      <div style={styles.amortizationItem}>
+                        <span>Principal</span>
+                        <strong>${Math.abs(loan.balance).toFixed(2)}</strong>
                       </div>
-                      <div style={styles.strategyCard}>
-                        <div style={styles.strategyLabel}>Payoff Time (Min)</div>
-                        <div style={styles.strategyValue}>
-                          {accelerator.monthsWithMin} months
-                        </div>
-                        <div style={styles.strategyNote}>
-                          with minimum payments
-                        </div>
+                      <div style={styles.amortizationItem}>
+                        <span>Total Interest</span>
+                        <strong>${stats.totalInterest.toFixed(2)}</strong>
                       </div>
-                      {accelerator.targetPayment && (
-                        <div style={styles.strategyCard}>
-                          <div style={styles.strategyLabel}>⚡ Accelerated Payoff</div>
-                          <div style={styles.strategyValue}>
-                            {targetMonths} months
-                          </div>
-                          <div style={styles.strategyNote}>
-                            Save {formatCurrency(accelerator.interestSaved)} in interest
-                          </div>
-                        </div>
-                      )}
+                      <div style={styles.amortizationItem}>
+                        <span>Total Cost</span>
+                        <strong>${(Math.abs(loan.balance) + stats.totalInterest).toFixed(2)}</strong>
+                      </div>
                     </div>
-
-                    {/* Zero Interest Accelerator Detailed View */}
-                    {showAccelerator && selectedCard === card.id && (
-                      <div style={styles.acceleratorPlan}>
-                        <h4 style={styles.expandedTitle}>⚡ Zero Interest Accelerator Plan</h4>
-                        <div style={styles.acceleratorControls}>
-                          <label style={styles.acceleratorLabel}>
-                            Target Payoff Time:
-                            <input
-                              type="range"
-                              min="1"
-                              max="60"
-                              value={targetMonths}
-                              onChange={(e) => {
-                                setTargetMonths(Number(e.target.value));
-                                setAcceleratorPlan(calculateAcceleratorPlan(card));
-                              }}
-                              style={styles.acceleratorSlider}
-                            />
-                            <span style={styles.acceleratorValue}>{targetMonths} months</span>
-                          </label>
-                        </div>
-
-                        <div style={styles.acceleratorGrid}>
-                          <div style={styles.acceleratorItem}>
-                            <div style={styles.acceleratorLabel}>Current Payment</div>
-                            <div style={styles.acceleratorAmount}>{formatCurrency(accelerator.minPayment)}/mo</div>
-                            <div style={styles.acceleratorNote}>Payoff: {accelerator.monthsWithMin} months</div>
-                          </div>
-                          <div style={styles.acceleratorItem}>
-                            <div style={styles.acceleratorLabel}>⚡ Accelerated Payment</div>
-                            <div style={{ ...styles.acceleratorAmount, color: '#10B981' }}>{formatCurrency(accelerator.targetPayment)}/mo</div>
-                            <div style={styles.acceleratorNote}>+{formatCurrency(accelerator.extraPerMonth)} more per month</div>
-                          </div>
-                          <div style={styles.acceleratorItem}>
-                            <div style={styles.acceleratorLabel}>Interest Saved</div>
-                            <div style={{ ...styles.acceleratorAmount, color: '#10B981', fontSize: '1.25rem' }}>{formatCurrency(accelerator.interestSaved)}</div>
-                            <div style={styles.acceleratorNote}>Pay off {accelerator.monthsSaved} months sooner</div>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={() => handleApplyAccelerator(card)}
-                          style={styles.applyAcceleratorButton}
-                        >
-                          ⚡ Apply Accelerated Payment Plan
-                        </button>
+                    
+                    {hasPairedCategory && (
+                      <div style={styles.pairedTip}>
+                        💡 Tip: Go to your budget, find the paired category, and set a Monthly Debt Payment target to track your payoff progress.
                       </div>
                     )}
-
-                    {/* Recent Transactions Preview */}
-                    {transactions.filter(t => t.account_id === card.id).length > 0 && (
-                      <div style={styles.recentTransactions}>
-                        <h4 style={styles.expandedTitle}>Recent Transactions</h4>
-                        {transactions.filter(t => t.account_id === card.id).slice(0, 3).map(t => (
-                          <div key={t.id} style={styles.transactionItem}>
-                            <span>{new Date(t.date).toLocaleDateString()}</span>
-                            <span>{t.description || 'Transaction'}</span>
-                            <span style={{ color: t.amount < 0 ? '#EF4444' : '#10B981' }}>{formatCurrency(t.amount)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    
+                    <button
+                      onClick={() => onOpenStrategist && onOpenStrategist()}
+                      style={styles.strategistLink}
+                    >
+                      View in Loan Strategist →
+                    </button>
                   </div>
                 )}
               </div>
@@ -851,47 +868,348 @@ function CreditCardManager({
         </div>
       )}
 
-      {/* Payment Modal - Original modal kept for compatibility */}
-      {showPaymentModal && (
+      {/* Add Loan Modal */}
+      {showAddModal && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h2 style={styles.modalTitle}>Add New Loan</h2>
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Basic Information</h3>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>
+                  Loan Name <span style={styles.required}>*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newLoanData.name}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, name: e.target.value })}
+                  style={styles.input}
+                  placeholder="e.g., Auto Loan, Student Loan, Mortgage"
+                  autoFocus
+                />
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Loan Type</label>
+                <select
+                  value={newLoanData.loan_type}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, loan_type: e.target.value })}
+                  style={styles.select}
+                >
+                  <option value="personal">Personal Loan</option>
+                  <option value="auto">Auto Loan</option>
+                  <option value="student">Student Loan</option>
+                  <option value="mortgage">Mortgage</option>
+                  <option value="business">Business Loan</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Lender / Institution</label>
+                <input
+                  type="text"
+                  value={newLoanData.institution}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, institution: e.target.value })}
+                  style={styles.input}
+                  placeholder="e.g., Wells Fargo, Sallie Mae, Chase"
+                />
+              </div>
+
+              {/* FIXED: Current Balance input - allows cents properly */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>
+                  Current Balance <span style={styles.required}>*</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newLoanData.balance === 0 ? '' : newLoanData.balance}
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                    setNewLoanData({ ...newLoanData, balance: isNaN(value) ? 0 : value });
+                  }}
+                  style={styles.input}
+                  placeholder="0.00"
+                />
+                <small style={styles.hint}>Current amount owed (use decimal for cents, e.g., 1500.50)</small>
+              </div>
+            </div>
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Loan Details</h3>
+
+              {/* FIXED: Original Loan Amount input - allows cents properly */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Original Loan Amount</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newLoanData.original_balance === null || newLoanData.original_balance === 0 ? '' : newLoanData.original_balance}
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? null : parseFloat(e.target.value);
+                    setNewLoanData({ ...newLoanData, original_balance: isNaN(value) ? null : value });
+                  }}
+                  style={styles.input}
+                  placeholder="Original loan amount"
+                />
+              </div>
+
+              {/* FIXED: Interest Rate input - allows decimals */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Interest Rate (APR)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newLoanData.interest_rate === null || newLoanData.interest_rate === 0 ? '' : newLoanData.interest_rate}
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? null : parseFloat(e.target.value);
+                    setNewLoanData({ ...newLoanData, interest_rate: isNaN(value) ? null : value });
+                  }}
+                  style={styles.input}
+                  placeholder="e.g., 5.99"
+                />
+                <small style={styles.hint}>Annual Percentage Rate</small>
+              </div>
+
+              {/* FIXED: Monthly Payment input - allows cents properly */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Monthly Payment</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newLoanData.monthly_payment === null || newLoanData.monthly_payment === 0 ? '' : newLoanData.monthly_payment}
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? null : parseFloat(e.target.value);
+                    setNewLoanData({ ...newLoanData, monthly_payment: isNaN(value) ? null : value });
+                  }}
+                  style={styles.input}
+                  placeholder="Monthly payment amount"
+                />
+              </div>
+
+              {/* FIXED: Loan Term input - integers only */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Loan Term (months)</label>
+                <input
+                  type="number"
+                  step="1"
+                  value={newLoanData.term_months === null || newLoanData.term_months === 0 ? '' : newLoanData.term_months}
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? null : parseInt(e.target.value, 10);
+                    setNewLoanData({ ...newLoanData, term_months: isNaN(value) ? null : value });
+                  }}
+                  style={styles.input}
+                  placeholder="e.g., 60 for 5 years"
+                />
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Due Date</label>
+                <input
+                  type="date"
+                  value={newLoanData.due_date}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, due_date: e.target.value })}
+                  style={styles.input}
+                />
+                <small style={styles.hint}>Monthly payment due date</small>
+              </div>
+            </div>
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Account Details</h3>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Account Number</label>
+                <input
+                  type="text"
+                  value={newLoanData.account_number}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, account_number: e.target.value })}
+                  style={styles.input}
+                  placeholder="Enter full account number (up to 16 digits)"
+                  maxLength="16"
+                />
+                <small style={styles.hint}>For reference only. Only last 4 digits will be visible after saving.</small>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Account Holder Name</label>
+                <input
+                  type="text"
+                  value={newLoanData.account_holder_name}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, account_holder_name: e.target.value })}
+                  style={styles.input}
+                  placeholder="Name on the loan account"
+                />
+              </div>
+            </div>
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>🔗 Pair with Budget Category (Optional)</h3>
+              <p style={styles.pairingDescription}>
+                Pairing a category with this loan allows you to track payments in your budget,
+                see payoff progress, and use the Monthly Debt Payment target.
+              </p>
+              
+              <div style={styles.radioGroup}>
+                <label style={styles.radioLabel}>
+                  <input
+                    type="radio"
+                    name="pairingOption"
+                    value="skip"
+                    checked={pairingOption === 'skip'}
+                    onChange={() => setPairingOption('skip')}
+                    style={styles.radioInput}
+                  />
+                  <span>Skip pairing (I'll manage payments manually)</span>
+                </label>
+                
+                <label style={styles.radioLabel}>
+                  <input
+                    type="radio"
+                    name="pairingOption"
+                    value="existing"
+                    checked={pairingOption === 'existing'}
+                    onChange={() => setPairingOption('existing')}
+                    style={styles.radioInput}
+                  />
+                  <span>Pair with an existing category</span>
+                </label>
+                
+                <label style={styles.radioLabel}>
+                  <input
+                    type="radio"
+                    name="pairingOption"
+                    value="new"
+                    checked={pairingOption === 'new'}
+                    onChange={() => setPairingOption('new')}
+                    style={styles.radioInput}
+                  />
+                  <span>Create a new category for this loan</span>
+                </label>
+              </div>
+              
+              {pairingOption === 'existing' && (
+                <div style={styles.pairingSection}>
+                  <label style={styles.label}>Select Category</label>
+                  <select
+                    value={selectedCategoryId}
+                    onChange={(e) => setSelectedCategoryId(e.target.value)}
+                    style={styles.select}
+                    disabled={isLoadingCategories}
+                  >
+                    <option value="">-- Select a category --</option>
+                    {availableCategories.map(cat => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name} {cat.group_name ? `(${cat.group_name})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {availableCategories.length === 0 && !isLoadingCategories && (
+                    <small style={styles.hintWarning}>
+                      No available categories found. You may need to create a new category.
+                    </small>
+                  )}
+                </div>
+              )}
+              
+              {pairingOption === 'new' && (
+                <div style={styles.pairingSection}>
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>New Category Name</label>
+                    <input
+                      type="text"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      style={styles.input}
+                      placeholder="e.g., Auto Loan Payment, Student Loan"
+                    />
+                  </div>
+                  
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>Category Group (Optional)</label>
+                    <select
+                      value={selectedGroupId}
+                      onChange={(e) => setSelectedGroupId(e.target.value)}
+                      style={styles.select}
+                    >
+                      <option value="">-- Auto-create in "Loan Payments" group --</option>
+                      {categoryGroups.map(group => (
+                        <option key={group.id} value={group.id}>
+                          {group.name}
+                        </option>
+                      ))}
+                    </select>
+                    <small style={styles.hint}>
+                      If no group is selected, the category will be created in a "Loan Payments" group.
+                    </small>
+                  </div>
+                </div>
+              )}
+              
+              {pairingOption !== 'skip' && (
+                <div style={styles.pairingNote}>
+                  💡 <strong>What happens when you pair?</strong><br />
+                  • A budget category will be linked to this loan<br />
+                  • You'll see loan payoff progress in your budget<br />
+                  • You can set a Monthly Debt Payment target<br />
+                  • The category can only be used for payments to this loan
+                </div>
+              )}
+            </div>
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Additional Notes</h3>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Notes</label>
+                <textarea
+                  value={newLoanData.notes}
+                  onChange={(e) => setNewLoanData({ ...newLoanData, notes: e.target.value })}
+                  style={styles.textarea}
+                  rows="3"
+                  placeholder="Add any additional notes about this loan..."
+                />
+              </div>
+            </div>
+
+            <div style={styles.modalActions}>
+              <button onClick={handleCreateLoan} style={styles.saveButton}>
+                Create Loan
+              </button>
+              <button onClick={() => setShowAddModal(false)} style={styles.cancelButton}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Modal */}
+      {showPaymentModal && selectedPaymentLoan && (
         <div style={styles.modalOverlay} onClick={() => setShowPaymentModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Make a Payment</h3>
+            <p style={{ color: '#9CA3AF', marginBottom: '1rem' }}>
+              Make a payment to <strong>{selectedPaymentLoan.name}</strong>
+            </p>
 
-            {/* Payment Method Options */}
-            <div style={{ marginBottom: '1rem', padding: '1rem', background: '#111827', borderRadius: '0.5rem' }}>
-              <h4 style={{ marginBottom: '0.75rem', color: 'white' }}>Choose Payment Method</h4>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button
-                  onClick={() => handlePayOnComputer(cards.find(c => c.id === selectedCard))}
-                  style={{
-                    flex: 1,
-                    padding: '0.75rem',
-                    background: '#3B82F6',
-                    border: 'none',
-                    borderRadius: '0.5rem',
-                    color: 'white',
-                    cursor: 'pointer',
-                    fontSize: '0.8rem'
-                  }}
-                >
-                  💻 Pay on Computer
-                </button>
-                <button
-                  onClick={() => handlePayOnPhone(cards.find(c => c.id === selectedCard))}
-                  style={{
-                    flex: 1,
-                    padding: '0.75rem',
-                    background: '#10B981',
-                    border: 'none',
-                    borderRadius: '0.5rem',
-                    color: 'white',
-                    cursor: 'pointer',
-                    fontSize: '0.8rem'
-                  }}
-                >
-                  📱 Pay on Phone
-                </button>
-              </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Source Account</label>
+              <select
+                value={selectedSourceAccountId}
+                onChange={(e) => setSelectedSourceAccountId(e.target.value)}
+                style={styles.select}
+              >
+                <option value="">Select account</option>
+                {availableCashAccounts.map(acc => (
+                  <option key={acc.id} value={acc.id}>
+                    {acc.name} ({acc.type}) - Balance: ${Math.abs(acc.balance || 0).toFixed(2)}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div style={styles.formGroup}>
@@ -900,22 +1218,14 @@ function CreditCardManager({
                 <span style={styles.currencySymbol}>$</span>
                 <input
                   type="number"
-                  value={paymentAmount.amount}
-                  onChange={(e) => setPaymentAmount({ ...paymentAmount, amount: parseFloat(e.target.value) || 0 })}
-                  min={paymentAmount.minPayment}
                   step="0.01"
+                  value={paymentAmount}
+                  onChange={handlePaymentAmountChange}
                   style={styles.modalInput}
+                  placeholder="0.00"
+                  min="0"
                   autoFocus
                 />
-              </div>
-              <div style={styles.paymentHints}>
-                <span>Min: {formatCurrency(paymentAmount.minPayment)}</span>
-                <button
-                  onClick={() => setPaymentAmount({ ...paymentAmount, amount: paymentAmount.amount })}
-                  style={styles.fullPaymentHint}
-                >
-                  Full: {formatCurrency(paymentAmount.amount)}
-                </button>
               </div>
             </div>
 
@@ -923,61 +1233,76 @@ function CreditCardManager({
               <label style={styles.label}>Payment Date</label>
               <input
                 type="date"
-                value={new Date().toISOString().split('T')[0]}
-                style={styles.modalInput}
-                min={new Date().toISOString().split('T')[0]}
+                value={paymentDate}
+                onChange={(e) => setPaymentDate(e.target.value)}
+                style={styles.input}
               />
             </div>
 
-            <div style={styles.modalActions}>
-              <button onClick={submitPayment} style={styles.submitButton}>Submit Payment</button>
-              <button onClick={() => setShowPaymentModal(false)} style={styles.cancelButton}>Cancel</button>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Memo (Optional)</label>
+              <input
+                type="text"
+                value={paymentMemo}
+                onChange={(e) => setPaymentMemo(e.target.value)}
+                style={styles.input}
+                placeholder="Additional notes"
+              />
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* QR Code Modal for Phone Payment */}
-      {showQR && (
-        <div style={styles.modalOverlay} onClick={() => setShowQR(false)}>
-          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>📱 Scan to Pay</h3>
-            <div style={{ textAlign: 'center', margin: '1.5rem 0' }}>
-              <QRCodeCanvas value={qrValue} size={200} />
-            </div>
-            <p style={{ textAlign: 'center', color: '#9CA3AF', fontSize: '0.85rem' }}>
-              Open your phone camera and scan this code to pay securely through your bank.
-            </p>
-            {qrValue && !qrValue.startsWith('http') && (
-              <div style={{ marginTop: '1rem', padding: '0.75rem', background: '#374151', borderRadius: '0.5rem', fontSize: '0.75rem' }}>
-                <strong>Payment Info:</strong>
-                <pre style={{ marginTop: '0.5rem', overflow: 'auto', maxHeight: '100px' }}>
-                  {JSON.stringify(JSON.parse(qrValue), null, 2)}
-                </pre>
+            {paymentBreakdown && paymentBreakdown.paymentAmount > 0 && (
+              <div style={styles.paymentBreakdownModal}>
+                <div style={styles.breakdownTitle}>Payment Breakdown (YNAB-style):</div>
+                <div style={styles.breakdownRow}>
+                  <span>Total Payment:</span>
+                  <strong>${paymentBreakdown.paymentAmount.toFixed(2)}</strong>
+                </div>
+                <div style={styles.breakdownRow}>
+                  <span>Interest Portion:</span>
+                  <strong style={{ color: '#F59E0B' }}>${paymentBreakdown.interestPortion.toFixed(2)}</strong>
+                </div>
+                <div style={styles.breakdownRow}>
+                  <span>Principal Reduction:</span>
+                  <strong style={{ color: '#10B981' }}>${paymentBreakdown.principalPortion.toFixed(2)}</strong>
+                </div>
+                <div style={styles.breakdownRow}>
+                  <span>Remaining Balance:</span>
+                  <strong>${paymentBreakdown.newBalance.toFixed(2)}</strong>
+                </div>
+                <div style={styles.breakdownNote}>
+                  ℹ️ Interest calculated at {paymentBreakdown.interestRate}% APR ({paymentBreakdown.monthlyRate.toFixed(2)}% monthly)
+                </div>
               </div>
             )}
+
             <div style={styles.modalActions}>
-              <button onClick={() => setShowQR(false)} style={styles.cancelButton}>Close</button>
+              <button onClick={handleSubmitPayment} style={styles.submitButton} disabled={isSubmittingPayment}>
+                {isSubmittingPayment ? 'Processing...' : 'Make Payment'}
+              </button>
+              <button onClick={() => setShowPaymentModal(false)} style={styles.cancelButton}>
+                Cancel
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Unified Edit Account Modal */}
+      {/* EditAccountModal for editing loans */}
       <EditAccountModal
         isOpen={showEditModal}
         onClose={() => {
           setShowEditModal(false);
-          setEditingCard(null);
+          setEditingLoan(null);
         }}
         onSave={handleSaveEdit}
-        onDelete={handleDeleteCard}
-        account={editingCard}
+        onDelete={handleDeleteLoanAccount}
+        account={editingLoan}
       />
     </div>
   );
 }
 
+// Styles (unchanged - keep all existing styles)
 const styles = {
   container: {
     padding: '2rem',
@@ -997,7 +1322,7 @@ const styles = {
     fontSize: '2rem',
     fontWeight: 'bold',
     margin: '0 0 0.25rem 0',
-    background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
+    background: 'linear-gradient(135deg, #10B981, #3B82F6)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent'
   },
@@ -1010,7 +1335,7 @@ const styles = {
     display: 'flex',
     gap: '1rem'
   },
-  plannerButton: {
+  strategistButton: {
     padding: '0.75rem 1.5rem',
     background: 'linear-gradient(135deg, #8B5CF6, #6D28D9)',
     color: 'white',
@@ -1018,10 +1343,7 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     fontWeight: '600',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem'
+    cursor: 'pointer'
   },
   addButton: {
     padding: '0.75rem 1.5rem',
@@ -1030,11 +1352,7 @@ const styles = {
     border: 'none',
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
-    fontWeight: '600',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem'
+    cursor: 'pointer'
   },
   summaryGrid: {
     display: 'grid',
@@ -1061,13 +1379,21 @@ const styles = {
     fontSize: '0.75rem',
     color: '#9CA3AF',
     marginBottom: '0.25rem',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
+    textTransform: 'uppercase'
   },
   summaryValue: {
     fontSize: '1.5rem',
-    fontWeight: 'bold',
-    color: 'white'
+    fontWeight: 'bold'
+  },
+  transactionsButton: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'transparent',
+    border: '1px solid #3B82F6',
+    color: '#3B82F6',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
+    cursor: 'pointer'
   },
   filterTabs: {
     display: 'flex',
@@ -1085,98 +1411,65 @@ const styles = {
     color: '#9CA3AF',
     borderRadius: '0.375rem',
     cursor: 'pointer',
-    fontSize: '0.875rem',
-    transition: 'all 0.2s'
+    fontSize: '0.875rem'
   },
   activeFilter: {
     background: '#3B82F6',
     color: 'white'
   },
-  cardsGrid: {
+  loansGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))',
     gap: '1.5rem'
   },
-  cardItem: {
+  loanCard: {
     background: '#1F2937',
     borderRadius: '1rem',
     padding: '1.5rem',
     border: '1px solid #374151',
-    position: 'relative',
     cursor: 'pointer',
     transition: 'all 0.2s',
+    position: 'relative',
     ':hover': {
       transform: 'translateY(-2px)',
       boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
     }
   },
-  selectedCard: {
+  selectedLoan: {
     border: '2px solid #3B82F6'
   },
-  editButton: {
+  pairedBadge: {
     position: 'absolute',
-    top: '1rem',
-    right: '1rem',
-    background: 'none',
-    border: 'none',
-    color: '#9CA3AF',
-    fontSize: '1rem',
-    cursor: 'pointer',
-    padding: '0.25rem',
-    borderRadius: '0.25rem',
-    zIndex: 2,
-    ':hover': {
-      background: '#374151',
-      color: 'white'
-    }
-  },
-  editButtonInline: {
-    flex: 1,
-    padding: '0.5rem',
-    background: 'transparent',
-    border: '1px solid #F59E0B',
-    color: '#F59E0B',
+    top: '0.75rem',
+    right: '0.75rem',
+    background: '#10B98120',
+    color: '#10B981',
+    padding: '0.25rem 0.5rem',
     borderRadius: '0.375rem',
-    fontSize: '0.75rem',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '0.25rem'
+    fontSize: '0.7rem',
+    fontWeight: '500'
   },
-  cardHeader: {
+  loanHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: '1rem',
     marginRight: '2rem'
   },
-  cardName: {
+  loanName: {
     fontSize: '1.125rem',
     fontWeight: '600',
     margin: '0 0 0.25rem 0',
     color: 'white'
   },
-  cardInstitution: {
+  loanLender: {
     fontSize: '0.75rem',
     color: '#9CA3AF'
   },
-  cardHolderName: {
-    fontSize: '0.7rem',
-    color: '#6B7280',
-    marginTop: '0.25rem'
-  },
-  accountNumber: {
-    fontSize: '0.7rem',
-    color: '#6B7280',
-    marginTop: '0.25rem',
-    fontFamily: 'monospace'
-  },
-  utilizationBadge: {
-    padding: '0.25rem 0.5rem',
-    borderRadius: '0.25rem',
-    fontSize: '0.75rem',
-    fontWeight: '600'
+  loanRate: {
+    fontSize: '1.125rem',
+    fontWeight: 'bold',
+    color: '#F59E0B'
   },
   balanceSection: {
     marginBottom: '1rem'
@@ -1189,72 +1482,75 @@ const styles = {
   balanceAmount: {
     fontSize: '1.5rem',
     fontWeight: 'bold',
-    lineHeight: '1.2'
+    color: 'white'
   },
-  limitText: {
+  progressSection: {
+    marginBottom: '1rem'
+  },
+  progressLabel: {
+    display: 'flex',
+    justifyContent: 'space-between',
     fontSize: '0.75rem',
     color: '#9CA3AF',
-    marginTop: '0.25rem'
+    marginBottom: '0.5rem'
   },
   progressBar: {
     height: '0.5rem',
     background: '#374151',
     borderRadius: '0.25rem',
-    overflow: 'hidden',
-    marginBottom: '1rem'
+    overflow: 'hidden'
   },
   progressFill: {
     height: '100%',
-    transition: 'width 0.3s ease'
+    background: 'linear-gradient(90deg, #3B82F6, #8B5CF6)'
   },
-  dueDateSection: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '0.75rem',
-    borderRadius: '0.5rem',
-    marginBottom: '1rem',
-    fontSize: '0.875rem'
-  },
-  quickStats: {
+  loanDetails: {
     display: 'grid',
     gridTemplateColumns: 'repeat(3, 1fr)',
     gap: '0.5rem',
     marginBottom: '1rem'
   },
-  stat: {
+  detailItem: {
     display: 'flex',
     flexDirection: 'column',
     gap: '0.25rem',
     fontSize: '0.75rem',
     color: '#9CA3AF'
   },
-  acceleratorBadge: {
-    background: 'linear-gradient(135deg, #F59E0B20, #D9770620)',
-    border: '1px solid #F59E0B',
-    borderRadius: '0.5rem',
-    padding: '0.5rem',
-    marginBottom: '1rem',
-    fontSize: '0.75rem',
-    textAlign: 'center',
-    color: '#F59E0B'
-  },
-  cardActions: {
+  additionalDetails: {
     display: 'flex',
     gap: '0.5rem',
-    marginBottom: '0.5rem',
+    marginBottom: '1rem',
     flexWrap: 'wrap'
   },
-  smartPayButton: {
-    flex: 1,
+  detailBadge: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    background: '#374151',
+    padding: '0.125rem 0.5rem',
+    borderRadius: '0.25rem',
+    display: 'inline-block'
+  },
+  pairedInfo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginBottom: '1rem',
     padding: '0.5rem',
-    background: 'linear-gradient(135deg, #8B5CF6, #6D28D9)',
-    color: 'white',
-    border: 'none',
+    background: '#10B98110',
     borderRadius: '0.375rem',
     fontSize: '0.7rem',
-    fontWeight: '600',
-    cursor: 'pointer'
+    color: '#10B981'
+  },
+  pairedInfoIcon: {
+    fontSize: '0.8rem'
+  },
+  pairedInfoText: {
+    flex: 1
+  },
+  loanActions: {
+    display: 'flex',
+    gap: '0.5rem'
   },
   paymentButton: {
     flex: 1,
@@ -1267,23 +1563,12 @@ const styles = {
     fontWeight: '600',
     cursor: 'pointer'
   },
-  acceleratorButton: {
+  editButton: {
     flex: 1,
     padding: '0.5rem',
-    background: 'linear-gradient(135deg, #F59E0B, #D97706)',
+    background: '#4B5563',
     color: 'white',
     border: 'none',
-    borderRadius: '0.375rem',
-    fontSize: '0.7rem',
-    fontWeight: '600',
-    cursor: 'pointer'
-  },
-  transactionsButton: {
-    flex: 1,
-    padding: '0.5rem',
-    background: 'transparent',
-    border: '1px solid #3B82F6',
-    color: '#3B82F6',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
     cursor: 'pointer'
@@ -1299,106 +1584,36 @@ const styles = {
     margin: '0 0 0.75rem 0',
     color: 'white'
   },
-  strategyGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-    gap: '0.75rem',
-    marginBottom: '1rem'
-  },
-  strategyCard: {
-    background: '#111827',
-    padding: '0.75rem',
-    borderRadius: '0.5rem'
-  },
-  strategyLabel: {
-    fontSize: '0.625rem',
-    color: '#9CA3AF',
-    marginBottom: '0.25rem',
-    textTransform: 'uppercase'
-  },
-  strategyValue: {
-    fontSize: '0.875rem',
-    fontWeight: '600',
-    color: 'white',
-    marginBottom: '0.25rem'
-  },
-  strategyNote: {
-    fontSize: '0.625rem',
-    color: '#10B981'
-  },
-  acceleratorPlan: {
-    background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
-    padding: '1rem',
-    borderRadius: '0.75rem',
-    marginBottom: '1rem'
-  },
-  acceleratorControls: {
-    marginBottom: '1rem'
-  },
-  acceleratorSlider: {
-    width: '100%',
-    margin: '0.5rem 0'
-  },
-  acceleratorValue: {
-    display: 'inline-block',
-    marginLeft: '0.5rem',
-    fontWeight: 'bold',
-    color: '#F59E0B'
-  },
-  acceleratorGrid: {
+  amortizationGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(3, 1fr)',
-    gap: '0.75rem',
+    gap: '0.5rem',
     marginBottom: '1rem'
   },
-  acceleratorItem: {
-    textAlign: 'center',
+  amortizationItem: {
+    background: '#111827',
     padding: '0.5rem',
-    background: 'rgba(0,0,0,0.3)',
-    borderRadius: '0.5rem'
+    borderRadius: '0.375rem',
+    textAlign: 'center'
   },
-  acceleratorLabel: {
+  pairedTip: {
+    background: '#1E3A5F',
+    padding: '0.5rem',
+    borderRadius: '0.375rem',
     fontSize: '0.7rem',
     color: '#9CA3AF',
-    marginBottom: '0.25rem'
+    marginBottom: '0.75rem',
+    textAlign: 'center'
   },
-  acceleratorAmount: {
-    fontSize: '1rem',
-    fontWeight: 'bold',
-    color: 'white'
-  },
-  acceleratorNote: {
-    fontSize: '0.6rem',
-    color: '#6B7280',
-    marginTop: '0.25rem'
-  },
-  applyAcceleratorButton: {
+  strategistLink: {
     width: '100%',
-    padding: '0.75rem',
-    background: 'linear-gradient(135deg, #10B981, #059669)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '0.875rem',
-    fontWeight: '600',
+    padding: '0.5rem',
+    background: 'none',
+    border: '1px solid #8B5CF6',
+    color: '#8B5CF6',
+    borderRadius: '0.375rem',
     cursor: 'pointer',
-    marginTop: '0.5rem'
-  },
-  recentTransactions: {
-    background: '#111827',
-    padding: '0.75rem',
-    borderRadius: '0.5rem'
-  },
-  transactionItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '0.5rem 0',
-    borderBottom: '1px solid #374151',
-    fontSize: '0.75rem',
-    ':last-child': {
-      borderBottom: 'none'
-    }
+    fontSize: '0.75rem'
   },
   emptyState: {
     textAlign: 'center',
@@ -1426,7 +1641,6 @@ const styles = {
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
-    fontSize: '1rem',
     cursor: 'pointer'
   },
   modalOverlay: {
@@ -1435,7 +1649,7 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(0,0,0,0.7)',
+    background: 'rgba(0, 0, 0, 0.8)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1443,10 +1657,12 @@ const styles = {
   },
   modalContent: {
     background: '#1F2937',
-    borderRadius: '1rem',
     padding: '2rem',
-    maxWidth: '500px',
-    width: '90%'
+    borderRadius: '1rem',
+    width: '90%',
+    maxWidth: '650px',
+    maxHeight: '90vh',
+    overflowY: 'auto'
   },
   modalTitle: {
     fontSize: '1.5rem',
@@ -1463,52 +1679,64 @@ const styles = {
     color: '#9CA3AF',
     fontSize: '0.875rem'
   },
-  inputWrapper: {
-    position: 'relative'
+  required: {
+    color: '#EF4444',
+    marginLeft: '0.25rem'
   },
-  currencySymbol: {
-    position: 'absolute',
-    left: '0.75rem',
-    top: '50%',
-    transform: 'translateY(-50%)',
-    color: '#9CA3AF'
-  },
-  modalInput: {
+  input: {
     width: '100%',
-    padding: '0.75rem 0.75rem 0.75rem 2rem',
+    padding: '0.75rem',
     background: '#111827',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
     fontSize: '1rem'
   },
-  paymentHints: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    marginTop: '0.5rem',
+  select: {
+    width: '100%',
+    padding: '0.75rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '1rem'
+  },
+  textarea: {
+    width: '100%',
+    padding: '0.75rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '0.875rem',
+    fontFamily: 'inherit',
+    resize: 'vertical'
+  },
+  hint: {
+    display: 'block',
+    marginTop: '0.25rem',
     fontSize: '0.75rem',
     color: '#9CA3AF'
   },
-  fullPaymentHint: {
-    background: 'none',
-    border: 'none',
-    color: '#3B82F6',
-    cursor: 'pointer',
-    fontSize: '0.75rem'
+  hintWarning: {
+    display: 'block',
+    marginTop: '0.25rem',
+    fontSize: '0.75rem',
+    color: '#F59E0B'
   },
   modalActions: {
     display: 'flex',
     gap: '1rem',
-    marginTop: '2rem'
+    marginTop: '1.5rem'
   },
-  submitButton: {
-    flex: 2,
+  saveButton: {
+    flex: 1,
     padding: '0.75rem',
-    background: 'linear-gradient(135deg, #10B981, #059669)',
+    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
-    fontSize: '0.875rem',
+    fontSize: '1rem',
     fontWeight: '600',
     cursor: 'pointer'
   },
@@ -1519,10 +1747,110 @@ const styles = {
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
-    fontSize: '0.875rem',
+    fontSize: '1rem',
     fontWeight: '600',
     cursor: 'pointer'
+  },
+  submitButton: {
+    flex: 1,
+    padding: '0.75rem',
+    background: 'linear-gradient(135deg, #10B981, #059669)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.5rem',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer'
+  },
+  // Payment modal specific styles
+  inputWrapper: {
+    position: 'relative'
+  },
+  currencySymbol: {
+    position: 'absolute',
+    left: '0.75rem',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    color: '#9CA3AF',
+    zIndex: 1
+  },
+  modalInput: {
+    width: '100%',
+    padding: '0.75rem 0.75rem 0.75rem 2rem',
+    background: '#111827',
+    border: '1px solid #374151',
+    borderRadius: '0.5rem',
+    color: 'white',
+    fontSize: '1rem'
+  },
+  paymentBreakdownModal: {
+    background: '#111827',
+    padding: '1rem',
+    borderRadius: '0.5rem',
+    marginTop: '1rem',
+    marginBottom: '1rem'
+  },
+  breakdownTitle: {
+    fontSize: '0.75rem',
+    fontWeight: 'bold',
+    color: '#9CA3AF',
+    marginBottom: '0.5rem',
+    textTransform: 'uppercase'
+  },
+  breakdownRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '0.25rem 0',
+    fontSize: '0.875rem',
+    borderBottom: '1px solid #374151'
+  },
+  breakdownNote: {
+    fontSize: '0.65rem',
+    color: '#6B7280',
+    marginTop: '0.5rem',
+    textAlign: 'center'
+  },
+  // Pairing specific styles
+  pairingDescription: {
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+    marginBottom: '1rem',
+    lineHeight: '1.4'
+  },
+  radioGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.75rem',
+    marginBottom: '1rem'
+  },
+  radioLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    color: '#FFFFFF',
+    fontSize: '0.875rem',
+    cursor: 'pointer'
+  },
+  radioInput: {
+    width: '16px',
+    height: '16px',
+    cursor: 'pointer'
+  },
+  pairingSection: {
+    background: '#111827',
+    padding: '1rem',
+    borderRadius: '0.5rem',
+    marginTop: '0.5rem'
+  },
+  pairingNote: {
+    background: '#1E3A5F',
+    padding: '0.75rem',
+    borderRadius: '0.5rem',
+    fontSize: '0.7rem',
+    color: '#9CA3AF',
+    marginTop: '0.75rem',
+    lineHeight: '1.4'
   }
 };
 
-export default CreditCardManager;
+export default LoanManager;

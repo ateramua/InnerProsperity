@@ -6,11 +6,18 @@ const CashFlowView = ({
   transactions = [],
   accounts = [],
   creditCards = [],
-  loans = []
+  loans = [],
+  selectedMonth,
+  onMonthChange
 }) => {
-  const [selectedMonth, setSelectedMonth] = useState(new Date());
+  const [internalSelectedMonth, setInternalSelectedMonth] = useState(selectedMonth || new Date());
   const [cashFlowData, setCashFlowData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [categoryGroups, setCategoryGroups] = useState([]);
+  const [expandedGroups, setExpandedGroups] = useState({});
+
+  // Use external month if provided, otherwise use internal state
+  const currentMonth = selectedMonth || internalSelectedMonth;
 
   // Format currency helper
   const formatCurrency = (amount) => {
@@ -22,11 +29,6 @@ const CashFlowView = ({
     }).format(amount || 0);
   };
 
-  // Format percentage
-  const formatPercentage = (value) => {
-    return `${(value || 0).toFixed(1)}%`;
-  };
-
   // Get color based on value
   const getValueColor = (value) => {
     if (value > 0) return '#4ADE80';
@@ -34,18 +36,55 @@ const CashFlowView = ({
     return '#9CA3AF';
   };
 
+  // Load category groups
+  const loadCategoryGroups = async () => {
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const groupsResult = await window.electronAPI.getCategoryGroups(userResult.data.id);
+        if (groupsResult?.success) {
+          setCategoryGroups(groupsResult.data || []);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading category groups:', error);
+    }
+  };
+
+  // Toggle group expansion
+  const toggleGroup = (groupId) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [groupId]: !prev[groupId]
+    }));
+  };
+
   // Calculate cash flow for selected month
   useEffect(() => {
+    loadCategoryGroups();
+  }, []);
+
+  useEffect(() => {
     calculateCashFlow();
-  }, [selectedMonth, budgetData, transactions, accounts, creditCards, loans]);
+  }, [currentMonth, budgetData, transactions, accounts, creditCards, loans, categoryGroups]);
+
+  const handleMonthChange = (direction) => {
+    const newDate = new Date(currentMonth);
+    newDate.setMonth(currentMonth.getMonth() + direction);
+    if (onMonthChange) {
+      onMonthChange(newDate);
+    } else {
+      setInternalSelectedMonth(newDate);
+    }
+  };
 
   const calculateCashFlow = () => {
     setLoading(true);
     
     try {
       // Get month boundaries
-      const year = selectedMonth.getFullYear();
-      const month = selectedMonth.getMonth();
+      const year = currentMonth.getFullYear();
+      const month = currentMonth.getMonth();
       const startDate = new Date(year, month, 1);
       const endDate = new Date(year, month + 1, 0);
 
@@ -60,65 +99,79 @@ const CashFlowView = ({
         .filter(t => t.amount > 0)
         .reduce((sum, t) => sum + t.amount, 0);
 
-      // 2. BUDGET CALCULATION (THE PLAN)
+      // 2. BUDGET CALCULATION (FROM PropertyMapView)
       const budgetCategories = budgetData.categories || [];
       
-      // Categorize budget assignments
-      const budgeted = {
-        fixed: budgetCategories
-          .filter(c => c.groupId === 'fixed' || (c.name && c.name.match(/rent|mortgage|utilities|insurance/i)))
-          .reduce((sum, c) => sum + (c.assigned || 0), 0),
-        
-        variable: budgetCategories
-          .filter(c => c.groupId === 'variable' || (c.name && c.name.match(/groceries|dining|transportation|entertainment/i)))
-          .reduce((sum, c) => sum + (c.assigned || 0), 0),
-        
-        debt: budgetCategories
-          .filter(c => c.groupId === 'debt' || (c.name && c.name.match(/credit card|loan|debt/i)))
-          .reduce((sum, c) => sum + (c.assigned || 0), 0),
-        
-        savings: budgetCategories
-          .filter(c => c.groupId === 'savings' || (c.name && c.name.match(/savings|emergency|invest/i)))
-          .reduce((sum, c) => sum + (c.assigned || 0), 0)
-      };
+      // Create a map of category ID to its budgeted amount
+      const budgetedByCategory = {};
+      let totalBudgeted = 0;
+      
+      budgetCategories.forEach(category => {
+        if (category.archived) return;
+        const assignedAmount = category.assigned || 0;
+        budgetedByCategory[category.id] = assignedAmount;
+        totalBudgeted += assignedAmount;
+      });
 
-      budgeted.total = budgeted.fixed + budgeted.variable + budgeted.debt + budgeted.savings;
-
-      // 3. ACTUAL SPENDING CALCULATION (THE REALITY)
-      const actual = {
-        fixed: monthTransactions
-          .filter(t => t.amount < 0 && t.category?.match(/rent|mortgage|utilities|insurance/i))
-          .reduce((sum, t) => sum + Math.abs(t.amount), 0),
+      // 3. ACTUAL SPENDING CALCULATION (FROM TRANSACTIONS)
+      const actualByCategory = {};
+      let totalActual = 0;
+      
+      monthTransactions.forEach(transaction => {
+        if (transaction.amount >= 0) return; // Only expenses
         
-        variable: monthTransactions
-          .filter(t => t.amount < 0 && t.category?.match(/groceries|dining|transportation|entertainment/i))
-          .reduce((sum, t) => sum + Math.abs(t.amount), 0),
+        const amount = Math.abs(transaction.amount);
+        const categoryId = transaction.category_id;
         
-        debt: monthTransactions
-          .filter(t => t.amount < 0 && t.category?.match(/credit card|loan|debt|payment/i))
-          .reduce((sum, t) => sum + Math.abs(t.amount), 0),
+        if (categoryId) {
+          actualByCategory[categoryId] = (actualByCategory[categoryId] || 0) + amount;
+        }
+        totalActual += amount;
+      });
+
+      // 4. BUILD CATEGORY DETAILS WITH BUDGET VS ACTUAL
+      const categoryDetails = [];
+      
+      budgetCategories.forEach(category => {
+        if (category.archived) return;
         
-        savings: monthTransactions
-          .filter(t => t.amount < 0 && t.category?.match(/savings|emergency|invest|transfer/i))
-          .reduce((sum, t) => sum + Math.abs(t.amount), 0)
-      };
+        const budgeted = budgetedByCategory[category.id] || 0;
+        const actual = actualByCategory[category.id] || 0;
+        const variance = actual - budgeted;
+        
+        categoryDetails.push({
+          id: category.id,
+          name: category.name,
+          groupId: category.groupId,
+          budgeted,
+          actual,
+          variance,
+          varianceColor: getValueColor(-variance)
+        });
+      });
 
-      actual.total = actual.fixed + actual.variable + actual.debt + actual.savings;
+      // 5. GROUP CATEGORIES BY THEIR GROUP
+      const groupedData = categoryGroups.map(group => {
+        const groupCategories = categoryDetails.filter(c => c.groupId === group.id);
+        const groupBudgeted = groupCategories.reduce((sum, c) => sum + c.budgeted, 0);
+        const groupActual = groupCategories.reduce((sum, c) => sum + c.actual, 0);
+        const groupVariance = groupActual - groupBudgeted;
+        
+        return {
+          id: group.id,
+          name: group.name,
+          categories: groupCategories,
+          budgeted: groupBudgeted,
+          actual: groupActual,
+          variance: groupVariance,
+          isExpanded: expandedGroups[group.id] !== false // Default to expanded
+        };
+      }).filter(group => group.categories.length > 0); // Only show groups with categories
 
-      // 4. VARIANCE CALCULATION
-      const variance = {
-        fixed: actual.fixed - budgeted.fixed,
-        variable: actual.variable - budgeted.variable,
-        debt: actual.debt - budgeted.debt,
-        savings: actual.savings - budgeted.savings,
-        total: actual.total - budgeted.total
-      };
+      // 6. CASHFLOW RESULT
+      const netCashflow = totalIncome - totalActual;
 
-      // 5. CASHFLOW RESULT
-      const netCashflow = totalIncome - actual.total;
-
-      // 6. ACCOUNT BALANCE CHANGES
-      // Get starting balances (end of previous month)
+      // 7. ACCOUNT BALANCE CHANGES
       const startingChecking = accounts
         .filter(a => a.type === 'checking')
         .reduce((sum, a) => sum + (a.balance || 0), 0);
@@ -127,33 +180,34 @@ const CashFlowView = ({
         .filter(a => a.type === 'savings')
         .reduce((sum, a) => sum + (a.balance || 0), 0);
 
-      // Calculate ending balances (current)
-      const endingChecking = startingChecking + (netCashflow * 0.7); // Simplified - in reality would track actual
-      const endingSavings = startingSavings + (netCashflow * 0.3);
+      const endingChecking = startingChecking + (netCashflow * 0.6);
+      const endingSavings = startingSavings + (netCashflow * 0.4);
 
-      // 7. DEBT CALCULATIONS
+      // 8. DEBT CALCULATIONS
       const totalCreditCardDebt = creditCards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0);
       const totalLoanDebt = loans.reduce((sum, l) => sum + Math.abs(l.balance || 0), 0);
       const totalDebt = totalCreditCardDebt + totalLoanDebt;
+      
+      // Calculate debt paid this month (from debt-related categories)
+      const debtPaidThisMonth = categoryDetails
+        .filter(c => c.name.toLowerCase().includes('debt') || c.name.toLowerCase().includes('credit card') || c.name.toLowerCase().includes('loan'))
+        .reduce((sum, c) => sum + c.actual, 0);
 
-      // Debt paid this month (from transactions)
-      const debtPaidThisMonth = actual.debt;
-
-      // 8. NET WORTH
+      // 9. NET WORTH
       const totalAssets = endingChecking + endingSavings;
       const netWorth = totalAssets - totalDebt;
-
-      // Previous month net worth (simplified)
       const prevTotalAssets = startingChecking + startingSavings;
-      const prevNetWorth = prevTotalAssets - totalDebt; // Assuming debt same for simplicity
+      const prevNetWorth = prevTotalAssets - totalDebt;
       const netWorthChange = netWorth - prevNetWorth;
 
       setCashFlowData({
         income: totalIncome,
-        budgeted,
-        actual,
-        variance,
+        totalBudgeted,
+        totalActual,
+        totalVariance: totalActual - totalBudgeted,
         netCashflow,
+        groupedData,
+        categoryDetails,
         accounts: {
           starting: { checking: startingChecking, savings: startingSavings, total: startingChecking + startingSavings },
           ending: { checking: endingChecking, savings: endingSavings, total: endingChecking + endingSavings },
@@ -179,12 +233,6 @@ const CashFlowView = ({
     }
   };
 
-  const handleMonthChange = (direction) => {
-    const newDate = new Date(selectedMonth);
-    newDate.setMonth(selectedMonth.getMonth() + direction);
-    setSelectedMonth(newDate);
-  };
-
   if (loading || !cashFlowData) {
     return (
       <div style={styles.loadingContainer}>
@@ -194,7 +242,7 @@ const CashFlowView = ({
     );
   }
 
-  const monthName = selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
+  const monthName = currentMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
 
   return (
     <div style={styles.container}>
@@ -221,14 +269,14 @@ const CashFlowView = ({
           <div style={styles.summaryIcon}>📊</div>
           <div style={styles.summaryContent}>
             <span style={styles.summaryLabel}>Total Budgeted</span>
-            <span style={styles.summaryValue}>{formatCurrency(cashFlowData.budgeted.total)}</span>
+            <span style={styles.summaryValue}>{formatCurrency(cashFlowData.totalBudgeted)}</span>
           </div>
         </div>
         <div style={styles.summaryCard}>
           <div style={styles.summaryIcon}>💸</div>
           <div style={styles.summaryContent}>
             <span style={styles.summaryLabel}>Actual Spending</span>
-            <span style={styles.summaryValue}>{formatCurrency(cashFlowData.actual.total)}</span>
+            <span style={styles.summaryValue}>{formatCurrency(cashFlowData.totalActual)}</span>
           </div>
         </div>
         <div style={styles.summaryCard}>
@@ -242,69 +290,70 @@ const CashFlowView = ({
         </div>
       </div>
 
-      {/* Budget vs Actual Comparison */}
+      {/* Budget vs Actual Comparison - Dynamic Categories from Database */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>📋 Budget vs. Actual</h2>
+        <h2 style={styles.sectionTitle}>📋 Budget vs. Actual by Category</h2>
         <div style={styles.comparisonTable}>
           {/* Header */}
           <div style={styles.tableHeader}>
-            <span style={{...styles.tableHeaderCell, textAlign: 'left'}}>Category</span>
+            <span style={{...styles.tableHeaderCell, textAlign: 'left'}}>Category Group</span>
             <span style={{...styles.tableHeaderCell, textAlign: 'right'}}>Budgeted</span>
             <span style={{...styles.tableHeaderCell, textAlign: 'right'}}>Actual</span>
             <span style={{...styles.tableHeaderCell, textAlign: 'right'}}>Variance</span>
           </div>
 
-          {/* Fixed Expenses */}
-          <div style={styles.tableRow}>
-            <span style={styles.tableCategory}>Fixed Expenses</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.budgeted.fixed)}</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.actual.fixed)}</span>
-            <span style={{
-              ...styles.tableAmount,
-              color: getValueColor(-cashFlowData.variance.fixed)
-            }}>
-              {cashFlowData.variance.fixed > 0 ? '+' : ''}{formatCurrency(cashFlowData.variance.fixed)}
-            </span>
-          </div>
+          {/* Dynamic Group Rows */}
+          {cashFlowData.groupedData.map(group => (
+            <React.Fragment key={group.id}>
+              {/* Group Header Row */}
+              <div 
+                style={styles.groupHeaderRow}
+                onClick={() => toggleGroup(group.id)}
+              >
+                <div style={styles.groupHeaderLeft}>
+                  <span style={styles.expandIcon}>
+                    {group.isExpanded ? '▼' : '▶'}
+                  </span>
+                  <span style={styles.groupName}>{group.name}</span>
+                  <span style={styles.categoryCount}>
+                    ({group.categories.length} categories)
+                  </span>
+                </div>
+                <div style={styles.groupHeaderTotals}>
+                  <span style={styles.groupBudgeted}>{formatCurrency(group.budgeted)}</span>
+                  <span style={styles.groupActual}>{formatCurrency(group.actual)}</span>
+                  <span style={{
+                    ...styles.groupVariance,
+                    color: getValueColor(-group.variance)
+                  }}>
+                    {group.variance > 0 ? '+' : ''}{formatCurrency(group.variance)}
+                  </span>
+                </div>
+              </div>
 
-          {/* Variable Expenses */}
-          <div style={styles.tableRow}>
-            <span style={styles.tableCategory}>Variable Expenses</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.budgeted.variable)}</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.actual.variable)}</span>
-            <span style={{
-              ...styles.tableAmount,
-              color: getValueColor(-cashFlowData.variance.variable)
-            }}>
-              {cashFlowData.variance.variable > 0 ? '+' : ''}{formatCurrency(cashFlowData.variance.variable)}
-            </span>
-          </div>
-
-          {/* Debt Payments */}
-          <div style={styles.tableRow}>
-            <span style={styles.tableCategory}>Debt Payments</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.budgeted.debt)}</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.actual.debt)}</span>
-            <span style={{
-              ...styles.tableAmount,
-              color: getValueColor(-cashFlowData.variance.debt)
-            }}>
-              {cashFlowData.variance.debt > 0 ? '+' : ''}{formatCurrency(cashFlowData.variance.debt)}
-            </span>
-          </div>
-
-          {/* Savings */}
-          <div style={styles.tableRow}>
-            <span style={styles.tableCategory}>Savings</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.budgeted.savings)}</span>
-            <span style={styles.tableAmount}>{formatCurrency(cashFlowData.actual.savings)}</span>
-            <span style={{
-              ...styles.tableAmount,
-              color: getValueColor(-cashFlowData.variance.savings)
-            }}>
-              {cashFlowData.variance.savings > 0 ? '+' : ''}{formatCurrency(cashFlowData.variance.savings)}
-            </span>
-          </div>
+              {/* Category Rows (only when expanded) */}
+              {group.isExpanded && (
+                <div style={styles.categoryRows}>
+                  {group.categories.map(category => (
+                    <div key={category.id} style={styles.categoryRow}>
+                      <div style={styles.categoryNameCell}>
+                        <span style={styles.categoryIndent}>└─</span>
+                        <span style={styles.categoryName}>{category.name}</span>
+                      </div>
+                      <div style={styles.categoryBudgeted}>{formatCurrency(category.budgeted)}</div>
+                      <div style={styles.categoryActual}>{formatCurrency(category.actual)}</div>
+                      <div style={{
+                        ...styles.categoryVariance,
+                        color: category.varianceColor
+                      }}>
+                        {category.variance > 0 ? '+' : ''}{formatCurrency(category.variance)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </React.Fragment>
+          ))}
 
           {/* Divider */}
           <div style={styles.tableDivider}></div>
@@ -312,13 +361,13 @@ const CashFlowView = ({
           {/* Total Row */}
           <div style={styles.tableTotalRow}>
             <span style={styles.tableTotalLabel}>TOTAL</span>
-            <span style={styles.tableTotalAmount}>{formatCurrency(cashFlowData.budgeted.total)}</span>
-            <span style={styles.tableTotalAmount}>{formatCurrency(cashFlowData.actual.total)}</span>
+            <span style={styles.tableTotalAmount}>{formatCurrency(cashFlowData.totalBudgeted)}</span>
+            <span style={styles.tableTotalAmount}>{formatCurrency(cashFlowData.totalActual)}</span>
             <span style={{
               ...styles.tableTotalAmount,
-              color: getValueColor(-cashFlowData.variance.total)
+              color: getValueColor(-cashFlowData.totalVariance)
             }}>
-              {cashFlowData.variance.total > 0 ? '+' : ''}{formatCurrency(cashFlowData.variance.total)}
+              {cashFlowData.totalVariance > 0 ? '+' : ''}{formatCurrency(cashFlowData.totalVariance)}
             </span>
           </div>
         </div>
@@ -333,7 +382,7 @@ const CashFlowView = ({
           </span>
           <span style={styles.equationOperator}>−</span>
           <span style={styles.equationText}>
-            {formatCurrency(cashFlowData.actual.total)} Spending
+            {formatCurrency(cashFlowData.totalActual)} Spending
           </span>
           <span style={styles.equationOperator}>=</span>
           <span style={{
@@ -393,7 +442,6 @@ const CashFlowView = ({
 
       {/* Debt & Net Worth */}
       <div style={styles.row}>
-        {/* Debt Summary */}
         <div style={styles.debtSection}>
           <h2 style={styles.sectionTitle}>💳 Debt Summary</h2>
           <div style={styles.debtItem}>
@@ -414,7 +462,6 @@ const CashFlowView = ({
           </div>
         </div>
 
-        {/* Net Worth */}
         <div style={styles.netWorthSection}>
           <h2 style={styles.sectionTitle}>📈 Net Worth</h2>
           <div style={styles.netWorthItem}>
@@ -447,7 +494,7 @@ const CashFlowView = ({
                 <h4 style={styles.insightTitle}>Positive Cash Flow</h4>
                 <p style={styles.insightText}>
                   You have {formatCurrency(cashFlowData.netCashflow)} left after all spending.
-                  Consider adding this to your {cashFlowData.variance.savings < 0 ? 'savings' : 'debt repayment'}.
+                  Consider adding this to savings or debt repayment.
                 </p>
               </div>
             </div>
@@ -458,7 +505,7 @@ const CashFlowView = ({
                 <h4 style={styles.insightTitle}>Negative Cash Flow</h4>
                 <p style={styles.insightText}>
                   You spent {formatCurrency(Math.abs(cashFlowData.netCashflow))} more than you earned.
-                  Review your {cashFlowData.variance.variable > 0 ? 'variable expenses' : 'fixed costs'}.
+                  Review your expenses, especially categories with negative variance.
                 </p>
               </div>
             </div>
@@ -468,20 +515,33 @@ const CashFlowView = ({
               <div>
                 <h4 style={styles.insightTitle}>Breakeven</h4>
                 <p style={styles.insightText}>
-                  You spent exactly what you earned. No progress on savings, but no new debt.
+                  You spent exactly what you earned. Consider allocating funds to savings or debt reduction.
                 </p>
               </div>
             </div>
           )}
 
-          {cashFlowData.variance.variable > 0 && (
+          {cashFlowData.totalVariance > 0 && (
             <div style={styles.insightCard}>
-              <span style={styles.insightIcon}>📊</span>
+              <span style={styles.insightIcon}>📉</span>
               <div>
-                <h4 style={styles.insightTitle}>Overspent in Variable</h4>
+                <h4 style={styles.insightTitle}>Under Budget</h4>
                 <p style={styles.insightText}>
-                  You overspent by {formatCurrency(cashFlowData.variance.variable)} in variable expenses.
-                  This was covered by {cashFlowData.variance.savings < 0 ? 'reduced savings' : 'future income'}.
+                  You spent {formatCurrency(Math.abs(cashFlowData.totalVariance))} less than budgeted.
+                  Great job! Move the surplus to savings or debt.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {cashFlowData.totalVariance < 0 && (
+            <div style={styles.insightCard}>
+              <span style={styles.insightIcon}>📈</span>
+              <div>
+                <h4 style={styles.insightTitle}>Over Budget</h4>
+                <p style={styles.insightText}>
+                  You spent {formatCurrency(Math.abs(cashFlowData.totalVariance))} more than budgeted.
+                  Review categories with negative variance for next month.
                 </p>
               </div>
             </div>
@@ -494,7 +554,7 @@ const CashFlowView = ({
                 <h4 style={styles.insightTitle}>Debt Progress</h4>
                 <p style={styles.insightText}>
                   You paid {formatCurrency(cashFlowData.debt.paidThisMonth)} toward debt this month.
-                  {cashFlowData.debt.paidThisMonth > cashFlowData.budgeted.debt && ' Exceeding your budget!'}
+                  Keep up the momentum!
                 </p>
               </div>
             </div>
@@ -505,7 +565,7 @@ const CashFlowView = ({
   );
 };
 
-// Define styles - removed all pseudo-classes
+// Define styles
 const styles = {
   container: {
     padding: '2rem',
@@ -634,20 +694,82 @@ const styles = {
     color: '#9CA3AF',
     fontSize: '0.875rem'
   },
-  tableHeaderCell: {
-    // No pseudo-classes - handle alignment inline
-  },
-  tableRow: {
+  tableHeaderCell: {},
+  groupHeaderRow: {
     display: 'grid',
     gridTemplateColumns: '2fr 1fr 1fr 1fr',
     padding: '0.75rem',
-    borderBottom: '1px solid #374151'
+    background: '#1E3A8A',
+    borderRadius: '0.5rem',
+    cursor: 'pointer',
+    alignItems: 'center',
+    transition: 'background 0.2s'
   },
-  tableCategory: {
-    textAlign: 'left'
+  groupHeaderLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px'
   },
-  tableAmount: {
-    textAlign: 'right'
+  expandIcon: {
+    fontSize: '10px',
+    color: '#9CA3AF'
+  },
+  groupName: {
+    fontWeight: '600',
+    color: '#60A5FA'
+  },
+  categoryCount: {
+    fontSize: '11px',
+    color: '#9CA3AF'
+  },
+  groupHeaderTotals: {
+    display: 'contents'
+  },
+  groupBudgeted: {
+    textAlign: 'right',
+    fontWeight: '500'
+  },
+  groupActual: {
+    textAlign: 'right',
+    fontWeight: '500'
+  },
+  groupVariance: {
+    textAlign: 'right',
+    fontWeight: '500'
+  },
+  categoryRows: {
+    marginLeft: '24px'
+  },
+  categoryRow: {
+    display: 'grid',
+    gridTemplateColumns: '2fr 1fr 1fr 1fr',
+    padding: '0.5rem 0.75rem',
+    borderBottom: '1px solid #374151',
+    fontSize: '0.875rem'
+  },
+  categoryNameCell: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px'
+  },
+  categoryIndent: {
+    color: '#6B7280',
+    fontSize: '12px'
+  },
+  categoryName: {
+    color: '#D1D5DB'
+  },
+  categoryBudgeted: {
+    textAlign: 'right',
+    color: '#D1D5DB'
+  },
+  categoryActual: {
+    textAlign: 'right',
+    color: '#D1D5DB'
+  },
+  categoryVariance: {
+    textAlign: 'right',
+    fontWeight: '500'
   },
   tableDivider: {
     height: '1px',

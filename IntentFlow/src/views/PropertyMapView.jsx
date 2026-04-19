@@ -80,6 +80,85 @@ const PropertyMapView = () => {
     categories: []
   });
 
+  // ==================== CREDIT CARD PAYMENT HELPER ====================
+  
+  // Move money from spending category to credit card payment category
+  const moveMoneyForCreditCardTransaction = async (amount, spendingCategoryId, creditCardAccountName) => {
+    try {
+      console.log(`🔄 Moving $${amount} from category ${spendingCategoryId} to credit card payment category for ${creditCardAccountName}`);
+      
+      const groupsResult = await window.electronAPI.getCategoryGroups(userId);
+      if (!groupsResult?.success) {
+        console.error('Failed to get category groups');
+        return false;
+      }
+      
+      const paymentGroup = groupsResult.data.find(g => 
+        g.name === 'Credit Card Payments' || g.name.toLowerCase() === 'credit card payments'
+      );
+      
+      if (!paymentGroup) {
+        console.error('Credit Card Payments group not found');
+        return false;
+      }
+      
+      const categoriesResult = await window.electronAPI.getCategories(userId);
+      if (!categoriesResult?.success) {
+        console.error('Failed to get categories');
+        return false;
+      }
+      
+      const paymentCategory = categoriesResult.data.find(cat => 
+        cat.group_id === paymentGroup.id && 
+        cat.name.toLowerCase() === creditCardAccountName.toLowerCase()
+      );
+      
+      if (!paymentCategory) {
+        console.error(`Payment category for "${creditCardAccountName}" not found`);
+        return false;
+      }
+      
+      const spendingCategory = categoriesResult.data.find(cat => cat.id === spendingCategoryId);
+      if (!spendingCategory) {
+        console.error(`Spending category ${spendingCategoryId} not found`);
+        return false;
+      }
+      
+      const newSpendingAssigned = (spendingCategory.assigned || 0) - amount;
+      const newSpendingAvailable = (spendingCategory.available || 0) - amount;
+      
+      await window.electronAPI.updateCategory(spendingCategoryId, {
+        assigned: newSpendingAssigned,
+        available: newSpendingAvailable
+      });
+      
+      const newPaymentAssigned = (paymentCategory.assigned || 0) + amount;
+      const newPaymentAvailable = (paymentCategory.available || 0) + amount;
+      
+      await window.electronAPI.updateCategory(paymentCategory.id, {
+        assigned: newPaymentAssigned,
+        available: newPaymentAvailable
+      });
+      
+      console.log(`✅ Successfully moved $${amount} from "${spendingCategory.name}" to "${paymentCategory.name}"`);
+      
+      await loadCategoriesFromDB();
+      calculateReadyToAssign();
+      
+      return true;
+    } catch (error) {
+      console.error('Error moving money for credit card transaction:', error);
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    window.moveMoneyForCreditCardTransaction = moveMoneyForCreditCardTransaction;
+    return () => {
+      delete window.moveMoneyForCreditCardTransaction;
+    };
+  }, [userId, budgetData.categories]);
+
   // ==================== DEBUGGING & EFFECTS ====================
   useEffect(() => {
     console.log('🔍 COMPONENT MOUNTED - checking electronAPI:', {
@@ -110,7 +189,6 @@ const PropertyMapView = () => {
   };
 
   const calculateTargetProgress = (category) => {
-    // Add safety check at the beginning
     if (!category) {
       return { progress: null, status: 'no-target', needed: 0 };
     }
@@ -119,7 +197,6 @@ const PropertyMapView = () => {
       return { progress: null, status: 'no-target', needed: 0 };
     }
 
-    // Rest of your existing code...
     const currentAmount = category.available || 0;
 
     switch (category.target_type) {
@@ -131,14 +208,20 @@ const PropertyMapView = () => {
           status: progress >= 100 ? 'funded' : progress > 0 ? 'partial' : 'unfunded',
           needed,
         };
-      // ... rest of your cases
+      case 'monthly_debt_payment':
+        const debtProgress = (currentAmount / category.target_amount) * 100;
+        const debtNeeded = Math.max(0, category.target_amount - currentAmount);
+        return {
+          progress: debtProgress,
+          status: debtProgress >= 100 ? 'funded' : debtProgress > 0 ? 'partial' : 'unfunded',
+          needed: debtNeeded,
+        };
       default:
         return { progress: null, status: 'no-target', needed: 0 };
     }
   };
 
   const calculateUnderfundedCategories = () => {
-    // Add safety check
     if (!budgetData.categories || !Array.isArray(budgetData.categories)) {
       return [];
     }
@@ -153,7 +236,6 @@ const PropertyMapView = () => {
   };
 
   const getTotalUnderfunded = () => {
-    // Add safety check
     if (!budgetData.categories || !Array.isArray(budgetData.categories)) {
       return 0;
     }
@@ -179,34 +261,18 @@ const PropertyMapView = () => {
   const getTargetInfo = (category) => {
     return calculateTargetProgress(category);
   };
-  // Calculate Available with proper rollover logic
+  
   const calculateAvailable = (category, previousMonthAvailable = 0) => {
-    // Available = Previous Available + Assigned This Month - Spending (Activity)
     const assigned = Number(category.assigned) || 0;
     const activity = Number(category.activity) || 0;
-
     let available = previousMonthAvailable + assigned - activity;
-
-    // Handle overspending based on account type
-    const isCashAccount = category.account_type !== 'credit';
-
-    if (available < 0 && !isCashAccount) {
-      // Credit overspending - becomes debt, doesn't reduce cash
-      // We'll track this separately
-      console.log(`⚠️ Credit overspending in ${category.name}: ${formatCurrency(available)}`);
-    } else if (available < 0 && isCashAccount) {
-      // Cash overspending - must be covered
-      console.log(`🔴 Cash overspending in ${category.name}: ${formatCurrency(available)}`);
-    }
-
     return available;
   };
-  // Update available for a specific category and save to database
+  
   const updateCategoryAvailable = async (category, previousMonthAvailable = 0) => {
     const newAvailable = calculateAvailable(category, previousMonthAvailable);
 
     if (newAvailable !== category.available) {
-      // Update local state
       setBudgetData(prev => ({
         ...prev,
         categories: prev.categories.map(cat =>
@@ -216,7 +282,6 @@ const PropertyMapView = () => {
         )
       }));
 
-      // Update database
       try {
         await window.electronAPI.updateCategory(category.id, { available: newAvailable });
         console.log(`✅ Updated available for ${category.name}: ${formatCurrency(newAvailable)}`);
@@ -228,23 +293,18 @@ const PropertyMapView = () => {
     return newAvailable;
   };
 
-
-
-  // Update all categories' available amounts
   const updateAllAvailable = async () => {
     console.log('🔄 Recalculating all available amounts...');
 
     for (const category of budgetData.categories) {
-      // Get previous month's available (carryover)
       const previousAvailable = category.previous_available || 0;
       await updateCategoryAvailable(category, previousAvailable);
     }
 
     console.log('✅ Finished updating available amounts');
-    calculateReadyToAssign(); // Recalculate ready to assign after updates
+    calculateReadyToAssign();
   };
 
-  // Get previous month's available (for rollover)
   const getPreviousMonthAvailable = async (categoryId, previousMonth) => {
     try {
       const result = await window.electronAPI.getCategoryHistory(categoryId, previousMonth);
@@ -262,19 +322,10 @@ const PropertyMapView = () => {
 
     const activeCategories = budgetData.categories.filter(cat => !cat.archived);
 
-    // Total Assigned this month
     let totalAssigned = activeCategories.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0);
-
-    // Total Available from previous month (carryover)
     let totalCarryover = activeCategories.reduce((sum, cat) => sum + (cat.previous_available || 0), 0);
-
-    // Total Activity (spending) this month
     let totalActivity = activeCategories.reduce((sum, cat) => sum + (Number(cat.activity) || 0), 0);
-
-    // Total cash in accounts
     const cashInAccounts = totalCashInAccounts;
-
-    // Ready to Assign = Cash - (Assigned - Activity + Carryover)
     const totalBudgeted = totalAssigned - totalActivity + totalCarryover;
     const readyToAssign = cashInAccounts - totalBudgeted;
 
@@ -302,7 +353,7 @@ const PropertyMapView = () => {
       }))
     }));
   };
-  // Recalculate available whenever assigned or activity changes
+  
   useEffect(() => {
     if (budgetData.categories.length > 0) {
       updateAllAvailable();
@@ -326,10 +377,6 @@ const PropertyMapView = () => {
       setLoading(false);
     }
   };
-
-
-
-
 
   const loadCategoriesFromDB = async (retryCount = 0) => {
     if (!window.electronAPI?.getCategories) {
@@ -363,7 +410,8 @@ const PropertyMapView = () => {
           average_spending: cat.average_spending || 0,
           archived: cat.archived === 1,
           is_hidden: cat.is_hidden === 1 || cat.hidden === 1,
-          original_group_id: cat.original_group_id || cat.group_id
+          original_group_id: cat.original_group_id || cat.group_id,
+          is_loan_payment_category: cat.is_loan_payment_category === 1
         }));
 
         setBudgetData(prev => ({
@@ -492,45 +540,6 @@ const PropertyMapView = () => {
         return '#EF4444';
       default:
         return '#3B82F6';
-    }
-  };
-
-  const getGoalDetails = (category, targetInfo) => {
-    if (!category.target_amount) return null;
-
-    switch (category.target_type) {
-      case 'monthly':
-        return (
-          <div style={styles.goalDetailText}>
-            {targetInfo.status === 'funded' ? '✅ Monthly goal met' :
-              targetInfo.status === 'partial' ? `⚠️ ${formatCurrency(targetInfo.needed)} short` :
-                '❌ Not funded'}
-          </div>
-        );
-      case 'balance':
-        const current = category.available || 0;
-        const percent = (current / category.target_amount) * 100;
-        return (
-          <div style={styles.goalDetailText}>
-            <div>{formatCurrency(current)} of {formatCurrency(category.target_amount)}</div>
-            <div style={{ fontSize: '10px', color: '#94A3B8' }}>
-              {current >= category.target_amount ? 'Goal achieved! 🎉' : `${Math.round(percent)}% to goal`}
-            </div>
-          </div>
-        );
-      case 'by_date':
-        return (
-          <div style={styles.goalDetailText}>
-            <div>{formatCurrency(category.available || 0)} of {formatCurrency(category.target_amount)}</div>
-            {targetInfo.monthsRemaining > 0 && (
-              <div style={{ fontSize: '10px', color: '#F59E0B' }}>
-                Need ${targetInfo.monthlyNeeded?.toFixed(0)}/month
-              </div>
-            )}
-          </div>
-        );
-      default:
-        return null;
     }
   };
 
@@ -866,7 +875,6 @@ const PropertyMapView = () => {
   };
 
   const handleQuickAssign = (method) => {
-
     if (budgetSummary.unassigned <= 0) {
       alert('No funds available to assign');
       return;
@@ -878,7 +886,6 @@ const PropertyMapView = () => {
 
     switch (method) {
       case 'smart':
-        // Smart allocation based on priority
         const prioritized = activeCategories.map(cat => {
           const targetInfo = calculateTargetProgress(cat);
           let priority = 5;
@@ -1130,6 +1137,7 @@ const PropertyMapView = () => {
     calculateReadyToAssign();
     alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
   };
+  
   const handleSetGoal = (category) => {
     setSelectedCategoryForTarget(category);
     setShowTargetModal(true);
@@ -1171,6 +1179,7 @@ const PropertyMapView = () => {
       alert('Error saving goal: ' + error.message);
     }
   };
+  
   const handleAutoAssign = (allocations) => {
     setBudgetData(prev => ({
       ...prev,
@@ -1362,16 +1371,13 @@ const PropertyMapView = () => {
                   : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`
               }
             </div>
-
           </div>
         </div>
-        {/* Overspending Warning - Simplified */}
+        
         {(() => {
           if (!budgetData.categories || !Array.isArray(budgetData.categories)) return null;
           const overspentCategories = budgetData.categories.filter(c => !c.archived && (c.available || 0) < 0);
-
           if (overspentCategories.length === 0) return null;
-
           return (
             <div style={styles.warningBanner}>
               <div style={styles.warningIcon}>⚠️</div>
@@ -1391,6 +1397,7 @@ const PropertyMapView = () => {
             </div>
           );
         })()}
+        
         <div style={styles.controlsRow}>
           <div style={styles.monthSelector}>
             <button style={styles.monthNavButton} onClick={() => {
@@ -1469,7 +1476,6 @@ const PropertyMapView = () => {
             <div style={styles.loading}>Loading categories...</div>
           ) : (
             <table style={styles.table}>
-              {/* Column group for fixed widths */}
               <colgroup>
                 <col style={{ width: '30%' }} />
                 <col style={{ width: '12%' }} />
@@ -1579,6 +1585,9 @@ const PropertyMapView = () => {
                                         <option value="monthly">Monthly</option>
                                         <option value="balance">Balance</option>
                                         <option value="by_date">By Date</option>
+                                        {cat.is_loan_payment_category && (
+                                          <option value="monthly_debt_payment">🏦 Monthly Debt Payment (Loan)</option>
+                                        )}
                                       </select>
                                       <input
                                         type="number"
@@ -1654,7 +1663,6 @@ const PropertyMapView = () => {
                                       </div>
                                     )}
                                   </td>
-                                  {/* PROGRESS COLUMN - Fixed width, clean layout */}
                                   <td style={styles.progressCell}>
                                     {hasTarget ? (
                                       <div style={styles.progressWrapper}>
@@ -1668,7 +1676,6 @@ const PropertyMapView = () => {
                                             {Math.min(100, Math.round(targetInfo.progress || 0))}%
                                           </span>
                                         </div>
-                                        {/* Status text - compact and clean */}
                                         {targetInfo.status === 'partial' && (
                                           <div style={styles.progressStatus}>Need {formatCurrency(targetInfo.needed)}</div>
                                         )}
@@ -1689,7 +1696,6 @@ const PropertyMapView = () => {
                                       <div style={styles.noGoalIndicator}>—</div>
                                     )}
                                   </td>
-                                  {/* GOAL TARGET COLUMN - Pure configuration value only */}
                                   <td style={styles.goalCell}>
                                     {cat.target_amount && cat.target_amount > 0 ? (
                                       <div style={styles.goalTargetWrapper}>
@@ -1700,6 +1706,7 @@ const PropertyMapView = () => {
                                           {cat.target_type === 'monthly' && '📅 Monthly'}
                                           {cat.target_type === 'balance' && '🎯 Balance'}
                                           {cat.target_type === 'by_date' && '⏰ By Date'}
+                                          {cat.target_type === 'monthly_debt_payment' && '🏦 Monthly Debt Payment'}
                                           {cat.target_date && cat.target_type === 'by_date' && (
                                             <span style={styles.goalDateSmall}>
                                               {new Date(cat.target_date).toLocaleDateString()}
@@ -1759,7 +1766,7 @@ const PropertyMapView = () => {
       <div style={styles.rightColumn}>
         <SummaryView
           totalAvailable={budgetSummary.totalAvailable}
-          totalActivity={budgetSummary.totalActivity}  // ← FIXED
+          totalActivity={budgetSummary.totalActivity}
           totalAssigned={budgetSummary.totalAssigned}
           unassigned={budgetSummary.unassigned}
           categories={budgetData.categories || []}
@@ -1767,14 +1774,10 @@ const PropertyMapView = () => {
           underfundedTotal={getTotalUnderfunded()}
         />
 
-
-
         <div style={{ color: "#F87171", marginTop: 8 }}>Underfunded: {formatCurrency(getTotalUnderfunded())}</div>
         <AutoAssignView readyToAssign={budgetSummary.unassigned} underfundedTotal={getTotalUnderfunded()} underfundedCategories={calculateUnderfundedCategories()} />
         <FutureMonthsView futureAssignments={2340.50} nextMonthTarget={5000} monthsAhead={1.5} />
       </div>
-
-
 
       {/* Archived Categories Modal */}
       {showArchivedModal && (
@@ -2132,7 +2135,6 @@ const styles = {
     color: '#FCA5A5',
     marginTop: '4px'
   },
-
   warningButton: {
     padding: '6px 12px',
     backgroundColor: '#EF4444',
