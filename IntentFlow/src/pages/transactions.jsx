@@ -26,10 +26,10 @@ export default function TransactionsPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      // Load transactions
-      const transactionsResult = await window.electronAPI.getTransactions();
-      if (transactionsResult.success) {
-        setTransactions(transactionsResult.data);
+      // Load accounts first (needed to get account IDs for transactions)
+      const accountsResult = await window.electronAPI.getAccounts();
+      if (accountsResult.success) {
+        setAccounts(accountsResult.data);
       }
 
       // Load categories
@@ -38,11 +38,31 @@ export default function TransactionsPage() {
         setCategories(categoriesResult.data);
       }
 
-      // Load accounts
-      const accountsResult = await window.electronAPI.getAccounts();
-      if (accountsResult.success) {
-        setAccounts(accountsResult.data);
+      // Load transactions from all accounts
+      const allTransactions = [];
+      if (accountsResult.success && accountsResult.data) {
+        for (const account of accountsResult.data) {
+          try {
+            const txResult = await window.electronAPI.getAccountTransactions(account.id);
+            if (txResult.success && txResult.data) {
+              // Add account name to each transaction for display
+              const transactionsWithAccount = txResult.data.map(tx => ({
+                ...tx,
+                account_name: account.name,
+                account_type: account.type
+              }));
+              allTransactions.push(...transactionsWithAccount);
+            }
+          } catch (txError) {
+            console.error(`Error loading transactions for account ${account.id}:`, txError);
+          }
+        }
       }
+      
+      // Sort by date (newest first)
+      allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+      setTransactions(allTransactions);
+
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {

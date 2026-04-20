@@ -720,40 +720,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
     }
 
-    // If this is a loan payment, we need to handle it differently
+    // Loan payments are NOT created from the loan page
+    // They must be made from checking/savings account page
     if (isLoanPayment && selectedLoanAccount) {
-      // For loan payments, we create a special transaction record
-      const paymentData = {
-        accountId: account.id,
-        date: newTransaction.date,
-        payee: newTransaction.payee,
-        description: newTransaction.payee,
-        amount: transactionAmount,
-        categoryId: null,
-        memo: newTransaction.memo || `Payment to ${selectedLoanAccount.name}`,
-        cleared: newTransaction.cleared ? 1 : 0,
-        frequency: newTransaction.frequency || null,
-        isLoanPayment: true,
-        loanAccountId: selectedLoanAccount.id,
-        paymentBreakdown: paymentBreakdown
-      };
-
-      const result = await window.electronAPI.addLoanPayment(paymentData);
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to add loan payment');
-      }
-
-      const currentBalance = account.balance || 0;
-      const newBalance = currentBalance + balanceChange;
-      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-      
-      if (paymentBreakdown && paymentBreakdown.principalPortion > 0) {
-        const loanAccount = selectedLoanAccount;
-        const newLoanBalance = loanAccount.balance + paymentBreakdown.principalPortion;
-        await window.electronAPI.updateAccount(selectedLoanAccount.id, userId, { balance: newLoanBalance });
-      }
-      
-      return newBalance;
+      throw new Error(`❌ Loan payments cannot be created from this page.\n\nPlease go to your CHECKING or SAVINGS account to make a payment to "${selectedLoanAccount.name}".\n\nFrom your checking account:\n1. Click "Add Transaction"\n2. Set Payee to "Payment/Transfer: ${selectedLoanAccount.name}"\n3. Enter the payment amount\n4. The system will automatically calculate interest and principal`);
     }
 
     const isReadyToAssign = newTransaction.transactionType === 'inflow' &&
@@ -984,8 +954,19 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         <button onClick={() => setRefreshCounter(prev => prev + 1)} style={styles.refreshButton}>
           🔄 Refresh
         </button>
-        {isCreditCard && (
-          <button onClick={() => onMakePayment && onMakePayment(account.id)} style={styles.paymentButton}>
+        {(isCreditCard || isLoanAccount) && (
+          <button 
+            onClick={() => {
+              if (isCreditCard && onMakePayment) {
+                // Credit card: use existing payment flow
+                onMakePayment(account.id);
+              } else if (isLoanAccount) {
+                // Loan account: show helpful instructions
+                alert(`💡 How to make a payment to "${account.name}":\n\n1. Go to your CHECKING or SAVINGS account page\n2. Click "Add Transaction"\n3. Set Payee to "Payment/Transfer: ${account.name}"\n4. Enter the payment amount\n5. The system will automatically calculate:\n   • Interest portion (first payment of month)\n   • Principal reduction\n   • Update both account balances\n\nThis ensures accurate interest calculations and proper tracking.`);
+              }
+            }} 
+            style={styles.paymentButton}
+          >
             💰 Make Payment
           </button>
         )}
@@ -1034,6 +1015,19 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           </div>
         )}
       </div>
+
+      {/* Info Banner for Loan Accounts - Shows how to make payments */}
+      {isLoanAccount && (
+        <div style={styles.infoBanner}>
+          <div style={styles.infoBannerIcon}>ℹ️</div>
+          <div style={styles.infoBannerContent}>
+            <strong>📋 Making Loan Payments:</strong><br />
+            To pay down this loan, go to your <strong>checking or savings account</strong> and create a transaction with payee:<br />
+            <code style={styles.codeExample}>Payment/Transfer: {account.name}</code><br />
+            The system will automatically calculate interest (first payment of month) and apply the rest to principal.
+          </div>
+        </div>
+      )}
 
       {/* Scheduled Transactions Section */}
       {scheduledTransactions.length > 0 && (
@@ -1150,10 +1144,11 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               const isEditing = editingTransactionId === tx.id;
               const category = categories.find(c => c.id === tx.category_id);
               
-              // Determine transaction type display
-              const isInflowToLoan = isLoanAccount && tx.amount > 0 && tx.isLoanPaymentInflow;
-              const isInterestCharge = tx.isInterestCharge;
-              const isPrincipalPayment = tx.isPrincipalPayment;
+              // UPDATED: Determine transaction type display - now includes is_transfer flag
+              const isInflowToLoan = isLoanAccount && tx.amount > 0 && (tx.isLoanPaymentInflow === true || tx.is_transfer === 1);
+              const isInterestCharge = tx.isInterestCharge === true;
+              const isPrincipalPayment = tx.isPrincipalPayment === true;
+              const isTransfer = tx.is_transfer === 1;
               
               if (isEditing) {
                 const editCategories = getAllCategories();
@@ -1242,6 +1237,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       )}
                       {tx.isLoanPayment && !isInflowToLoan && !isInterestCharge && (
                         <div style={styles.loanPaymentBadgeSmall}>🏦 Loan Payment</div>
+                      )}
+                      {isTransfer && !isInflowToLoan && !isInterestCharge && !isPrincipalPayment && (
+                        <div style={styles.transferBadgeSmall}>🔄 Account Transfer</div>
                       )}
                     </div>
                     <div style={{ ...styles.transactionAmount, color: tx.amount < 0 ? '#EF4444' : '#10B981' }}>
@@ -1696,6 +1694,36 @@ const styles = {
     height: '100%',
     background: 'linear-gradient(90deg, #3B82F6, #8B5CF6)',
     transition: 'width 0.3s ease',
+  },
+  infoBanner: {
+    background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
+    border: '1px solid #3B82F6',
+    borderRadius: '0.75rem',
+    padding: '1rem',
+    marginBottom: '2rem',
+    display: 'flex',
+    gap: '1rem',
+    alignItems: 'flex-start',
+  },
+  infoBannerIcon: {
+    fontSize: '1.5rem',
+    color: '#3B82F6',
+  },
+  infoBannerContent: {
+    flex: 1,
+    fontSize: '0.875rem',
+    color: '#D1D5DB',
+    lineHeight: '1.5',
+  },
+  codeExample: {
+    background: '#111827',
+    padding: '0.25rem 0.5rem',
+    borderRadius: '0.25rem',
+    fontFamily: 'monospace',
+    fontSize: '0.8rem',
+    color: '#10B981',
+    display: 'inline-block',
+    marginTop: '0.25rem',
   },
   scheduledSection: {
     background: '#1F2937',
@@ -2294,6 +2322,15 @@ const styles = {
     marginTop: '0.25rem',
     display: 'inline-block',
     background: 'rgba(59, 130, 246, 0.1)',
+    padding: '0.125rem 0.375rem',
+    borderRadius: '0.25rem',
+  },
+  transferBadgeSmall: {
+    fontSize: '0.6rem',
+    color: '#8B5CF6',
+    marginTop: '0.25rem',
+    display: 'inline-block',
+    background: 'rgba(139, 92, 246, 0.1)',
     padding: '0.125rem 0.375rem',
     borderRadius: '0.25rem',
   },

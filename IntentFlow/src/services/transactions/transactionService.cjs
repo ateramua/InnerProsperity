@@ -48,7 +48,7 @@ class TransactionService {
         }
     }
 
-    // Create a transaction
+    // Create a transaction - UPDATED to support linkedTransactionId
     async createTransaction(transactionData) {
         const db = await this.getDb();
         try {
@@ -57,26 +57,27 @@ class TransactionService {
                 categoryId = null, payee = null, memo = null,
                 checkNumber = null, isCleared = 0,
                 isTransfer = 0, transferAccountId = null,
+                linkedTransactionId = null,  // <-- ADD THIS
                 importId = null
             } = transactionData;
 
             console.log('📝 Creating transaction with data:', {
                 accountId, userId, date, description, amount,
                 categoryId, payee, memo, checkNumber, isCleared,
-                isTransfer, transferAccountId, importId
+                isTransfer, transferAccountId, linkedTransactionId, importId
             });
 
             const result = await db.run(`
             INSERT INTO transactions (
                 account_id, user_id, date, description, amount,
                 category_id, payee, memo, check_number, is_cleared,
-                is_transfer, transfer_account_id, import_id,
+                is_transfer, transfer_account_id, linked_transaction_id, import_id,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         `, [
                 accountId, userId, date, description, amount,
                 categoryId, payee, memo, checkNumber, isCleared,
-                isTransfer, transferAccountId, importId
+                isTransfer, transferAccountId, linkedTransactionId, importId
             ]);
 
             const id = result.lastID;  // auto‑increment ID
@@ -90,13 +91,14 @@ class TransactionService {
         }
     }
 
-    // Update a transaction
+    // Update a transaction - UPDATED to support linked_transaction_id
     async updateTransaction(id, userId, updates) {
         const db = await this.getDb();
         try {
             const allowedUpdates = [
                 'date', 'description', 'amount', 'category_id',
-                'payee', 'memo', 'check_number', 'is_cleared'
+                'payee', 'memo', 'check_number', 'is_cleared',
+                'linked_transaction_id'  // <-- ADD THIS
             ];
 
             const setClauses = [];
