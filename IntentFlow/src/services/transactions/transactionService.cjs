@@ -50,45 +50,35 @@ class TransactionService {
 
     // Create a transaction - UPDATED to support linkedTransactionId
     async createTransaction(transactionData) {
-        const db = await this.getDb();
-        try {
-            const {
-                accountId, userId, date, description, amount,
-                categoryId = null, payee = null, memo = null,
-                checkNumber = null, isCleared = 0,
-                isTransfer = 0, transferAccountId = null,
-                linkedTransactionId = null,  // <-- ADD THIS
-                importId = null
-            } = transactionData;
+        const {
+            accountId, userId, date, description, amount, categoryId,
+            payee, memo, isCleared,
+            // NEW TRANSFER FIELDS
+            isTransfer,
+            transferGroupId,
+            linkedTransactionId,
+            counterpartyAccountId
+        } = transactionData;
 
-            console.log('📝 Creating transaction with data:', {
-                accountId, userId, date, description, amount,
-                categoryId, payee, memo, checkNumber, isCleared,
-                isTransfer, transferAccountId, linkedTransactionId, importId
-            });
+        const query = `
+    INSERT INTO transactions (
+      account_id, user_id, date, description, amount, category_id,
+      payee, memo, is_cleared, created_at,
+      is_transfer, transfer_group_id, linked_transaction_id, counterparty_account_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?)
+  `;
 
-            const result = await db.run(`
-            INSERT INTO transactions (
-                account_id, user_id, date, description, amount,
-                category_id, payee, memo, check_number, is_cleared,
-                is_transfer, transfer_account_id, linked_transaction_id, import_id,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-        `, [
-                accountId, userId, date, description, amount,
-                categoryId, payee, memo, checkNumber, isCleared,
-                isTransfer, transferAccountId, linkedTransactionId, importId
-            ]);
+        const params = [
+            accountId, userId, date, description, amount, categoryId,
+            payee, memo, isCleared || 0,
+            isTransfer || 0,
+            transferGroupId || null,
+            linkedTransactionId || null,
+            counterpartyAccountId || null
+        ];
 
-            const id = result.lastID;  // auto‑increment ID
-
-            // Update account balances
-            await this.updateAccountBalances(accountId);
-
-            return this.getTransactionById(id, userId);
-        } finally {
-            // (optional close logic)
-        }
+        const result = await this.db.run(query, params);
+        return { id: result.lastID };
     }
 
     // Update a transaction - UPDATED to support linked_transaction_id
@@ -138,19 +128,19 @@ class TransactionService {
 
     // Get transactions for a specific account
     async getAccountTransactions(accountId, userId) {
-        const db = await this.getDb();
-        try {
-            const transactions = await db.all(`
-            SELECT t.*, c.name as category_name 
-            FROM transactions t
-            LEFT JOIN categories c ON t.category_id = c.id
-            WHERE t.account_id = ? AND t.user_id = ?
-            ORDER BY t.date DESC, t.created_at DESC
-        `, [accountId, userId]);
-            return transactions;
-        } finally {
-            // Connection management handled similarly
-        }
+        const query = `
+    SELECT 
+      t.*,
+      CASE 
+        WHEN t.is_transfer = 1 AND t.counterparty_account_id IS NOT NULL 
+        THEN (SELECT name FROM accounts WHERE id = t.counterparty_account_id)
+        ELSE NULL 
+      END as transfer_counterparty_name
+    FROM transactions t
+    WHERE t.account_id = ? AND t.user_id = ?
+    ORDER BY t.date DESC, t.created_at DESC
+  `;
+        return await this.db.all(query, [accountId, userId]);
     }
 
     // Delete a transaction

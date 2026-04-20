@@ -26,6 +26,14 @@ try {
 
     listUsers: () => ipcRenderer.invoke('list-users'),
 
+    // ==================== PAYEES ====================
+    getPayees: (userId) => ipcRenderer.invoke('get-payees', userId),
+    createOrUpdatePayee: (data) => ipcRenderer.invoke('create-or-update-payee', data),
+    getPayeesForForm: (data) => ipcRenderer.invoke('get-payees-for-form', data),
+    createLinkedTransfer: (transferData) => ipcRenderer.invoke('create-linked-transfer', transferData),
+    updateLinkedTransfer: (transactionId, updates) => ipcRenderer.invoke('update-linked-transfer', transactionId, updates),
+    deleteLinkedTransfer: (transactionId) => ipcRenderer.invoke('delete-linked-transfer', transactionId),
+
     // ==================== TRANSACTIONS ====================
     getTransactions: (accountId, filters) =>
       ipcRenderer.invoke('getTransactions', accountId, filters), // ⚠️ No handler in main process – remove if not used
@@ -39,9 +47,9 @@ try {
       ipcRenderer.invoke('createTransaction', data), // ⚠️ No handler in main process – remove if not used
 
     // Add these to your electronAPI object
-debugTestDatabaseWrite: () => ipcRenderer.invoke('debug:test-database-write'),
-debugGetDatabaseInfo: () => ipcRenderer.invoke('debug:get-database-info'),
-debugTestGroupDelete: (groupId, userId) => ipcRenderer.invoke('debug:test-group-delete', groupId, userId),
+    debugTestDatabaseWrite: () => ipcRenderer.invoke('debug:test-database-write'),
+    debugGetDatabaseInfo: () => ipcRenderer.invoke('debug:get-database-info'),
+    debugTestGroupDelete: (groupId, userId) => ipcRenderer.invoke('debug:test-group-delete', groupId, userId),
     updateTransaction: (id, updates) =>
       ipcRenderer.invoke('updateTransaction', id, updates),
 
@@ -141,9 +149,9 @@ debugTestGroupDelete: (groupId, userId) => ipcRenderer.invoke('debug:test-group-
       ipcRenderer.invoke('forecast:weekly', userId, weeks),
 
     // Scheduled transactions
-getScheduledTransactions: (accountId) => ipcRenderer.invoke('scheduled-transactions:get', accountId),
-addScheduledTransaction: (data) => ipcRenderer.invoke('scheduled-transactions:add', data),
-deleteScheduledTransaction: (id) => ipcRenderer.invoke('scheduled-transactions:delete', id),
+    getScheduledTransactions: (accountId) => ipcRenderer.invoke('scheduled-transactions:get', accountId),
+    addScheduledTransaction: (data) => ipcRenderer.invoke('scheduled-transactions:add', data),
+    deleteScheduledTransaction: (id) => ipcRenderer.invoke('scheduled-transactions:delete', id),
 
     getYearlyForecast: (userId, years) =>
       ipcRenderer.invoke('forecast:yearly', userId, years),
@@ -188,9 +196,7 @@ deleteScheduledTransaction: (id) => ipcRenderer.invoke('scheduled-transactions:d
         ipcRenderer.send(channel, data);
       }
     },
-debugDbPath: () => {
-  return ipcRenderer.invoke('debug-db-path'); // Ensure main/index.cjs has handle
-},
+
     // ==================== EVENTS ====================
     subscribeToEvent: (eventType, callback) => {
       const listener = (_, data) => callback(data);

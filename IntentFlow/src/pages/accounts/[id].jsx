@@ -19,6 +19,11 @@ const AccountDetailPage = () => {
     const [showScheduledSection, setShowScheduledSection] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
 
+    // ===================== PAYEE DROPDOWN STATE =====================
+    const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+    const [loadingPayees, setLoadingPayees] = useState(false);
+    const [selectedPayeeType, setSelectedPayeeType] = useState(null);
+
     // ===================== LOAN/CREDIT CARD PAYMENT STATE =====================
     const [isLoanPayment, setIsLoanPayment] = useState(false);
     const [selectedLoanAccount, setSelectedLoanAccount] = useState(null);
@@ -88,6 +93,9 @@ const AccountDetailPage = () => {
         amount: '',
         date: getTodayLocalDate(),
         payee: '',
+        payeeId: null,
+        isTransfer: false,
+        transferAccountId: null,
         memo: '',
         cleared: true,
         frequency: ''
@@ -111,6 +119,192 @@ const AccountDetailPage = () => {
             return [];
         }
         return categories.filter(cat => cat && !cat.archived);
+    };
+
+    // ===================== PAYEE DROPDOWN FUNCTIONS =====================
+
+    // Fetch payees for dropdown (transfers + regular payees)
+    const fetchPayees = async () => {
+        setLoadingPayees(true);
+        try {
+            const userResult = await window.electronAPI.getCurrentUser();
+            if (userResult?.success && userResult?.data) {
+                const userId = userResult.data.id;
+
+                // Get all accounts for transfer payees
+                const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+                const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+
+                // Filter out current account for transfers
+                const transferPayees = allAccounts
+                    .filter(acc => acc.id !== account?.id)
+                    .map(acc => ({
+                        id: `transfer_${acc.id}`,
+                        name: `Transfer: ${acc.name}`,
+                        isTransfer: true,
+                        transferAccountId: acc.id,
+                        accountType: acc.type
+                    }));
+
+                // Get regular payees from payees table
+                let regularPayees = [];
+                try {
+                    const payeesResult = await window.electronAPI.getPayees(userId);
+                    if (payeesResult?.success) {
+                        regularPayees = (payeesResult.data || [])
+                            .filter(p => !p.is_transfer_payee)
+                            .map(p => ({
+                                id: p.id,
+                                name: p.name,
+                                isTransfer: false,
+                                usageCount: p.usage_count
+                            }));
+                    }
+                } catch (err) {
+                    console.log('Payees table not yet set up, using empty list');
+                }
+
+                setPayees({ transferPayees, regularPayees });
+            }
+        } catch (error) {
+            console.error('Error fetching payees:', error);
+        } finally {
+            setLoadingPayees(false);
+        }
+    };
+
+    // Handle payee selection from dropdown
+    const handlePayeeSelect = (payee) => {
+        if (payee.isTransfer) {
+            // Transfer selected - category disabled
+            setTransactionForm(prev => ({
+                ...prev,
+                payee: payee.name,
+                payeeId: payee.id,
+                isTransfer: true,
+                transferAccountId: payee.transferAccountId,
+                categoryId: ''
+            }));
+            setSelectedPayeeType('transfer');
+            setIsLoanPayment(false);
+            setIsCreditCardTransfer(false);
+            
+            // Check if this is a loan payment transfer
+            if (payee.accountType === 'loan') {
+                const matchedLoan = loanAccounts.find(l => l.id === payee.transferAccountId);
+                if (matchedLoan) {
+                    setIsLoanPayment(true);
+                    setSelectedLoanAccount(matchedLoan);
+                    if (transactionForm.amount && parseFloat(transactionForm.amount) > 0) {
+                        const breakdown = calculateLoanPaymentBreakdown(matchedLoan, parseFloat(transactionForm.amount), true);
+                        setPaymentBreakdown(breakdown);
+                    }
+                }
+            }
+            
+            // Check if this is a credit card payment transfer
+            if (payee.accountType === 'credit') {
+                const matchedCredit = creditCardPaymentCategories.find(c => 
+                    c.name.toLowerCase() === payee.name.replace('Transfer: ', '').toLowerCase()
+                );
+                if (matchedCredit) {
+                    setIsCreditCardTransfer(true);
+                    setSelectedCreditCardCategory(matchedCredit);
+                }
+            }
+        } else {
+            // Regular payee selected - category enabled
+            setTransactionForm(prev => ({
+                ...prev,
+                payee: payee.name,
+                payeeId: payee.id,
+                isTransfer: false,
+                transferAccountId: null,
+                categoryId: prev.categoryId
+            }));
+            setSelectedPayeeType('regular');
+            setIsLoanPayment(false);
+            setIsCreditCardTransfer(false);
+            setSelectedLoanAccount(null);
+            setSelectedCreditCardCategory(null);
+            setPaymentBreakdown(null);
+        }
+    };
+
+    // Save a new regular payee to the database
+    const savePayee = async (payeeName, userId) => {
+        try {
+            const result = await window.electronAPI.createOrUpdatePayee({
+                name: payeeName,
+                userId: userId,
+                isTransferPayee: false
+            });
+            return result.success ? result.data?.id : null;
+        } catch (error) {
+            console.error('Error saving payee:', error);
+            return null;
+        }
+    };
+
+    // Render payee dropdown with two sections - FIXED for manual entry
+    const renderPayeeDropdown = () => {
+        return (
+            <select
+                value={transactionForm.payee}
+                onChange={(e) => {
+                    const selectedValue = e.target.value;
+                    if (selectedValue === '__manual__') {
+                        // Allow manual entry - clear payee and show text input
+                        setTransactionForm(prev => ({ 
+                            ...prev, 
+                            payee: '', 
+                            payeeId: null,
+                            isTransfer: false,
+                            transferAccountId: null
+                        }));
+                        setSelectedPayeeType(null);
+                        setIsLoanPayment(false);
+                        setSelectedLoanAccount(null);
+                        setPaymentBreakdown(null);
+                        return;
+                    }
+                    try {
+                        const payee = JSON.parse(selectedValue);
+                        handlePayeeSelect(payee);
+                    } catch (err) {
+                        // Handle manual entry
+                        setTransactionForm(prev => ({ ...prev, payee: selectedValue, isTransfer: false }));
+                    }
+                }}
+                style={styles.select}
+            >
+                <option value="">-- Select or enter payee --</option>
+                
+                {/* Section 1: Payments & Transfers */}
+                {payees.transferPayees.length > 0 && (
+                    <optgroup label="📤 PAYMENTS & TRANSFERS">
+                        {payees.transferPayees.map(payee => (
+                            <option key={payee.id} value={JSON.stringify(payee)}>
+                                {payee.name}
+                            </option>
+                        ))}
+                    </optgroup>
+                )}
+                
+                {/* Section 2: Recent Payees */}
+                {payees.regularPayees.length > 0 && (
+                    <optgroup label="📋 RECENT PAYEES">
+                        {payees.regularPayees.map(payee => (
+                            <option key={payee.id} value={JSON.stringify(payee)}>
+                                {payee.name}
+                            </option>
+                        ))}
+                    </optgroup>
+                )}
+                
+                <option value="__manual__">✏️ Other (type manually)</option>
+            </select>
+        );
     };
 
     // ===================== CREDIT CARD PAYMENT PAYEE HELPERS =====================
@@ -146,39 +340,6 @@ const AccountDetailPage = () => {
         }
     };
 
-    // Generate payee options for credit card transfers
-    const getCreditCardPayeeOptions = () => {
-        return creditCardPaymentCategories.map(cat => ({
-            value: `Payment/Transfer: ${cat.name}`,
-            label: `Payment/Transfer: ${cat.name}`,
-            categoryId: cat.id,
-            categoryName: cat.name
-        }));
-    };
-
-    // Check if selected payee is a credit card transfer
-    const checkIfCreditCardTransfer = (payeeValue) => {
-        const transferPattern = /^payment\/transfer:\s*(.+)$/i;
-        const match = payeeValue?.match(transferPattern);
-
-        if (match) {
-            const cardName = match[1].trim();
-            const matchedCategory = creditCardPaymentCategories.find(cat =>
-                cat.name.toLowerCase() === cardName.toLowerCase()
-            );
-
-            if (matchedCategory) {
-                setIsCreditCardTransfer(true);
-                setSelectedCreditCardCategory(matchedCategory);
-                return true;
-            }
-        }
-
-        setIsCreditCardTransfer(false);
-        setSelectedCreditCardCategory(null);
-        return false;
-    };
-
     // Create a transfer transaction to credit card
     const createCreditCardTransferTransaction = async (amountValue, userId) => {
         const isExpense = transactionForm.transactionType === 'outflow';
@@ -196,6 +357,9 @@ const AccountDetailPage = () => {
             cleared: transactionForm.cleared ? 1 : 0,
             frequency: transactionForm.frequency || null,
             isCreditCardPayment: true,
+            isTransfer: 1,
+            transferAccountId: selectedCreditCardCategory ? 
+                creditCardPaymentCategories.find(c => c.id === selectedCreditCardCategory.id)?.linked_account_id : null,
             linkedCreditCardCategoryId: selectedCreditCardCategory?.id,
             linkedCreditCardName: selectedCreditCardCategory?.name
         };
@@ -215,16 +379,19 @@ const AccountDetailPage = () => {
                 const creditCardTransactionData = {
                     accountId: creditCardAccount.id,
                     date: transactionForm.date,
-                    payee: `Payment/Transfer: ${account.name}`,
-                    description: `Payment/Transfer: ${account.name}`,
+                    payee: `Transfer: ${account.name}`,
+                    description: `Transfer: ${account.name}`,
                     amount: amountValue,
                     categoryId: null,
                     memo: transactionForm.memo || `Payment from ${account.name}`,
                     cleared: transactionForm.cleared ? 1 : 0,
                     frequency: transactionForm.frequency || null,
                     isLinkedTransfer: true,
+                    isTransfer: 1,
+                    transferAccountId: account.id,
                     sourceAccountId: account.id,
-                    sourceAccountName: account.name
+                    sourceAccountName: account.name,
+                    linkedTransactionId: result.data?.id
                 };
 
                 await window.electronAPI.addTransaction(creditCardTransactionData);
@@ -332,8 +499,7 @@ const AccountDetailPage = () => {
     // ===================== UPDATED: Create loan payment with linked transactions =====================
     const createLoanPaymentTransaction = async (amountValue, userId) => {
         console.group('🔷🔷🔷 LOAN PAYMENT DEBUG - START 🔷🔷🔷');
-        console.log('📌 FUNCTION CALLED at:', new Date().toISOString());
-        console.log('📌 amountValue:', amountValue, '(type:', typeof amountValue, ')');
+        console.log('📌 amountValue:', amountValue);
         console.log('📌 userId:', userId);
         console.log('📌 account (checking/savings):', account ? { id: account.id, name: account.name, balance: account.balance } : 'UNDEFINED');
         console.log('📌 selectedLoanAccount:', selectedLoanAccount ? { id: selectedLoanAccount.id, name: selectedLoanAccount.name, balance: selectedLoanAccount.balance } : 'UNDEFINED');
@@ -377,8 +543,8 @@ const AccountDetailPage = () => {
         const outflowTransactionData = {
             accountId: account.id,
             date: transactionForm.date,
-            payee: `Payment/Transfer: ${selectedLoanAccount.name}`,
-            description: `Payment/Transfer: ${selectedLoanAccount.name}`,
+            payee: transactionForm.payee,
+            description: transactionForm.payee,
             amount: -amountValue,
             categoryId: null,
             memo: transactionForm.memo || `Loan payment to ${selectedLoanAccount.name}`,
@@ -410,8 +576,8 @@ const AccountDetailPage = () => {
         const inflowTransactionData = {
             accountId: selectedLoanAccount.id,
             date: transactionForm.date,
-            payee: `Payment/Transfer: ${account.name}`,
-            description: `Payment/Transfer: ${account.name}`,
+            payee: `Transfer: ${account.name}`,
+            description: `Transfer: ${account.name}`,
             amount: breakdown.principalPortion,
             categoryId: null,
             memo: transactionForm.memo || `Payment from ${account.name}`,
@@ -522,57 +688,6 @@ const AccountDetailPage = () => {
         console.groupEnd('🔷🔷🔷 LOAN PAYMENT DEBUG - END 🔷🔷🔷');
 
         return { newBalance, breakdown, outflowId, inflowId, interestId };
-    };
-
-    // Check if payee matches a loan account
-    const checkIfLoanPayment = (payeeValue) => {
-        // First check if it's a credit card transfer
-        if (checkIfCreditCardTransfer(payeeValue)) {
-            return false;
-        }
-
-        if (!payeeValue || !loanAccounts.length) {
-            setIsLoanPayment(false);
-            setSelectedLoanAccount(null);
-            setPaymentBreakdown(null);
-            return false;
-        }
-
-        // Check for "Payment: [Account Name]" or "Transfer: [Account Name]" pattern
-        const paymentPattern = /^(payment|transfer):\s*(.+)$/i;
-        const match = payeeValue.match(paymentPattern);
-
-        let accountName = match ? match[2].trim() : payeeValue.trim();
-
-        // Find matching loan account (exclude current account)
-        const matchedAccount = loanAccounts.find(acc =>
-            acc.id !== account?.id &&
-            acc.type === 'loan' &&
-            (acc.name.toLowerCase() === accountName.toLowerCase() ||
-                acc.name.toLowerCase().includes(accountName.toLowerCase()))
-        );
-
-        if (matchedAccount) {
-            setIsLoanPayment(true);
-            setSelectedLoanAccount(matchedAccount);
-
-            // Preview breakdown if amount is entered
-            if (transactionForm.amount && parseFloat(transactionForm.amount) > 0) {
-                // Preview assumes it's the first payment of the month for UI
-                const previewBreakdown = calculateLoanPaymentBreakdown(
-                    matchedAccount,
-                    parseFloat(transactionForm.amount),
-                    true
-                );
-                setPaymentBreakdown(previewBreakdown);
-            }
-            return true;
-        } else {
-            setIsLoanPayment(false);
-            setSelectedLoanAccount(null);
-            setPaymentBreakdown(null);
-            return false;
-        }
     };
 
     // Load loan accounts for payment detection
@@ -908,12 +1023,13 @@ const AccountDetailPage = () => {
         }
     }, [account?.id]);
 
-    // Load categories and loan accounts when modal opens
+    // Load categories and payees when modal opens
     useEffect(() => {
         if (showAddModal) {
             loadCategories();
             loadLoanAccounts();
             loadCreditCardPaymentCategories();
+            fetchPayees();
         }
     }, [showAddModal]);
 
@@ -964,6 +1080,9 @@ const AccountDetailPage = () => {
             amount: '',
             date: getTodayLocalDate(),
             payee: '',
+            payeeId: null,
+            isTransfer: false,
+            transferAccountId: null,
             memo: '',
             cleared: true,
             frequency: ''
@@ -974,6 +1093,7 @@ const AccountDetailPage = () => {
         setSelectedLoanAccount(null);
         setSelectedCreditCardCategory(null);
         setPaymentBreakdown(null);
+        setSelectedPayeeType(null);
     };
 
     // Add regular transaction (for today/past dates)
@@ -987,14 +1107,12 @@ const AccountDetailPage = () => {
         let balanceChange = 0;
 
         // Handle credit card transfer
-        if (isCreditCardTransfer && selectedCreditCardCategory && account.type !== 'credit') {
+        if (transactionForm.isTransfer && selectedCreditCardCategory && account.type !== 'credit') {
             return await createCreditCardTransferTransaction(amountValue, userId);
         }
-         // ADD THIS LINE RIGHT HERE:
-    console.log('🔍 Loan payment check:', { isLoanPayment, selectedLoanAccount });
 
         // Handle loan payment (YNAB-style with interest calculation)
-        if (isLoanPayment && selectedLoanAccount) {
+        if (transactionForm.isTransfer && isLoanPayment && selectedLoanAccount) {
             const result = await createLoanPaymentTransaction(amountValue, userId);
             return result.newBalance;
         }
@@ -1021,6 +1139,12 @@ const AccountDetailPage = () => {
         const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
             transactionForm.categoryId === 'inflow_ready_to_assign';
 
+        // Save payee to payees table if this is a regular transaction (not a transfer)
+        let finalPayeeId = transactionForm.payeeId;
+        if (!transactionForm.isTransfer && transactionForm.payee && !finalPayeeId) {
+            finalPayeeId = await savePayee(transactionForm.payee, userId);
+        }
+
         const transactionData = {
             accountId: account.id,
             date: transactionForm.date,
@@ -1030,7 +1154,8 @@ const AccountDetailPage = () => {
             categoryId: isReadyToAssign ? null : transactionForm.categoryId,
             memo: transactionForm.memo,
             cleared: transactionForm.cleared ? 1 : 0,
-            frequency: transactionForm.frequency || null
+            frequency: transactionForm.frequency || null,
+            payeeId: finalPayeeId
         };
 
         const result = await window.electronAPI.addTransaction(transactionData);
@@ -1090,12 +1215,12 @@ const AccountDetailPage = () => {
         }
 
         if (!transactionForm.payee.trim()) {
-            setTransactionError('Please enter a payee');
+            setTransactionError('Please select or enter a payee');
             return;
         }
 
         // For loan payments or credit card transfers, category is auto-managed
-        if (!isLoanPayment && !isCreditCardTransfer && !transactionForm.categoryId) {
+        if (!transactionForm.isTransfer && !transactionForm.categoryId) {
             setTransactionError('Please select a category');
             return;
         }
@@ -1121,7 +1246,7 @@ const AccountDetailPage = () => {
                     frequencyMessage = `\n\n🔄 This is a ${transactionForm.frequency} recurring transaction.`;
                 }
                 let loanMessage = '';
-                if (isLoanPayment && selectedLoanAccount) {
+                if (transactionForm.isTransfer && isLoanPayment && selectedLoanAccount) {
                     loanMessage = `\n\n🏦 This is a payment to ${selectedLoanAccount.name}. Interest will be calculated on the approval date.`;
                 }
                 alert(`📅 Scheduled transaction added for ${displayDate}${frequencyMessage}${loanMessage}\n\nThis will NOT affect your balance until approved.`);
@@ -1133,7 +1258,7 @@ const AccountDetailPage = () => {
                     frequencyMessage = `\n\n🔄 This is a ${transactionForm.frequency} recurring transaction.`;
                 }
                 let loanMessage = '';
-                if (isLoanPayment && selectedLoanAccount && paymentBreakdown) {
+                if (transactionForm.isTransfer && isLoanPayment && selectedLoanAccount && paymentBreakdown) {
                     loanMessage = `\n\n🏦 Payment to ${selectedLoanAccount.name}:\n   • Total Payment: ${formatCurrency(paymentBreakdown.paymentAmount)}\n   • Interest: ${formatCurrency(paymentBreakdown.interestPortion)}\n   • Principal: ${formatCurrency(paymentBreakdown.principalPortion)}\n   • New Balance: ${formatCurrency(paymentBreakdown.newBalance)}`;
 
                     if (paymentBreakdown.isFirstPaymentOfMonth && paymentBreakdown.interestPortion > 0) {
@@ -1150,6 +1275,8 @@ const AccountDetailPage = () => {
 
             resetForm();
             setShowAddModal(false);
+            // Refresh payees list after adding transaction (for new payees)
+            fetchPayees();
 
         } catch (error) {
             console.error('Error adding transaction:', error);
@@ -1161,23 +1288,6 @@ const AccountDetailPage = () => {
 
     const handleBackToLanding = () => {
         router.push('/');
-    };
-
-    // Build payee options including loan transfers
-    const getPayeeOptions = () => {
-        const loanOptions = loanAccounts.map(loan => ({
-            value: `Payment/Transfer: ${loan.name}`,
-            label: `Payment/Transfer: ${loan.name}`,
-            type: 'loan',
-            accountId: loan.id
-        }));
-
-        const creditCardOptions = getCreditCardPayeeOptions().map(opt => ({
-            ...opt,
-            type: 'credit'
-        }));
-
-        return [...loanOptions, ...creditCardOptions];
     };
 
     // Determine if this is a checking/savings account (where transfers make sense)
@@ -1206,7 +1316,6 @@ const AccountDetailPage = () => {
 
     const filteredCategories = getFilteredCategories();
     const isFutureDate = isFutureLocalDate(transactionForm.date);
-    const payeeOptions = getPayeeOptions();
 
     const frequencyOptions = [
         { value: '', label: 'No recurrence (one-time)' },
@@ -1246,7 +1355,7 @@ const AccountDetailPage = () => {
                     <div style={styles.loanViewInfoContent}>
                         <strong>📋 Viewing a Loan Account:</strong><br />
                         To make a payment to this loan, you need to use your <strong>checking or savings account</strong>.<br />
-                        <code style={styles.codeExample}>Payment/Transfer: {account.name}</code><br />
+                        <code style={styles.codeExample}>Transfer: {account.name}</code><br />
                         The system will automatically calculate interest (first payment of month) and apply the rest to principal.
                     </div>
                 </div>
@@ -1257,7 +1366,7 @@ const AccountDetailPage = () => {
                 <div style={styles.loanPaymentTipBanner}>
                     <div style={styles.loanPaymentTipIcon}>💡</div>
                     <div style={styles.loanPaymentTipContent}>
-                        <strong>Make a Loan Payment:</strong> Select a loan from the Payee dropdown to record a payment. Interest will be calculated automatically (first payment of month only).
+                        <strong>Make a Loan Payment:</strong> Select a transfer from the Payee dropdown to record a payment. Interest will be calculated automatically (first payment of month only).
                     </div>
                 </div>
             )}
@@ -1538,7 +1647,7 @@ const AccountDetailPage = () => {
                                         });
                                     }}
                                     style={styles.select}
-                                    disabled={isLoanPayment || isCreditCardTransfer}
+                                    disabled={transactionForm.isTransfer}
                                 >
                                     <option value="outflow">Outflow (Expense)</option>
                                     <option value="inflow">Inflow (Income/Payment)</option>
@@ -1548,77 +1657,53 @@ const AccountDetailPage = () => {
                             {/* Payee Dropdown with Transfer Options */}
                             <div style={styles.formGroup}>
                                 <label style={styles.label}>Payee *</label>
-                                {isCashAccount && payeeOptions.length > 0 ? (
-                                    <select
-                                        value={transactionForm.payee}
-                                        onChange={(e) => {
-                                            const newPayee = e.target.value;
-                                            setTransactionForm({ ...transactionForm, payee: newPayee });
-                                            checkIfCreditCardTransfer(newPayee);
-                                            checkIfLoanPayment(newPayee);
-                                        }}
-                                        style={styles.select}
-                                    >
-                                        <option value="">-- Select Payee --</option>
-                                        {payeeOptions.length > 0 && (
-                                            <optgroup label="🏦 Loan Payments (Transfer)">
-                                                {payeeOptions.filter(opt => opt.type === 'loan').map(option => (
-                                                    <option key={option.value} value={option.value}>
-                                                        {option.label}
-                                                    </option>
-                                                ))}
-                                            </optgroup>
-                                        )}
-                                        {creditCardPaymentCategories.length > 0 && (
-                                            <optgroup label="💳 Credit Card Payments (Transfer)">
-                                                {payeeOptions.filter(opt => opt.type === 'credit').map(option => (
-                                                    <option key={option.value} value={option.value}>
-                                                        {option.label}
-                                                    </option>
-                                                ))}
-                                            </optgroup>
-                                        )}
-                                        <option value="other">Other (Type manually)</option>
-                                    </select>
+                                {loadingPayees ? (
+                                    <div style={styles.loadingPayees}>Loading payees...</div>
                                 ) : (
-                                    <input
-                                        type="text"
-                                        value={transactionForm.payee}
-                                        onChange={(e) => {
-                                            const newPayee = e.target.value;
-                                            setTransactionForm({ ...transactionForm, payee: newPayee });
-                                            checkIfCreditCardTransfer(newPayee);
-                                            checkIfLoanPayment(newPayee);
-                                        }}
-                                        style={styles.input}
-                                        placeholder={isLoanPayment ? `Payment/Transfer: ${selectedLoanAccount?.name || 'Loan'}` : "e.g., Starbucks, Rent, Paycheck"}
-                                    />
+                                    renderPayeeDropdown()
                                 )}
-                                {isCashAccount && payeeOptions.length > 0 && transactionForm.payee !== 'other' && (
+                                {transactionForm.isTransfer && (
                                     <div style={styles.payeeHint}>
-                                        💡 Select a loan or credit card to record a payment transfer. Category will be auto-managed.
+                                        💡 Transfer selected. Category will be auto-managed.
                                     </div>
                                 )}
                             </div>
 
+                            {/* Manual Payee Input (shown when "Other" is selected or payee needs manual entry) */}
+                            {(transactionForm.payee === '' || (transactionForm.payee && !payees.transferPayees.some(p => p.name === transactionForm.payee) &&
+                             !payees.regularPayees.some(p => p.name === transactionForm.payee))) && (
+                                <div style={styles.formGroup}>
+                                    <label style={styles.label}>Enter Payee Name</label>
+                                    <input
+                                        type="text"
+                                        value={transactionForm.payee}
+                                        onChange={(e) => setTransactionForm(prev => ({ ...prev, payee: e.target.value, isTransfer: false }))}
+                                        style={styles.input}
+                                        placeholder="Enter payee name (e.g., Starbucks, Rent, Amazon)"
+                                    />
+                                </div>
+                            )}
+
                             {/* Category Dropdown - Grayed out for transfers */}
                             <div style={styles.formGroup}>
-                                <label style={{ ...styles.label, ...((isLoanPayment || isCreditCardTransfer) ? styles.disabledLabel : {}) }}>
-                                    Category {(isLoanPayment || isCreditCardTransfer) && <span style={styles.autoManagedBadge}>(Auto-managed for transfer)</span>}
+                                <label style={{ ...styles.label, ...(transactionForm.isTransfer ? styles.disabledLabel : {}) }}>
+                                    Category {transactionForm.isTransfer && <span style={styles.autoManagedBadge}>(Auto-managed for transfer)</span>}
                                 </label>
-                                {(isLoanPayment || isCreditCardTransfer) ? (
+                                {transactionForm.isTransfer ? (
                                     <div style={styles.transferPaymentInfo}>
                                         <div style={styles.transferPaymentBadge}>
-                                            {isLoanPayment ? '🏦 Loan Payment (Transfer)' : '💳 Credit Card Payment (Transfer)'}
+                                            {isLoanPayment ? '🏦 Loan Payment (Transfer)' : isCreditCardTransfer ? '💳 Credit Card Payment (Transfer)' : '🔄 Account Transfer'}
                                         </div>
                                         <div style={styles.transferPaymentMessage}>
                                             {isLoanPayment ? (
                                                 <>This is a payment transfer to <strong>{selectedLoanAccount?.name}</strong>.<br />
                                                     The payment will be split: interest first, then principal.<br />
                                                     A corresponding inflow will appear in your loan account.</>
-                                            ) : (
+                                            ) : isCreditCardTransfer ? (
                                                 <>This is a payment transfer to <strong>{selectedCreditCardCategory?.name}</strong>.<br />
                                                     The category is automatically managed. This will appear as an inflow in your credit card account.</>
+                                            ) : (
+                                                <>This is a transfer to another account. No category is needed.</>
                                             )}
                                         </div>
                                         {isLoanPayment && paymentBreakdown && paymentBreakdown.paymentAmount > 0 && (
@@ -1646,11 +1731,6 @@ const AccountDetailPage = () => {
                                                         ' - First payment of the month (interest applied)' :
                                                         ' - Subsequent payment this month (no additional interest)'}
                                                 </div>
-                                            </div>
-                                        )}
-                                        {isCreditCardTransfer && (
-                                            <div style={styles.transferNote}>
-                                                💡 Tip: This payment will reduce your credit card balance. No budget category is needed since you already categorized the original spending.
                                             </div>
                                         )}
                                     </div>
@@ -1681,7 +1761,7 @@ const AccountDetailPage = () => {
                                         onChange={(e) => {
                                             const newAmount = e.target.value;
                                             setTransactionForm({ ...transactionForm, amount: newAmount });
-                                            if (isLoanPayment && selectedLoanAccount && newAmount && parseFloat(newAmount) > 0) {
+                                            if (transactionForm.isTransfer && isLoanPayment && selectedLoanAccount && newAmount && parseFloat(newAmount) > 0) {
                                                 // Preview breakdown (assumes first payment of month for UI)
                                                 const breakdown = calculateLoanPaymentBreakdown(
                                                     selectedLoanAccount,
@@ -1758,23 +1838,6 @@ const AccountDetailPage = () => {
                                         />
                                         Mark as cleared
                                     </label>
-                                </div>
-                            )}
-
-                            {/* Balance Preview - only for non-transfer transactions */}
-                            {!isFutureDate && transactionForm.amount && parseFloat(transactionForm.amount) > 0 && !isCreditCardTransfer && !isLoanPayment && (
-                                <div style={styles.balancePreview}>
-                                    <div style={styles.balancePreviewLabel}>New Balance after transaction:</div>
-                                    <div style={{
-                                        ...styles.balancePreviewValue,
-                                        color: transactionForm.transactionType === 'outflow' ? '#F87171' : '#4ADE80'
-                                    }}>
-                                        {formatCurrency(account.balance + calculateBalanceChange(
-                                            account.type,
-                                            transactionForm.transactionType,
-                                            parseFloat(transactionForm.amount) || 0
-                                        ))}
-                                    </div>
                                 </div>
                             )}
                         </div>
@@ -1854,7 +1917,7 @@ const AccountDetailPage = () => {
     );
 };
 
-// Keep your existing styles object here - do not replace it
+// Keep your existing styles object - only add missing styles if needed
 
 const styles = {
     container: {
@@ -2568,6 +2631,12 @@ const styles = {
         animation: 'spin 1s linear infinite',
         marginBottom: '1rem'
     },
+    loadingPayees: {
+        padding: '0.75rem',
+        textAlign: 'center',
+        color: '#9CA3AF',
+        fontSize: '0.875rem'
+    },
     errorContainer: {
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #1E3A8A 0%, #1E3A8A 100%)',
@@ -2583,7 +2652,6 @@ const styles = {
         color: '#3B82F6',
         textDecoration: 'none'
     },
-    // Transfer payment specific styles
     transferPaymentInfo: {
         background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
         padding: '1rem',

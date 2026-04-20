@@ -30,6 +30,9 @@ const SummaryView = ({
     amount: '',
     date: new Date().toISOString().split('T')[0],
     payee: '',
+    payeeId: null,
+    isTransfer: false,
+    transferAccountId: null,
     memo: '',
     cleared: true
   });
@@ -37,8 +40,167 @@ const SummaryView = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [transactionError, setTransactionError] = useState('');
 
+  // ===================== PAYEE DROPDOWN STATE =====================
+  const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+  const [loadingPayees, setLoadingPayees] = useState(false);
+
   // Add safety for categories
   const safeCategories = Array.isArray(categories) ? categories : [];
+
+  // Format currency
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(amount || 0);
+  };
+
+  // ===================== PAYEE DROPDOWN FUNCTIONS =====================
+
+  // Fetch payees for dropdown (transfers + regular payees)
+  const fetchPayees = async () => {
+    setLoadingPayees(true);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const userId = userResult.data.id;
+
+        // Get all accounts for transfer payees
+        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+        const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+
+        // Generate transfer payees from all accounts
+        const transferPayees = allAccounts.map(acc => ({
+          id: `transfer_${acc.id}`,
+          name: `Transfer: ${acc.name}`,
+          isTransfer: true,
+          transferAccountId: acc.id,
+          accountType: acc.type
+        }));
+
+        // Get regular payees from payees table
+        let regularPayees = [];
+        try {
+          const payeesResult = await window.electronAPI.getPayees(userId);
+          if (payeesResult?.success) {
+            regularPayees = (payeesResult.data || [])
+              .filter(p => !p.is_transfer_payee)
+              .map(p => ({
+                id: p.id,
+                name: p.name,
+                isTransfer: false,
+                usageCount: p.usage_count
+              }));
+          }
+        } catch (err) {
+          console.log('Payees table not yet set up, using empty list');
+        }
+
+        setPayees({ transferPayees, regularPayees });
+      }
+    } catch (error) {
+      console.error('Error fetching payees:', error);
+    } finally {
+      setLoadingPayees(false);
+    }
+  };
+
+  // Handle payee selection from dropdown
+  const handlePayeeSelect = (payee) => {
+    if (payee.isTransfer) {
+      // Transfer selected - category disabled
+      setTransactionForm(prev => ({
+        ...prev,
+        payee: payee.name,
+        payeeId: payee.id,
+        isTransfer: true,
+        transferAccountId: payee.transferAccountId,
+        categoryId: ''
+      }));
+    } else {
+      // Regular payee selected - category enabled
+      setTransactionForm(prev => ({
+        ...prev,
+        payee: payee.name,
+        payeeId: payee.id,
+        isTransfer: false,
+        transferAccountId: null
+      }));
+    }
+  };
+
+  // Save a new regular payee to the database
+  const savePayee = async (payeeName, userId) => {
+    try {
+      const result = await window.electronAPI.createOrUpdatePayee({
+        name: payeeName,
+        userId: userId,
+        isTransferPayee: false
+      });
+      return result.success ? result.data?.id : null;
+    } catch (error) {
+      console.error('Error saving payee:', error);
+      return null;
+    }
+  };
+
+  // Render payee dropdown with two sections
+  const renderPayeeDropdown = () => {
+    return (
+      <select
+        value={transactionForm.payee}
+        onChange={(e) => {
+          const selectedValue = e.target.value;
+          if (selectedValue === '__manual__') {
+            // Allow manual entry - clear payee and show text input
+            setTransactionForm(prev => ({
+              ...prev,
+              payee: '',
+              payeeId: null,
+              isTransfer: false,
+              transferAccountId: null
+            }));
+            return;
+          }
+          try {
+            const payee = JSON.parse(selectedValue);
+            handlePayeeSelect(payee);
+          } catch (err) {
+            setTransactionForm(prev => ({ ...prev, payee: selectedValue, isTransfer: false }));
+          }
+        }}
+        style={styles.select}
+      >
+        <option value="">-- Select or enter payee --</option>
+
+        {/* Section 1: Payments & Transfers */}
+        {payees.transferPayees.length > 0 && (
+          <optgroup label="📤 PAYMENTS & TRANSFERS">
+            {payees.transferPayees.map(payee => (
+              <option key={payee.id} value={JSON.stringify(payee)}>
+                {payee.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+
+        {/* Section 2: Recent Payees */}
+        {payees.regularPayees.length > 0 && (
+          <optgroup label="📋 RECENT PAYEES">
+            {payees.regularPayees.map(payee => (
+              <option key={payee.id} value={JSON.stringify(payee)}>
+                {payee.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+
+        <option value="__manual__">✏️ Other (type manually)</option>
+      </select>
+    );
+  };
 
   // Load accounts for dropdown - get ALL account types (checking, savings, credit, loan)
   const loadAccounts = async () => {
@@ -47,7 +209,6 @@ const SummaryView = ({
       if (userResult?.success && userResult?.data) {
         const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
         if (accountsResult?.success) {
-          // Show ALL accounts - no filtering by type
           const allAccounts = accountsResult.data || [];
           setAccounts(allAccounts);
           console.log('📋 Loaded all accounts for dropdown:', {
@@ -74,6 +235,13 @@ const SummaryView = ({
     }
   }, [showAddTransactionModal]);
 
+  // Fetch payees when modal opens
+  useEffect(() => {
+    if (showAddTransactionModal) {
+      fetchPayees();
+    }
+  }, [showAddTransactionModal]);
+
   // Listen for global accounts-updated events
   useEffect(() => {
     const handleAccountsUpdated = () => {
@@ -97,185 +265,444 @@ const SummaryView = ({
     return safeCategories.filter(cat => cat && !cat.archived);
   };
 
-  // Handle transaction submission
-// Handle transaction submission with proper account balance updates
-const handleAddTransaction = async () => {
-  setTransactionError('');
+  // Helper function to calculate balance change
+  const calculateBalanceChange = (accountType, transactionType, amount) => {
+    const isCreditOrLoan = accountType === 'credit' || accountType === 'loan';
+    const isExpense = transactionType === 'outflow';
+    const absAmount = Math.abs(amount);
 
-  const amountValue = parseFloat(transactionForm.amount);
-  if (isNaN(amountValue) || amountValue === 0) {
-    setTransactionError('Please enter a valid amount');
-    return;
-  }
+    if (isCreditOrLoan) {
+      if (isExpense) {
+        return -absAmount;
+      } else {
+        return absAmount;
+      }
+    } else {
+      if (isExpense) {
+        return -absAmount;
+      } else {
+        return absAmount;
+      }
+    }
+  };
 
-  if (!transactionForm.payee.trim()) {
-    setTransactionError('Please enter a payee');
-    return;
-  }
+  // Handle transaction submission with proper account balance updates
+  const handleAddTransaction = async () => {
+    setTransactionError('');
 
-  if (!transactionForm.accountId) {
-    setTransactionError('Please select an account');
-    return;
-  }
-
-  if (!transactionForm.categoryId) {
-    setTransactionError('Please select a category');
-    return;
-  }
-
-  setIsSubmitting(true);
-
-  try {
-    const userResult = await window.electronAPI.getCurrentUser();
-    if (!userResult?.success || !userResult?.data) {
-      setTransactionError('Please log in to add transaction');
+    const amountValue = parseFloat(transactionForm.amount);
+    if (isNaN(amountValue) || amountValue === 0) {
+      setTransactionError('Please enter a valid amount');
       return;
     }
 
-    const userId = userResult.data.id;
-    const selectedAccount = accounts.find(a => a.id === transactionForm.accountId);
-    
-    if (!selectedAccount) {
-      setTransactionError('Selected account not found');
+    if (!transactionForm.payee.trim()) {
+      setTransactionError('Please select or enter a payee');
       return;
     }
 
-    const isCreditOrLoan = selectedAccount.type === 'credit' || selectedAccount.type === 'loan';
+    if (!transactionForm.accountId) {
+      setTransactionError('Please select an account');
+      return;
+    }
+
+    if (!transactionForm.isTransfer && !transactionForm.categoryId) {
+      setTransactionError('Please select a category');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        setTransactionError('Please log in to add transaction');
+        return;
+      }
+
+      const userId = userResult.data.id;
+      const selectedAccount = accounts.find(a => a.id === transactionForm.accountId);
+
+      if (!selectedAccount) {
+        setTransactionError('Selected account not found');
+        return;
+      }
+
+      const isCreditOrLoan = selectedAccount.type === 'credit' || selectedAccount.type === 'loan';
+      const isExpense = transactionForm.transactionType === 'outflow';
+
+      let transactionAmount = 0;
+      let balanceChange = 0;
+
+      // Calculate transaction amount and balance change
+      if (isCreditOrLoan) {
+        if (isExpense) {
+          transactionAmount = -Math.abs(amountValue);
+          balanceChange = -Math.abs(amountValue);
+        } else {
+          transactionAmount = Math.abs(amountValue);
+          balanceChange = Math.abs(amountValue);
+        }
+      } else {
+        if (isExpense) {
+          transactionAmount = -Math.abs(amountValue);
+          balanceChange = -Math.abs(amountValue);
+        } else {
+          transactionAmount = Math.abs(amountValue);
+          balanceChange = Math.abs(amountValue);
+        }
+      }
+
+      const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
+        transactionForm.categoryId === 'inflow_ready_to_assign';
+
+      // Save payee to payees table if this is a regular transaction (not a transfer)
+      let finalPayeeId = transactionForm.payeeId;
+      if (!transactionForm.isTransfer && transactionForm.payee && !finalPayeeId) {
+        finalPayeeId = await savePayee(transactionForm.payee, userId);
+      }
+
+      // Step 1: Add the transaction
+      const transactionData = {
+        accountId: transactionForm.accountId,
+        date: transactionForm.date,
+        payee: transactionForm.payee,
+        description: transactionForm.payee,
+        amount: transactionAmount,
+        categoryId: isReadyToAssign ? null : transactionForm.categoryId,
+        memo: transactionForm.memo,
+        cleared: transactionForm.cleared ? 1 : 0,
+        payeeId: finalPayeeId,
+        isTransfer: transactionForm.isTransfer ? 1 : 0,
+        transferAccountId: transactionForm.transferAccountId
+      };
+
+      console.log('📝 Adding transaction:', transactionData);
+      const transactionResult = await window.electronAPI.addTransaction(transactionData);
+
+      if (!transactionResult.success) {
+        console.error('❌ Transaction failed:', transactionResult.error);
+        setTransactionError(transactionResult.error || 'Failed to add transaction');
+        return;
+      }
+
+      console.log('✅ Transaction added successfully:', transactionResult.data);
+
+      // Step 2: Calculate new balance
+      const currentBalance = selectedAccount.balance || 0;
+      const newBalance = currentBalance + balanceChange;
+
+      console.log(`💰 Account balance update:`);
+      console.log(`   Account: ${selectedAccount.name} (${selectedAccount.type})`);
+      console.log(`   Current balance: ${formatCurrency(currentBalance)}`);
+      console.log(`   Change: ${balanceChange > 0 ? '+' : ''}${formatCurrency(balanceChange)}`);
+      console.log(`   New balance: ${formatCurrency(newBalance)}`);
+
+      // Step 3: Update the account balance in the database
+      const updateResult = await window.electronAPI.updateAccount(
+        selectedAccount.id,
+        userId,
+        { balance: newBalance }
+      );
+
+      if (!updateResult.success) {
+        console.error('❌ Account balance update failed:', updateResult.error);
+        setTransactionError('Transaction added but failed to update account balance. Please refresh the page.');
+        return;
+      }
+
+      console.log('✅ Account balance updated successfully:', updateResult.data);
+
+      // Step 4: Verify the update by fetching the account again
+      const verifyResult = await window.electronAPI.getAccountsSummary(userId);
+      if (verifyResult?.success) {
+        const updatedAccount = verifyResult.data.find(a => a.id === selectedAccount.id);
+        if (updatedAccount) {
+          console.log(`✅ Verification - New balance from DB: ${formatCurrency(updatedAccount.balance)}`);
+        }
+      }
+
+      // Step 5: Refresh all UI components
+      await loadAccounts();
+
+      // Force a refresh of the accounts in the parent component
+      window.dispatchEvent(new CustomEvent('accounts-updated', {
+        detail: { accountId: selectedAccount.id, newBalance: newBalance }
+      }));
+      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+
+      // Step 6: Reset form and close modal
+      setTransactionForm({
+        accountId: '',
+        transactionType: 'outflow',
+        categoryId: '',
+        amount: '',
+        date: new Date().toISOString().split('T')[0],
+        payee: '',
+        payeeId: null,
+        isTransfer: false,
+        transferAccountId: null,
+        memo: '',
+        cleared: true
+      });
+
+      setShowAddTransactionModal(false);
+      fetchPayees();
+      alert(`✅ Transaction added successfully!\n\nAccount: ${selectedAccount.name}\nNew balance: ${formatCurrency(newBalance)}`);
+
+    } catch (error) {
+      console.error('❌ Error in transaction flow:', error);
+      setTransactionError('An unexpected error occurred: ' + error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Add regular transaction (for today/past dates)
+  const handleAddRegularTransaction = async (amountValue, userId) => {
+    if (!account) throw new Error('No account loaded');
+
+    const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
     const isExpense = transactionForm.transactionType === 'outflow';
 
     let transactionAmount = 0;
     let balanceChange = 0;
 
-    // Calculate transaction amount and balance change
+    // ==================== HANDLE CREDIT CARD TRANSFER (Using new linked transfer API) ====================
+    if (transactionForm.isTransfer && selectedCreditCardCategory && account.type !== 'credit') {
+      console.log('💳 Processing credit card transfer using linked transfer API');
+
+      // Use the new createLinkedTransfer API
+      const transferResult = await window.electronAPI.createLinkedTransfer({
+        sourceAccountId: account.id,
+        destinationAccountId: transactionForm.transferAccountId,
+        amount: amountValue,
+        date: transactionForm.date,
+        sourcePayeeName: transactionForm.payee,
+        memo: transactionForm.memo || `Payment to ${selectedCreditCardCategory?.name}`,
+        cleared: transactionForm.cleared
+      });
+
+      if (!transferResult.success) {
+        throw new Error(transferResult.error || 'Failed to create credit card transfer');
+      }
+
+      console.log('✅ Credit card transfer created:', transferResult.data);
+
+      // Refresh account data to show updated balance
+      await loadAccountData(account.id);
+
+      // Also refresh the credit card account data (optional - will be refreshed when user navigates)
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+
+      return transferResult.data.sourceNewBalance;
+    }
+
+    // ==================== HANDLE LOAN PAYMENT (YNAB-style with interest calculation) ====================
+    console.log('🔍 Loan payment check:', { isLoanPayment, selectedLoanAccount });
+
+    if (transactionForm.isTransfer && isLoanPayment && selectedLoanAccount) {
+      console.log('🏦 Processing loan payment using existing createLoanPaymentTransaction');
+      const result = await createLoanPaymentTransaction(amountValue, userId);
+      return result.newBalance;
+    }
+
+    // ==================== HANDLE REGULAR TRANSACTION (Non-transfer) ====================
+    // Save payee to payees table if this is a regular transaction
+    let finalPayeeId = transactionForm.payeeId;
+    if (!transactionForm.isTransfer && transactionForm.payee && !finalPayeeId) {
+      try {
+        const payeeResult = await window.electronAPI.createOrUpdatePayee({
+          name: transactionForm.payee,
+          userId: userId,
+          isTransferPayee: false
+        });
+        if (payeeResult?.success && payeeResult?.data?.id) {
+          finalPayeeId = payeeResult.data.id;
+          console.log('💾 Saved new payee:', transactionForm.payee, 'ID:', finalPayeeId);
+        }
+      } catch (payeeError) {
+        console.warn('Failed to save payee, continuing with transaction:', payeeError);
+      }
+    }
+
+    // Calculate transaction amount based on account type
     if (isCreditOrLoan) {
       if (isExpense) {
-        // Spending on credit/loan - INCREASES debt (more negative)
-        transactionAmount = -Math.abs(amountValue);
-        balanceChange = -Math.abs(amountValue);
-        console.log(`💳 Credit/Loan EXPENSE: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by ${balanceChange}`);
+        transactionAmount = -amountValue;
+        balanceChange = -amountValue;
       } else {
-        // Payment on credit/loan - DECREASES debt (less negative)
-        transactionAmount = Math.abs(amountValue);
-        balanceChange = Math.abs(amountValue);
-        console.log(`💳 Credit/Loan PAYMENT: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by +${balanceChange}`);
+        transactionAmount = amountValue;
+        balanceChange = amountValue;
       }
     } else {
       if (isExpense) {
-        // Spending from checking/savings - DECREASES balance
-        transactionAmount = -Math.abs(amountValue);
-        balanceChange = -Math.abs(amountValue);
-        console.log(`💰 Cash EXPENSE: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by ${balanceChange}`);
+        transactionAmount = -amountValue;
+        balanceChange = -amountValue;
       } else {
-        // Income to checking/savings - INCREASES balance
-        transactionAmount = Math.abs(amountValue);
-        balanceChange = Math.abs(amountValue);
-        console.log(`💰 Cash INCOME: Adding ${formatCurrency(transactionAmount)} to transactions, balance will change by +${balanceChange}`);
+        transactionAmount = amountValue;
+        balanceChange = amountValue;
       }
     }
 
     const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
       transactionForm.categoryId === 'inflow_ready_to_assign';
 
-    // Step 1: Add the transaction
     const transactionData = {
-      accountId: transactionForm.accountId,
+      accountId: account.id,
       date: transactionForm.date,
       payee: transactionForm.payee,
       description: transactionForm.payee,
       amount: transactionAmount,
       categoryId: isReadyToAssign ? null : transactionForm.categoryId,
       memo: transactionForm.memo,
-      cleared: transactionForm.cleared ? 1 : 0
+      cleared: transactionForm.cleared ? 1 : 0,
+      frequency: transactionForm.frequency || null,
+      // Add payee tracking
+      payeeId: finalPayeeId,
+      // Add transfer flags (false for regular transaction)
+      isTransfer: 0,
+      transferAccountId: null
     };
 
-    console.log('📝 Adding transaction:', transactionData);
-    const transactionResult = await window.electronAPI.addTransaction(transactionData);
+    console.log('📝 Creating regular transaction:', transactionData);
 
-    if (!transactionResult.success) {
-      console.error('❌ Transaction failed:', transactionResult.error);
-      setTransactionError(transactionResult.error || 'Failed to add transaction');
-      return;
+    const result = await window.electronAPI.addTransaction(transactionData);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to add transaction');
     }
 
-    console.log('✅ Transaction added successfully:', transactionResult.data);
-
-    // Step 2: Calculate new balance
-    const currentBalance = selectedAccount.balance || 0;
+    const currentBalance = account.balance || 0;
     const newBalance = currentBalance + balanceChange;
-    
-    console.log(`💰 Account balance update:`);
-    console.log(`   Account: ${selectedAccount.name} (${selectedAccount.type})`);
-    console.log(`   Current balance: ${formatCurrency(currentBalance)}`);
-    console.log(`   Change: ${balanceChange > 0 ? '+' : ''}${formatCurrency(balanceChange)}`);
-    console.log(`   New balance: ${formatCurrency(newBalance)}`);
+    await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
 
-    // Step 3: Update the account balance in the database
-    const updateResult = await window.electronAPI.updateAccount(
-      selectedAccount.id,
-      userId,
-      { balance: newBalance }
-    );
+    console.log(`✅ Regular transaction added. Balance: ${currentBalance} → ${newBalance}`);
 
-    if (!updateResult.success) {
-      console.error('❌ Account balance update failed:', updateResult.error);
-      setTransactionError('Transaction added but failed to update account balance. Please refresh the page.');
+    return newBalance;
+  };
+
+  const saveEditedTransaction = async (transactionId) => {
+    const amountValue = parseFloat(editFormData.amount);
+
+    if (isNaN(amountValue) || amountValue === 0) {
+      alert('Please enter a valid amount');
       return;
     }
 
-    console.log('✅ Account balance updated successfully:', updateResult.data);
-
-    // Step 4: Verify the update by fetching the account again
-    const verifyResult = await window.electronAPI.getAccountsSummary(userId);
-    if (verifyResult?.success) {
-      const updatedAccount = verifyResult.data.find(a => a.id === selectedAccount.id);
-      if (updatedAccount) {
-        console.log(`✅ Verification - New balance from DB: ${formatCurrency(updatedAccount.balance)}`);
-        if (Math.abs(updatedAccount.balance - newBalance) > 0.01) {
-          console.warn(`⚠️ Balance mismatch! Expected: ${formatCurrency(newBalance)}, Got: ${formatCurrency(updatedAccount.balance)}`);
-        }
-      }
+    if (!editFormData.payee.trim()) {
+      alert('Please enter a payee');
+      return;
     }
-    
-    // Step 5: Refresh all UI components
-    await loadAccounts(); // Refresh accounts in this component
-    
-    // Force a refresh of the accounts in the parent component
-    window.dispatchEvent(new CustomEvent('accounts-updated', { 
-      detail: { accountId: selectedAccount.id, newBalance: newBalance }
-    }));
-    window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-    
-    // Step 6: Reset form and close modal
-    setTransactionForm({
-      accountId: '',
-      transactionType: 'outflow',
-      categoryId: '',
-      amount: '',
-      date: new Date().toISOString().split('T')[0],
-      payee: '',
-      memo: '',
-      cleared: true
-    });
-    
-    setShowAddTransactionModal(false);
-    alert(`✅ Transaction added successfully!\n\nAccount: ${selectedAccount.name}\nNew balance: ${formatCurrency(newBalance)}`);
-    
-  } catch (error) {
-    console.error('❌ Error in transaction flow:', error);
-    setTransactionError('An unexpected error occurred: ' + error.message);
-  } finally {
-    setIsSubmitting(false);
-  }
-};
 
-  // Format currency helper
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(amount);
+    if (!editFormData.categoryId) {
+      alert('Please select a category');
+      return;
+    }
+
+    setIsUpdating(true);
+
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to update transaction');
+        return;
+      }
+
+      const userId = userResult.data.id;
+      const originalTransaction = transactions.find(t => t.id === transactionId);
+
+      if (!originalTransaction) {
+        throw new Error('Transaction not found');
+      }
+
+      // ==================== CHECK IF THIS IS A TRANSFER ====================
+      // If this transaction is part of a linked transfer, use the transfer update API
+      if (originalTransaction.is_transfer === 1) {
+        console.log('🔄 Updating linked transfer transaction');
+
+        // Determine the new amount sign based on the original transaction type
+        // If original amount was negative (outflow), keep negative; if positive (inflow), keep positive
+        const isOriginalOutflow = originalTransaction.amount < 0;
+        let newTransferAmount = amountValue;
+        if (isOriginalOutflow) {
+          newTransferAmount = -Math.abs(amountValue);
+        } else {
+          newTransferAmount = Math.abs(amountValue);
+        }
+
+        // Use the linked transfer update API
+        const updateResult = await window.electronAPI.updateLinkedTransfer(transactionId, {
+          date: editFormData.date,
+          payee: editFormData.payee,
+          amount: newTransferAmount,
+          memo: editFormData.memo
+        });
+
+        if (!updateResult.success) {
+          throw new Error(updateResult.error || 'Failed to update transfer');
+        }
+
+        console.log('✅ Transfer updated successfully:', updateResult.data);
+
+        // Refresh the account data to show updated balances
+        await loadAccountData(account.id);
+
+        cancelEditing();
+
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+
+        alert(`✅ Transfer updated successfully!`);
+        setIsUpdating(false);
+        return;
+      }
+
+      // ==================== REGULAR TRANSACTION UPDATE (Existing Logic) ====================
+      const isExpense = originalTransaction.amount < 0;
+      const newIsExpense = editFormData.categoryId === 'inflow_ready_to_assign' ? false :
+        (editFormData.categoryId && categories.find(c => c.id === editFormData.categoryId)?.type === 'expense');
+
+      let newAmount = amountValue;
+      if (newIsExpense !== undefined) {
+        newAmount = newIsExpense ? -amountValue : amountValue;
+      } else {
+        newAmount = isExpense ? -amountValue : amountValue;
+      }
+
+      const oldAmount = originalTransaction.amount;
+      const amountDifference = newAmount - oldAmount;
+
+      const updateData = {
+        date: editFormData.date,
+        payee: editFormData.payee,
+        amount: newAmount,
+        categoryId: editFormData.categoryId === 'inflow_ready_to_assign' ? null : editFormData.categoryId,
+        memo: editFormData.memo
+      };
+
+      const updateResult = await window.electronAPI.updateTransaction(transactionId, updateData);
+      if (!updateResult.success) {
+        throw new Error(updateResult.error || 'Failed to update transaction');
+      }
+
+      const currentBalance = account.balance || 0;
+      const newBalance = currentBalance + amountDifference;
+      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+
+      await loadAccountData(account.id);
+
+      cancelEditing();
+
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+
+      alert(`✅ Transaction updated successfully!\nNew balance: ${formatCurrency(newBalance)}`);
+    } catch (error) {
+      console.error('Error updating transaction:', error);
+      alert('Error updating transaction: ' + error.message);
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   // Fix calculateRequiredContribution
@@ -409,175 +836,6 @@ const handleAddTransaction = async () => {
       return;
     }
 
-
-    // src/views/SummaryView.jsx (only showing the changed parts - replace your existing handleAddTransaction and add the helper function)
-
-    // Add this helper function to calculate balance change
-    const calculateBalanceChange = (accountType, transactionType, amount) => {
-      const isCreditOrLoan = accountType === 'credit' || accountType === 'loan';
-      const isExpense = transactionType === 'outflow';
-      const absAmount = Math.abs(amount);
-
-      if (isCreditOrLoan) {
-        // Credit/Loan accounts
-        if (isExpense) {
-          return -absAmount; // Spending increases debt (more negative)
-        } else {
-          return absAmount; // Payment decreases debt (less negative)
-        }
-      } else {
-        // Checking/Savings accounts
-        if (isExpense) {
-          return -absAmount; // Spending decreases balance
-        } else {
-          return absAmount; // Income increases balance
-        }
-      }
-    };
-
-    // Replace your existing handleAddTransaction with this one
-    const handleAddTransaction = async () => {
-      setTransactionError('');
-
-      const amountValue = parseFloat(transactionForm.amount);
-      if (isNaN(amountValue) || amountValue === 0) {
-        setTransactionError('Please enter a valid amount');
-        return;
-      }
-
-      if (!transactionForm.payee.trim()) {
-        setTransactionError('Please enter a payee');
-        return;
-      }
-
-      if (!transactionForm.accountId) {
-        setTransactionError('Please select an account');
-        return;
-      }
-
-      if (!transactionForm.categoryId) {
-        setTransactionError('Please select a category');
-        return;
-      }
-
-      setIsSubmitting(true);
-
-      try {
-        const userResult = await window.electronAPI.getCurrentUser();
-        if (!userResult?.success || !userResult?.data) {
-          setTransactionError('Please log in to add transaction');
-          return;
-        }
-
-        const selectedAccount = accounts.find(a => a.id === transactionForm.accountId);
-        if (!selectedAccount) {
-          setTransactionError('Selected account not found');
-          return;
-        }
-
-        // Calculate the transaction amount (for the transactions table)
-        const isCreditOrLoan = selectedAccount.type === 'credit' || selectedAccount.type === 'loan';
-        const isExpense = transactionForm.transactionType === 'outflow';
-
-        let transactionAmount = 0;
-        if (isCreditOrLoan) {
-          if (isExpense) {
-            transactionAmount = -Math.abs(amountValue);
-          } else {
-            transactionAmount = Math.abs(amountValue);
-          }
-        } else {
-          if (isExpense) {
-            transactionAmount = -Math.abs(amountValue);
-          } else {
-            transactionAmount = Math.abs(amountValue);
-          }
-        }
-
-        const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
-          transactionForm.categoryId === 'inflow_ready_to_assign';
-
-        // Step 1: Add the transaction
-        const transactionData = {
-          accountId: transactionForm.accountId,
-          date: transactionForm.date,
-          payee: transactionForm.payee,
-          description: transactionForm.payee,
-          amount: transactionAmount,
-          categoryId: isReadyToAssign ? null : transactionForm.categoryId,
-          memo: transactionForm.memo,
-          cleared: transactionForm.cleared ? 1 : 0
-        };
-
-        console.log('📝 Adding transaction:', transactionData);
-        const transactionResult = await window.electronAPI.addTransaction(transactionData);
-
-        if (!transactionResult.success) {
-          setTransactionError(transactionResult.error || 'Failed to add transaction');
-          return;
-        }
-
-        // Step 2: Calculate and update account balance
-        const balanceChange = calculateBalanceChange(
-          selectedAccount.type,
-          transactionForm.transactionType,
-          amountValue
-        );
-
-        const currentBalance = selectedAccount.balance || 0;
-        const newBalance = currentBalance + balanceChange;
-
-        console.log(`💰 Updating account "${selectedAccount.name}" balance:`, {
-          current: formatCurrency(currentBalance),
-          change: balanceChange,
-          new: formatCurrency(newBalance),
-          transactionType: transactionForm.transactionType,
-          accountType: selectedAccount.type
-        });
-
-        const updateResult = await window.electronAPI.updateAccount(
-          selectedAccount.id,
-          userResult.data.id,
-          { balance: newBalance }
-        );
-
-        if (!updateResult.success) {
-          console.error('Failed to update account balance:', updateResult.error);
-          setTransactionError('Transaction added but failed to update account balance. Please refresh the page.');
-          return;
-        }
-
-        console.log('✅ Transaction and account balance updated successfully');
-
-        // Step 3: Refresh all UI components
-        await loadAccounts(); // Refresh accounts in this component
-
-        // Dispatch events to refresh other parts of the app
-        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-
-        // Step 4: Reset form and close modal
-        setTransactionForm({
-          accountId: '',
-          transactionType: 'outflow',
-          categoryId: '',
-          amount: '',
-          date: new Date().toISOString().split('T')[0],
-          payee: '',
-          memo: '',
-          cleared: true
-        });
-
-        setShowAddTransactionModal(false);
-        alert('✅ Transaction added and account balance updated successfully');
-
-      } catch (error) {
-        console.error('Error adding transaction:', error);
-        setTransactionError('An unexpected error occurred: ' + error.message);
-      } finally {
-        setIsSubmitting(false);
-      }
-    };
     const scoredCategories = categoriesToFund.map(cat => ({
       ...cat,
       score: calculatePriorityScore(cat),
@@ -880,6 +1138,65 @@ const handleAddTransaction = async () => {
     const strategy = strategies.find(s => s.id === strategyId);
     if (strategy && strategy.action) {
       strategy.action();
+    }
+  };
+
+  const confirmDelete = async () => {
+    setIsDeleting(true);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to delete transactions');
+        return;
+      }
+
+      const userId = userResult.data.id;
+      const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
+
+      let totalBalanceChange = 0;
+
+      // First pass: calculate total balance change
+      for (const transaction of selectedTransactionsList) {
+        totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
+      }
+
+      // Second pass: delete transactions
+      for (const transaction of selectedTransactionsList) {
+        let deleteResult;
+
+        // Check if this is a transfer transaction
+        if (transaction.is_transfer === 1) {
+          // Use linked delete API for transfers (deletes both sides)
+          console.log('🔄 Deleting linked transfer:', transaction.id);
+          deleteResult = await window.electronAPI.deleteLinkedTransfer(transaction.id);
+        } else {
+          // Regular delete for normal transactions
+          deleteResult = await window.electronAPI.deleteTransaction(transaction.id);
+        }
+
+        if (!deleteResult.success) {
+          throw new Error(`Failed to delete transaction ${transaction.id}: ${deleteResult.error}`);
+        }
+      }
+
+      const currentBalance = account.balance || 0;
+      const newBalance = currentBalance + totalBalanceChange;
+      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+
+      await loadAccountData(account.id);
+
+      setSelectedTransactions(new Set());
+      setShowDeleteModal(false);
+
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+
+      alert(`✅ Successfully deleted ${selectedTransactionsList.length} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
+    } catch (error) {
+      console.error('Error deleting transactions:', error);
+      alert('Error deleting transactions: ' + error.message);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -1230,38 +1547,84 @@ const handleAddTransaction = async () => {
             </div>
 
             <div style={styles.modalBody}>
+              {/* Payee Dropdown with Transfer Options */}
               <div style={styles.formGroup}>
-                <label style={styles.label}>Account *</label>
-                <select
-                  value={transactionForm.accountId}
-                  onChange={(e) => setTransactionForm({ ...transactionForm, accountId: e.target.value })}
-                  style={styles.select}
-                >
-                  <option value="">Select an account</option>
-                  {accounts.map(account => {
-                    const balance = account.balance || 0;
-                    const absBalance = formatCurrency(Math.abs(balance));
-                    const balanceDisplay = (account.type === 'credit' || account.type === 'loan')
-                      ? `(${absBalance})`
-                      : absBalance;
+                <label style={styles.label}>Payee *</label>
+                {loadingPayees ? (
+                  <div style={styles.loadingPayees}>Loading payees...</div>
+                ) : (
+                  <select
+                    value={transactionForm.payee}
+                    onChange={(e) => {
+                      const selectedValue = e.target.value;
+                      if (selectedValue === '__manual__') {
+                        // Allow manual entry - clear payee and show text input
+                        setTransactionForm(prev => ({
+                          ...prev,
+                          payee: '',
+                          payeeId: null,
+                          isTransfer: false,
+                          transferAccountId: null
+                        }));
+                        return;
+                      }
+                      try {
+                        const payee = JSON.parse(selectedValue);
+                        handlePayeeSelect(payee);
+                      } catch (err) {
+                        setTransactionForm(prev => ({ ...prev, payee: selectedValue, isTransfer: false }));
+                      }
+                    }}
+                    style={styles.select}
+                  >
+                    <option value="">-- Select or enter payee --</option>
 
-                    let typeLabel = account.type;
-                    if (account.type === 'credit') typeLabel = '💳 Credit Card';
-                    else if (account.type === 'loan') typeLabel = '🏦 Loan';
-                    else if (account.type === 'savings') typeLabel = '💰 Savings';
-                    else if (account.type === 'checking') typeLabel = '💵 Checking';
+                    {/* Section 1: Payments & Transfers */}
+                    {payees.transferPayees.length > 0 && (
+                      <optgroup label="📤 PAYMENTS & TRANSFERS">
+                        {payees.transferPayees.map(payee => (
+                          <option key={payee.id} value={JSON.stringify(payee)}>
+                            {payee.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
 
-                    return (
-                      <option key={account.id} value={account.id}>
-                        {account.name} ({typeLabel}) - Balance: {balanceDisplay}
-                      </option>
-                    );
-                  })}
-                </select>
-                {accounts.length === 0 && (
-                  <small style={styles.hint}>No accounts found. Please create an account first.</small>
+                    {/* Section 2: Recent Payees */}
+                    {payees.regularPayees.length > 0 && (
+                      <optgroup label="📋 RECENT PAYEES">
+                        {payees.regularPayees.map(payee => (
+                          <option key={payee.id} value={JSON.stringify(payee)}>
+                            {payee.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+
+                    <option value="__manual__">✏️ Other (type manually)</option>
+                  </select>
+                )}
+                {transactionForm.isTransfer && (
+                  <div style={styles.payeeHint}>
+                    💡 Transfer selected. Category will be auto-managed.
+                  </div>
                 )}
               </div>
+
+              {/* Manual Payee Input (shown when "Other" is selected or payee needs manual entry) */}
+              {(transactionForm.payee === '' || (transactionForm.payee && !payees.transferPayees.some(p => p.name === transactionForm.payee) &&
+                !payees.regularPayees.some(p => p.name === transactionForm.payee))) && (
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>Enter Payee Name</label>
+                    <input
+                      type="text"
+                      value={transactionForm.payee}
+                      onChange={(e) => setTransactionForm(prev => ({ ...prev, payee: e.target.value, isTransfer: false }))}
+                      style={styles.input}
+                      placeholder="Enter payee name (e.g., Starbucks, Rent, Amazon)"
+                    />
+                  </div>
+                )}
 
               <div style={styles.formGroup}>
                 <label style={styles.label}>Transaction Type *</label>
@@ -1275,26 +1638,68 @@ const handleAddTransaction = async () => {
                     });
                   }}
                   style={styles.select}
+                  disabled={transactionForm.isTransfer}
                 >
                   <option value="outflow">Outflow (Expense)</option>
                   <option value="inflow">Inflow (Income)</option>
                 </select>
               </div>
 
+              {/* Payee Dropdown with Transfer Options */}
               <div style={styles.formGroup}>
-                <label style={styles.label}>Category *</label>
-                <select
-                  value={transactionForm.categoryId}
-                  onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
-                  style={styles.select}
-                >
-                  <option value="">Select a category</option>
-                  {getFilteredCategories().map(category => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
+                <label style={styles.label}>Payee *</label>
+                {loadingPayees ? (
+                  <div style={styles.loadingPayees}>Loading payees...</div>
+                ) : (
+                  renderPayeeDropdown()
+                )}
+                {transactionForm.isTransfer && (
+                  <div style={styles.payeeHint}>
+                    💡 Transfer selected. Category will be auto-managed.
+                  </div>
+                )}
+              </div>
+
+              {/* Manual Payee Input (shown when "Other" is selected) */}
+              {transactionForm.payee && !payees.transferPayees.some(p => p.name === transactionForm.payee) &&
+                !payees.regularPayees.some(p => p.name === transactionForm.payee) && (
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>Enter Payee Name</label>
+                    <input
+                      type="text"
+                      value={transactionForm.payee}
+                      onChange={(e) => setTransactionForm(prev => ({ ...prev, payee: e.target.value, isTransfer: false }))}
+                      style={styles.input}
+                      placeholder="Enter payee name"
+                    />
+                  </div>
+                )}
+
+              <div style={styles.formGroup}>
+                <label style={{ ...styles.label, ...(transactionForm.isTransfer ? styles.disabledLabel : {}) }}>
+                  Category {transactionForm.isTransfer && <span style={styles.autoManagedBadge}>(Auto-managed for transfer)</span>}
+                </label>
+                {transactionForm.isTransfer ? (
+                  <div style={styles.transferPaymentInfo}>
+                    <div style={styles.transferPaymentBadge}>🔄 Account Transfer</div>
+                    <div style={styles.transferPaymentMessage}>
+                      This is a transfer to another account. No category is needed.
+                    </div>
+                  </div>
+                ) : (
+                  <select
+                    value={transactionForm.categoryId}
+                    onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
+                    style={styles.select}
+                  >
+                    <option value="">Select a category</option>
+                    {getFilteredCategories().map(category => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div style={styles.formGroup}>
@@ -1320,17 +1725,6 @@ const handleAddTransaction = async () => {
                   value={transactionForm.date}
                   onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })}
                   style={styles.input}
-                />
-              </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Payee *</label>
-                <input
-                  type="text"
-                  value={transactionForm.payee}
-                  onChange={(e) => setTransactionForm({ ...transactionForm, payee: e.target.value })}
-                  style={styles.input}
-                  placeholder="e.g., Starbucks, Rent, Paycheck"
                 />
               </div>
 
@@ -1526,6 +1920,8 @@ const styles = {
   modalFooter: { display: 'flex', gap: '1rem', padding: '1.5rem', borderTop: '1px solid #374151' },
   formGroup: { marginBottom: '1rem' },
   label: { display: 'block', marginBottom: '0.5rem', color: '#9CA3AF', fontSize: '0.875rem', fontWeight: '500' },
+  disabledLabel: { opacity: 0.6 },
+  autoManagedBadge: { fontSize: '0.7rem', color: '#F59E0B', marginLeft: '0.5rem' },
   input: {
     width: '100%',
     padding: '0.75rem',
@@ -1546,6 +1942,7 @@ const styles = {
     cursor: 'pointer'
   },
   hint: { display: 'block', marginTop: '0.5rem', color: '#F87171', fontSize: '0.75rem' },
+  payeeHint: { marginTop: '0.25rem', fontSize: '0.65rem', color: '#6B7280' },
   inputWrapper: { position: 'relative' },
   currencySymbol: {
     position: 'absolute',
@@ -1598,7 +1995,32 @@ const styles = {
     fontSize: '0.875rem',
     fontWeight: '600',
     cursor: 'pointer'
-  }
+  },
+  transferPaymentInfo: {
+    background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
+    padding: '1rem',
+    borderRadius: '0.75rem',
+    border: '1px solid #F59E0B',
+  },
+  transferPaymentBadge: {
+    fontSize: '0.7rem',
+    color: '#F59E0B',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    marginBottom: '0.5rem',
+    fontWeight: 'bold',
+  },
+  transferPaymentMessage: {
+    fontSize: '0.875rem',
+    color: '#9CA3AF',
+    marginBottom: '0.75rem',
+  },
+  loadingPayees: {
+    padding: '0.75rem',
+    textAlign: 'center',
+    color: '#9CA3AF',
+    fontSize: '0.875rem',
+  },
 };
 
 // Add keyframe animation

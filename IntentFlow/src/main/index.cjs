@@ -1118,87 +1118,87 @@ function setupIpcHandlers() {
         }
     });
     // Get scheduled transactions for an account
-ipcMain.handle('scheduled-transactions:get', async (event, accountId) => {
-  try {
-    const db = await getDatabase(); // Your database connection function
-    const transactions = await db.all(
-      `SELECT * FROM scheduled_transactions 
+    ipcMain.handle('scheduled-transactions:get', async (event, accountId) => {
+        try {
+            const db = await getDatabase(); // Your database connection function
+            const transactions = await db.all(
+                `SELECT * FROM scheduled_transactions 
        WHERE account_id = ? AND status = 'pending'
        ORDER BY date ASC`,
-      [accountId]
-    );
-    return { success: true, data: transactions };
-  } catch (error) {
-    console.error('Error getting scheduled transactions:', error);
-    return { success: false, error: error.message };
-  }
-});
+                [accountId]
+            );
+            return { success: true, data: transactions };
+        } catch (error) {
+            console.error('Error getting scheduled transactions:', error);
+            return { success: false, error: error.message };
+        }
+    });
 
-// Add a scheduled transaction
-ipcMain.handle('scheduled-transactions:add', async (event, data) => {
-  try {
-    const db = await getDatabase();
-    const id = require('uuid').v4();
-    
-    await db.run(
-      `INSERT INTO scheduled_transactions (
+    // Add a scheduled transaction
+    ipcMain.handle('scheduled-transactions:add', async (event, data) => {
+        try {
+            const db = await getDatabase();
+            const id = require('uuid').v4();
+
+            await db.run(
+                `INSERT INTO scheduled_transactions (
         id, account_id, date, payee, amount, 
         transaction_type, category_id, memo, user_id, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id, data.accountId, data.date, data.payee, data.amount,
-        data.transactionType, data.categoryId, data.memo, data.userId, 'pending'
-      ]
-    );
-    
-    return { success: true, data: { id } };
-  } catch (error) {
-    console.error('Error adding scheduled transaction:', error);
-    return { success: false, error: error.message };
-  }
-});
-// In your main process where you set up IPC handlers for accounts
-ipcMain.handle('accounts:scheduled:get', async (event, accountId) => {
-  const user = await getUserFromSession(event);
-  if (!user) return { success: false, error: 'Not authenticated' };
-  
-  const accountService = new AccountService(() => getDatabase());
-  const transactions = await accountService.getScheduledTransactions(accountId, user.id);
-  return { success: true, data: transactions };
-});
+                [
+                    id, data.accountId, data.date, data.payee, data.amount,
+                    data.transactionType, data.categoryId, data.memo, data.userId, 'pending'
+                ]
+            );
 
-ipcMain.handle('accounts:scheduled:add', async (event, data) => {
-  const user = await getUserFromSession(event);
-  if (!user) return { success: false, error: 'Not authenticated' };
-  
-  const accountService = new AccountService(() => getDatabase());
-  const result = await accountService.addScheduledTransaction({
-    ...data,
-    userId: user.id
-  });
-  return { success: true, data: result };
-});
+            return { success: true, data: { id } };
+        } catch (error) {
+            console.error('Error adding scheduled transaction:', error);
+            return { success: false, error: error.message };
+        }
+    });
+    // In your main process where you set up IPC handlers for accounts
+    ipcMain.handle('accounts:scheduled:get', async (event, accountId) => {
+        const user = await getUserFromSession(event);
+        if (!user) return { success: false, error: 'Not authenticated' };
 
-ipcMain.handle('accounts:scheduled:delete', async (event, id) => {
-  const user = await getUserFromSession(event);
-  if (!user) return { success: false, error: 'Not authenticated' };
-  
-  const accountService = new AccountService(() => getDatabase());
-  await accountService.deleteScheduledTransaction(id, user.id);
-  return { success: true };
-});
+        const accountService = new AccountService(() => getDatabase());
+        const transactions = await accountService.getScheduledTransactions(accountId, user.id);
+        return { success: true, data: transactions };
+    });
 
-// Delete a scheduled transaction
-ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
-  try {
-    const db = await getDatabase();
-    await db.run(`DELETE FROM scheduled_transactions WHERE id = ?`, [id]);
-    return { success: true };
-  } catch (error) {
-    console.error('Error deleting scheduled transaction:', error);
-    return { success: false, error: error.message };
-  }
-});
+    ipcMain.handle('accounts:scheduled:add', async (event, data) => {
+        const user = await getUserFromSession(event);
+        if (!user) return { success: false, error: 'Not authenticated' };
+
+        const accountService = new AccountService(() => getDatabase());
+        const result = await accountService.addScheduledTransaction({
+            ...data,
+            userId: user.id
+        });
+        return { success: true, data: result };
+    });
+
+    ipcMain.handle('accounts:scheduled:delete', async (event, id) => {
+        const user = await getUserFromSession(event);
+        if (!user) return { success: false, error: 'Not authenticated' };
+
+        const accountService = new AccountService(() => getDatabase());
+        await accountService.deleteScheduledTransaction(id, user.id);
+        return { success: true };
+    });
+
+    // Delete a scheduled transaction
+    ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
+        try {
+            const db = await getDatabase();
+            await db.run(`DELETE FROM scheduled_transactions WHERE id = ?`, [id]);
+            return { success: true };
+        } catch (error) {
+            console.error('Error deleting scheduled transaction:', error);
+            return { success: false, error: error.message };
+        }
+    });
 
     ipcMain.handle('debug:get-database-info', async () => {
         const dbPath = getConfiguredDatabasePath();
@@ -1287,6 +1287,127 @@ ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
     ipcMain.handle('get-current-user', () => {
         const user = userService.getCurrentUser();
         return { success: true, data: user };
+    });
+
+    // Add at the top of the file with other requires
+    const payeeService = requireModule('../services/payeeService.cjs');
+
+    // Then in setupIpcHandlers() function, add these handlers:
+
+    // ==================== PAYEE SERVICE IPC HANDLERS ====================
+
+    // Get regular payees for a user
+    ipcMain.handle('get-payees', async (event, userId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            const effectiveUserId = userId || currentUser?.id;
+            if (!effectiveUserId) {
+                return { success: false, error: 'No user ID provided', data: [] };
+            }
+            const regularPayees = await payeeService.getRegularPayees(effectiveUserId);
+            return { success: true, data: regularPayees };
+        } catch (error) {
+            console.error('Error in get-payees:', error);
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    // Create or update a payee
+    ipcMain.handle('create-or-update-payee', async (event, { name, userId, isTransferPayee }) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            const effectiveUserId = userId || currentUser?.id;
+            if (!effectiveUserId) {
+                return { success: false, error: 'No user ID provided' };
+            }
+            const payeeId = await payeeService.createOrUpdatePayee(name, effectiveUserId);
+            return { success: true, data: { id: payeeId } };
+        } catch (error) {
+            console.error('Error in create-or-update-payee:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Get payees for transaction form (includes transfer payees)
+    ipcMain.handle('get-payees-for-form', async (event, { userId, currentAccountId }) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            const effectiveUserId = userId || currentUser?.id;
+            if (!effectiveUserId) {
+                return { success: false, error: 'No user ID provided', data: { transferPayees: [], regularPayees: [] } };
+            }
+            const result = await payeeService.getPayeesForForm(effectiveUserId, currentAccountId);
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('Error in get-payees-for-form:', error);
+            return { success: false, error: error.message, data: { transferPayees: [], regularPayees: [] } };
+        }
+    });
+
+    // Create a linked transfer transaction (two-sided)
+    ipcMain.handle('create-linked-transfer', async (event, transferData) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) {
+                return { success: false, error: 'No user logged in' };
+            }
+
+            const result = await payeeService.createLinkedTransfer({
+                ...transferData,
+                userId: currentUser.id
+            });
+
+            if (updateService) {
+                updateService.publish('transaction:added', result.data);
+            }
+
+            return result;
+        } catch (error) {
+            console.error('Error in create-linked-transfer:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Update a linked transfer transaction
+    ipcMain.handle('update-linked-transfer', async (event, transactionId, updates) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) {
+                return { success: false, error: 'No user logged in' };
+            }
+
+            const result = await payeeService.updateLinkedTransfer(transactionId, currentUser.id, updates);
+
+            if (updateService) {
+                updateService.publish('transaction:updated', result.data);
+            }
+
+            return result;
+        } catch (error) {
+            console.error('Error in update-linked-transfer:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Delete a linked transfer transaction (both sides)
+    ipcMain.handle('delete-linked-transfer', async (event, transactionId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) {
+                return { success: false, error: 'No user logged in' };
+            }
+
+            const result = await payeeService.deleteLinkedTransfer(transactionId, currentUser.id);
+
+            if (updateService) {
+                updateService.publish('transaction:deleted', { id: transactionId });
+            }
+
+            return result;
+        } catch (error) {
+            console.error('Error in delete-linked-transfer:', error);
+            return { success: false, error: error.message };
+        }
     });
 
     ipcMain.handle('list-users', async () => {
@@ -1907,29 +2028,88 @@ ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
+
             const amount = parseFloat(transaction.amount);
             if (isNaN(amount)) return { success: false, error: 'Invalid amount' };
-            const transactionData = { accountId: transaction.accountId, userId: currentUser.id, date: transaction.date || new Date().toISOString().split('T')[0], description: transaction.description || transaction.payee || 'Transaction', amount, categoryId: transaction.categoryId || null, payee: transaction.payee || null, memo: transaction.memo || null, isCleared: transaction.cleared ? 1 : 0 };
+
+            // Check if this is a transfer
+            if (transaction.isTransfer === 1 && transaction.transferAccountId) {
+                // This is a transfer - create linked transactions
+                const transferResult = await payeeService.createLinkedTransfer({
+                    sourceAccountId: transaction.accountId,
+                    destinationAccountId: transaction.transferAccountId,
+                    amount: Math.abs(amount),
+                    date: transaction.date || new Date().toISOString().split('T')[0],
+                    sourcePayeeName: transaction.payee || `Transfer`,
+                    memo: transaction.memo || null,
+                    cleared: transaction.cleared === 1 || transaction.cleared === true,
+                    userId: currentUser.id
+                });
+
+                return transferResult;
+            }
+
+            // Regular transaction (non-transfer)
+            const transactionData = {
+                accountId: transaction.accountId,
+                userId: currentUser.id,
+                date: transaction.date || new Date().toISOString().split('T')[0],
+                description: transaction.description || transaction.payee || 'Transaction',
+                amount,
+                categoryId: transaction.categoryId || null,
+                payee: transaction.payee || null,
+                memo: transaction.memo || null,
+                isCleared: transaction.cleared ? 1 : 0
+            };
+
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.createTransaction(transactionData);
+
+            // Save payee to payees table if it's a regular transaction and payee exists
+            if (transaction.payee && !transaction.isTransfer) {
+                try {
+                    await payeeService.createOrUpdatePayee(transaction.payee, currentUser.id);
+                } catch (payeeError) {
+                    console.warn('Failed to save payee:', payeeError);
+                }
+            }
+
             if (updateService) updateService.publish('transaction:added', result);
             return { success: true, data: result };
         } catch (error) {
+            console.error('Error in addTransaction:', error);
             return { success: false, error: error.message };
         }
-    });
+    })
 
     ipcMain.handle('updateTransaction', async (event, id, updates) => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
+
+            // Check if this is a transfer transaction
+            const database = await getDatabase();
+            const transaction = await database.get(
+                'SELECT is_transfer FROM transactions WHERE id = ? AND user_id = ?',
+                [id, currentUser.id]
+            );
+
+            if (transaction && transaction.is_transfer === 1) {
+                // This is a transfer - use the linked update handler
+                const result = await payeeService.updateLinkedTransfer(id, currentUser.id, updates);
+                return result;
+            }
+
+            // Regular transaction update
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.updateTransaction(id, currentUser.id, updates);
+
             if (updateService) updateService.publish('transaction:updated', result);
             return { success: true, data: result };
         } catch (error) {
+            console.error('Error in updateTransaction:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1938,12 +2118,29 @@ ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
+
+            // Check if this is a transfer transaction
+            const database = await getDatabase();
+            const transaction = await database.get(
+                'SELECT is_transfer FROM transactions WHERE id = ? AND user_id = ?',
+                [id, currentUser.id]
+            );
+
+            if (transaction && transaction.is_transfer === 1) {
+                // This is a transfer - use the linked delete handler
+                const result = await payeeService.deleteLinkedTransfer(id, currentUser.id);
+                return result;
+            }
+
+            // Regular transaction delete
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.deleteTransaction(id, currentUser.id);
+
             if (updateService) updateService.publish('transaction:deleted', { id });
             return { success: true, data: result };
         } catch (error) {
+            console.error('Error in deleteTransaction:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1989,8 +2186,8 @@ ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
         return { success: true, data: { message: 'Debug handler - no actual account created', receivedData: accountData } };
     });
     ipcMain.handle('open-external', async (event, url) => {
-  await shell.openExternal(url);
-});
+        await shell.openExternal(url);
+    });
 
     // ==================== CATEGORY HANDLERS ====================
     ipcMain.handle('createCategory', async (event, categoryData) => {

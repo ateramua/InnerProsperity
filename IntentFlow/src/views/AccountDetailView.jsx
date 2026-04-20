@@ -20,13 +20,17 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showScheduledSection, setShowScheduledSection] = useState(true);
-  
+
+  // ===================== PAYEE DROPDOWN STATE =====================
+  const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+  const [loadingPayees, setLoadingPayees] = useState(false);
+
   // ===================== LOAN/CREDIT CARD PAYMENT STATE =====================
   const [isLoanPayment, setIsLoanPayment] = useState(false);
   const [selectedLoanAccount, setSelectedLoanAccount] = useState(null);
   const [loanAccounts, setLoanAccounts] = useState([]);
   const [paymentBreakdown, setPaymentBreakdown] = useState(null);
-  
+
   // Edit transaction states
   const [editingTransactionId, setEditingTransactionId] = useState(null);
   const [editFormData, setEditFormData] = useState({
@@ -37,12 +41,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     memo: ''
   });
   const [isUpdating, setIsUpdating] = useState(false);
-  
+
   // Delete transaction states
   const [selectedTransactions, setSelectedTransactions] = useState(new Set());
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  
+
   // Helper function to get today's date in local timezone without timezone offset
   const getTodayLocalDate = () => {
     const today = new Date();
@@ -51,14 +55,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     const day = String(today.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
-  
+
   // Helper function to format date for display without timezone conversion
   const formatDisplayDate = (dateString) => {
     if (!dateString) return '';
     const [year, month, day] = dateString.split('-');
     return new Date(year, month - 1, day).toLocaleDateString();
   };
-  
+
   // Helper function to format date for input (YYYY-MM-DD)
   const formatDateForInput = (dateString) => {
     if (!dateString) return getTodayLocalDate();
@@ -69,17 +73,20 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
-  
+
   // Helper function to check if a date is in the future (local timezone)
   const isFutureLocalDate = (dateString) => {
     const today = getTodayLocalDate();
     return dateString > today;
   };
-  
+
   // Transaction form with Transaction Type and Frequency
   const [newTransaction, setNewTransaction] = useState({
     date: getTodayLocalDate(),
     payee: '',
+    payeeId: null,
+    isTransfer: false,
+    transferAccountId: null,
     amount: '',
     transactionType: 'outflow',
     categoryId: '',
@@ -122,27 +129,196 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     return categories.filter(cat => cat && !cat.archived);
   };
 
+  // ===================== PAYEE DROPDOWN FUNCTIONS =====================
+
+  // Fetch payees for dropdown (transfers + regular payees)
+  const fetchPayees = async () => {
+    setLoadingPayees(true);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (userResult?.success && userResult?.data) {
+        const userId = userResult.data.id;
+
+        // Get all accounts for transfer payees
+        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+        const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+
+        // Filter out current account for transfers
+        const transferPayees = allAccounts
+          .filter(acc => acc.id !== account?.id)
+          .map(acc => ({
+            id: `transfer_${acc.id}`,
+            name: `Transfer: ${acc.name}`,
+            isTransfer: true,
+            transferAccountId: acc.id,
+            accountType: acc.type
+          }));
+
+        // Get regular payees from payees table
+        let regularPayees = [];
+        try {
+          const payeesResult = await window.electronAPI.getPayees(userId);
+          if (payeesResult?.success) {
+            regularPayees = (payeesResult.data || [])
+              .filter(p => !p.is_transfer_payee)
+              .map(p => ({
+                id: p.id,
+                name: p.name,
+                isTransfer: false,
+                usageCount: p.usage_count
+              }));
+          }
+        } catch (err) {
+          console.log('Payees table not yet set up, using empty list');
+        }
+
+        setPayees({ transferPayees, regularPayees });
+      }
+    } catch (error) {
+      console.error('Error fetching payees:', error);
+    } finally {
+      setLoadingPayees(false);
+    }
+  };
+
+  // Handle payee selection from dropdown
+  const handlePayeeSelect = (payee) => {
+    if (payee.isTransfer) {
+      // Transfer selected - category disabled
+      setNewTransaction(prev => ({
+        ...prev,
+        payee: payee.name,
+        payeeId: payee.id,
+        isTransfer: true,
+        transferAccountId: payee.transferAccountId,
+        categoryId: ''
+      }));
+
+      // Check if this is a loan payment transfer
+      const matchedLoan = loanAccounts.find(l => l.id === payee.transferAccountId);
+      if (matchedLoan && payee.accountType === 'loan') {
+        setIsLoanPayment(true);
+        setSelectedLoanAccount(matchedLoan);
+        if (newTransaction.amount && parseFloat(newTransaction.amount) > 0) {
+          const breakdown = calculatePaymentBreakdown(matchedLoan, parseFloat(newTransaction.amount), true);
+          setPaymentBreakdown(breakdown);
+        }
+      } else {
+        setIsLoanPayment(false);
+        setSelectedLoanAccount(null);
+        setPaymentBreakdown(null);
+      }
+    } else {
+      // Regular payee selected - category enabled
+      setNewTransaction(prev => ({
+        ...prev,
+        payee: payee.name,
+        payeeId: payee.id,
+        isTransfer: false,
+        transferAccountId: null
+      }));
+      setIsLoanPayment(false);
+      setSelectedLoanAccount(null);
+      setPaymentBreakdown(null);
+    }
+  };
+
+  // Save a new regular payee to the database
+  const savePayee = async (payeeName, userId) => {
+    try {
+      const result = await window.electronAPI.createOrUpdatePayee({
+        name: payeeName,
+        userId: userId,
+        isTransferPayee: false
+      });
+      return result.success ? result.data?.id : null;
+    } catch (error) {
+      console.error('Error saving payee:', error);
+      return null;
+    }
+  };
+
+  // Render payee dropdown with two sections - FIXED for manual entry
+  const renderPayeeDropdown = () => {
+    return (
+      <select
+        value={newTransaction.payee}
+        onChange={(e) => {
+          const selectedValue = e.target.value;
+          if (selectedValue === '__manual__') {
+            // Allow manual entry - clear payee and show text input
+            setNewTransaction(prev => ({ 
+              ...prev, 
+              payee: '', 
+              payeeId: null,
+              isTransfer: false,
+              transferAccountId: null
+            }));
+            setIsLoanPayment(false);
+            setSelectedLoanAccount(null);
+            setPaymentBreakdown(null);
+            return;
+          }
+          try {
+            const payee = JSON.parse(selectedValue);
+            handlePayeeSelect(payee);
+          } catch (err) {
+            // Handle manual entry
+            setNewTransaction(prev => ({ ...prev, payee: selectedValue, isTransfer: false }));
+          }
+        }}
+        style={styles.select}
+      >
+        <option value="">-- Select or enter payee --</option>
+
+        {/* Section 1: Payments & Transfers */}
+        {payees.transferPayees.length > 0 && (
+          <optgroup label="📤 PAYMENTS & TRANSFERS">
+            {payees.transferPayees.map(payee => (
+              <option key={payee.id} value={JSON.stringify(payee)}>
+                {payee.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+
+        {/* Section 2: Recent Payees */}
+        {payees.regularPayees.length > 0 && (
+          <optgroup label="📋 RECENT PAYEES">
+            {payees.regularPayees.map(payee => (
+              <option key={payee.id} value={JSON.stringify(payee)}>
+                {payee.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+
+        <option value="__manual__">✏️ Other (type manually)</option>
+      </select>
+    );
+  };
+
   // Calculate balance change
   const calculateBalanceChange = (accountType, transactionType, amount) => {
     const isCreditOrLoan = accountType === 'credit' || accountType === 'loan';
     const isExpense = transactionType === 'outflow';
     const absAmount = Math.abs(amount);
-    
+
     let change = 0;
-    
+
     if (isCreditOrLoan) {
       change = isExpense ? -absAmount : absAmount;
     } else {
       change = isExpense ? -absAmount : absAmount;
     }
-    
+
     return change;
   };
 
   // Calculate balance change for a transaction (for deletion)
   const calculateBalanceChangeForTransaction = (transaction) => {
     const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
-    
+
     if (isCreditOrLoan) {
       return transaction.amount > 0 ? transaction.amount : transaction.amount;
     } else {
@@ -151,21 +327,21 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   };
 
   // ===================== LOAN PAYMENT HELPER FUNCTIONS =====================
-  
+
   // Calculate how payment splits between interest and principal (YNAB-style)
   const calculatePaymentBreakdown = (loanAccount, paymentAmount, isFirstPaymentOfMonth = true) => {
     if (!loanAccount || !paymentAmount || paymentAmount <= 0) return null;
-    
+
     const balance = Math.abs(loanAccount.balance || 0);
     const apr = loanAccount.interest_rate || loanAccount.apr || 0;
     const monthlyRate = apr / 100 / 12;
-    
+
     // YNAB: Interest is calculated monthly on the current balance
     const monthlyInterest = balance * monthlyRate;
-    
+
     let interestPortion = 0;
     let principalPortion = 0;
-    
+
     if (isFirstPaymentOfMonth) {
       // First payment of the month: interest is deducted first
       interestPortion = Math.min(monthlyInterest, paymentAmount);
@@ -175,15 +351,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       interestPortion = 0;
       principalPortion = paymentAmount;
     }
-    
+
     // Ensure principal doesn't exceed balance
     if (principalPortion > balance) {
       principalPortion = balance;
       interestPortion = paymentAmount - principalPortion;
     }
-    
+
     const newBalance = balance - principalPortion;
-    
+
     return {
       paymentAmount,
       interestPortion: Math.max(0, interestPortion),
@@ -205,24 +381,24 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       setPaymentBreakdown(null);
       return false;
     }
-    
+
     // Check for "Payment: [Account Name]" or "Transfer: [Account Name]" pattern
     const paymentPattern = /^(payment|transfer):\s*(.+)$/i;
     const match = payeeValue.match(paymentPattern);
-    
+
     let accountName = match ? match[2].trim() : payeeValue.trim();
-    
+
     // Find matching account - EXCLUDE the current account (can't pay yourself)
-    const matchedAccount = loanAccounts.find(acc => 
+    const matchedAccount = loanAccounts.find(acc =>
       acc.id !== account?.id &&  // Don't pay the same account
       (acc.name.toLowerCase() === accountName.toLowerCase() ||
-       acc.name.toLowerCase().includes(accountName.toLowerCase()))
+        acc.name.toLowerCase().includes(accountName.toLowerCase()))
     );
-    
+
     if (matchedAccount) {
       setIsLoanPayment(true);
       setSelectedLoanAccount(matchedAccount);
-      
+
       // Calculate initial payment breakdown if amount is entered
       if (newTransaction.amount && parseFloat(newTransaction.amount) > 0) {
         const breakdown = calculatePaymentBreakdown(matchedAccount, parseFloat(newTransaction.amount), true);
@@ -238,12 +414,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   };
 
   // ===================== CREDIT CARD AUTO TRANSFER HELPER =====================
-  
+
   // Automatically move money from spending category to credit card payment category
   const handleCreditCardAutoTransfer = async (amount, spendingCategoryId, creditCardAccountName) => {
     try {
       console.log(`🔄 Auto-transfer triggered: $${amount} from category ${spendingCategoryId} to ${creditCardAccountName} payment category`);
-      
+
       if (window.moveMoneyForCreditCardTransaction) {
         const result = await window.moveMoneyForCreditCardTransaction(amount, spendingCategoryId, creditCardAccountName);
         if (result) {
@@ -269,20 +445,20 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const userResult = await window.electronAPI.getCurrentUser();
       if (userResult?.success && userResult?.data) {
         const userId = userResult.data.id;
-        
+
         const accountsResult = await window.electronAPI.getAccountsSummary(userId);
         console.log('📊 Accounts loaded via getAccountsSummary:', accountsResult);
-        
+
         if (accountsResult?.success) {
           const allAccounts = accountsResult.data || [];
           console.log('✅ Total accounts loaded:', allAccounts.length);
           console.log('📋 Account names:', allAccounts.map(a => ({ name: a.name, type: a.type })));
-          
+
           // Filter for credit cards and loans only
-          const loanAndCreditAccounts = allAccounts.filter(acc => 
+          const loanAndCreditAccounts = allAccounts.filter(acc =>
             acc.type === 'credit' || acc.type === 'loan'
           );
-          
+
           setLoanAccounts(loanAndCreditAccounts);
           console.log('🏦 Credit/Loan accounts found:', loanAndCreditAccounts.length);
           console.log('🏦 Account names:', loanAndCreditAccounts.map(a => a.name));
@@ -324,52 +500,97 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     setEditFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  // Save edited transaction
   const saveEditedTransaction = async (transactionId) => {
     const amountValue = parseFloat(editFormData.amount);
-    
+
     if (isNaN(amountValue) || amountValue === 0) {
       alert('Please enter a valid amount');
       return;
     }
-    
+
     if (!editFormData.payee.trim()) {
       alert('Please enter a payee');
       return;
     }
-    
+
+    if (!editFormData.categoryId) {
+      alert('Please select a category');
+      return;
+    }
+
     setIsUpdating(true);
-    
+
     try {
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         alert('Please log in to update transaction');
         return;
       }
-      
+
       const userId = userResult.data.id;
       const originalTransaction = transactions.find(t => t.id === transactionId);
-      
+
       if (!originalTransaction) {
         throw new Error('Transaction not found');
       }
-      
+
+      // ==================== CHECK IF THIS IS A TRANSFER ====================
+      // If this transaction is part of a linked transfer, use the transfer update API
+      if (originalTransaction.is_transfer === 1) {
+        console.log('🔄 Updating linked transfer transaction');
+        
+        // Determine the new amount sign based on the original transaction type
+        // If original amount was negative (outflow), keep negative; if positive (inflow), keep positive
+        const isOriginalOutflow = originalTransaction.amount < 0;
+        let newTransferAmount = amountValue;
+        if (isOriginalOutflow) {
+          newTransferAmount = -Math.abs(amountValue);
+        } else {
+          newTransferAmount = Math.abs(amountValue);
+        }
+        
+        // Use the linked transfer update API
+        const updateResult = await window.electronAPI.updateLinkedTransfer(transactionId, {
+          date: editFormData.date,
+          payee: editFormData.payee,
+          amount: newTransferAmount,
+          memo: editFormData.memo
+        });
+        
+        if (!updateResult.success) {
+          throw new Error(updateResult.error || 'Failed to update transfer');
+        }
+        
+        console.log('✅ Transfer updated successfully:', updateResult.data);
+        
+        // Refresh the account data to show updated balances
+        await loadAccountData(account.id);
+        
+        cancelEditing();
+        
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+        
+        alert(`✅ Transfer updated successfully!`);
+        setIsUpdating(false);
+        return;
+      }
+
+      // ==================== REGULAR TRANSACTION UPDATE (Existing Logic) ====================
       const isExpense = originalTransaction.amount < 0;
-      
+      const newIsExpense = editFormData.categoryId === 'inflow_ready_to_assign' ? false :
+          (editFormData.categoryId && categories.find(c => c.id === editFormData.categoryId)?.type === 'expense');
+
       let newAmount = amountValue;
-      const selectedCategory = getAllCategories().find(c => c.id === editFormData.categoryId);
-      const newIsExpense = editFormData.categoryId === 'inflow_ready_to_assign' ? false : 
-        (selectedCategory?.type === 'expense');
-      
       if (newIsExpense !== undefined) {
         newAmount = newIsExpense ? -amountValue : amountValue;
       } else {
         newAmount = isExpense ? -amountValue : amountValue;
       }
-      
+
       const oldAmount = originalTransaction.amount;
       const amountDifference = newAmount - oldAmount;
-      
+
       const updateData = {
         date: editFormData.date,
         payee: editFormData.payee,
@@ -377,24 +598,23 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         categoryId: editFormData.categoryId === 'inflow_ready_to_assign' ? null : editFormData.categoryId,
         memo: editFormData.memo
       };
-      
+
       const updateResult = await window.electronAPI.updateTransaction(transactionId, updateData);
       if (!updateResult.success) {
         throw new Error(updateResult.error || 'Failed to update transaction');
       }
-      
+
       const currentBalance = account.balance || 0;
       const newBalance = currentBalance + amountDifference;
       await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-      
-      await loadTransactions(account.id);
+
       await loadAccountData(account.id);
-      
+
       cancelEditing();
-      
+
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-      
+
       alert(`✅ Transaction updated successfully!\nNew balance: ${formatCurrency(newBalance)}`);
     } catch (error) {
       console.error('Error updating transaction:', error);
@@ -483,10 +703,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       await loadTransactions(account.id);
       await loadScheduledTransactions();
       await loadAccountData(account.id);
-      
+
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-      
+
       alert(`✅ Transaction approved and added!\nNew balance: ${formatCurrency(newBalance)}`);
     } catch (error) {
       console.error('Error approving scheduled transaction:', error);
@@ -578,14 +798,26 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
       const userId = userResult.data.id;
       const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
-      
+
       let totalBalanceChange = 0;
       for (const transaction of selectedTransactionsList) {
         totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
       }
 
+      // Delete transactions - handle transfers differently
       for (const transaction of selectedTransactionsList) {
-        const deleteResult = await window.electronAPI.deleteTransaction(transaction.id);
+        let deleteResult;
+        
+        // Check if this is a transfer transaction
+        if (transaction.is_transfer === 1) {
+          // Use linked delete API for transfers (deletes both sides)
+          console.log('🔄 Deleting linked transfer transaction:', transaction.id);
+          deleteResult = await window.electronAPI.deleteLinkedTransfer(transaction.id);
+        } else {
+          // Regular delete for normal transactions
+          deleteResult = await window.electronAPI.deleteTransaction(transaction.id);
+        }
+        
         if (!deleteResult.success) {
           throw new Error(`Failed to delete transaction ${transaction.id}: ${deleteResult.error}`);
         }
@@ -595,16 +827,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const newBalance = currentBalance + totalBalanceChange;
       await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
 
-      await loadTransactions(account.id);
       await loadAccountData(account.id);
-      
+
       setSelectedTransactions(new Set());
       setShowDeleteModal(false);
-      
+
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-      
-      alert(`✅ Successfully deleted ${selectedTransactionsList.length} transaction(s)!\nNew balance: ${formatCurrency(Math.abs(newBalance))}${newBalance < 0 ? ' (owed)' : ''}`);
+
+      alert(`✅ Successfully deleted ${selectedTransactionsList.length} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
     } catch (error) {
       console.error('Error deleting transactions:', error);
       alert('Error deleting transactions: ' + error.message);
@@ -618,6 +849,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     if (showAddTransaction) {
       loadCategories();
       loadLoanAccounts();
+      fetchPayees();
     }
   }, [showAddTransaction]);
 
@@ -696,12 +928,70 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
   // Add regular transaction
   const handleAddRegularTransaction = async (amountValue, userId) => {
+    if (!account) throw new Error('No account loaded');
+
     const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
     const isExpense = newTransaction.transactionType === 'outflow';
 
     let transactionAmount = 0;
     let balanceChange = 0;
 
+    // ==================== HANDLE CREDIT CARD TRANSFER ====================
+    if (newTransaction.isTransfer && newTransaction.transferAccountId) {
+      console.log('💳 Processing transfer using linked transfer API');
+
+      // Find the destination account to check if it's a loan
+      const destAccount = loanAccounts.find(a => a.id === newTransaction.transferAccountId);
+      const isDestLoan = destAccount?.type === 'loan';
+
+      if (isDestLoan && isLoanPayment) {
+        // This is a loan payment - use existing loan payment logic
+        console.log('🏦 Processing loan payment');
+        const result = await createLoanPaymentTransaction(amountValue, userId);
+        return result.newBalance;
+      } else {
+        // Regular transfer between accounts
+        const transferResult = await window.electronAPI.createLinkedTransfer({
+          sourceAccountId: account.id,
+          destinationAccountId: newTransaction.transferAccountId,
+          amount: amountValue,
+          date: newTransaction.date,
+          sourcePayeeName: newTransaction.payee,
+          memo: newTransaction.memo,
+          cleared: newTransaction.cleared
+        });
+
+        if (!transferResult.success) {
+          throw new Error(transferResult.error || 'Failed to create transfer');
+        }
+
+        console.log('✅ Transfer created:', transferResult.data);
+        await loadAccountData(account.id);
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        return transferResult.data.sourceNewBalance;
+      }
+    }
+
+    // ==================== HANDLE REGULAR TRANSACTION (Non-transfer) ====================
+    // Save payee to payees table if this is a regular transaction
+    let finalPayeeId = newTransaction.payeeId;
+    if (!newTransaction.isTransfer && newTransaction.payee && !finalPayeeId) {
+      try {
+        const payeeResult = await window.electronAPI.createOrUpdatePayee({
+          name: newTransaction.payee,
+          userId: userId,
+          isTransferPayee: false
+        });
+        if (payeeResult?.success && payeeResult?.data?.id) {
+          finalPayeeId = payeeResult.data.id;
+          console.log('💾 Saved new payee:', newTransaction.payee, 'ID:', finalPayeeId);
+        }
+      } catch (payeeError) {
+        console.warn('Failed to save payee, continuing with transaction:', payeeError);
+      }
+    }
+
+    // Calculate transaction amount based on account type
     if (isCreditOrLoan) {
       if (isExpense) {
         transactionAmount = -amountValue;
@@ -720,12 +1010,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
     }
 
-    // Loan payments are NOT created from the loan page
-    // They must be made from checking/savings account page
-    if (isLoanPayment && selectedLoanAccount) {
-      throw new Error(`❌ Loan payments cannot be created from this page.\n\nPlease go to your CHECKING or SAVINGS account to make a payment to "${selectedLoanAccount.name}".\n\nFrom your checking account:\n1. Click "Add Transaction"\n2. Set Payee to "Payment/Transfer: ${selectedLoanAccount.name}"\n3. Enter the payment amount\n4. The system will automatically calculate interest and principal`);
-    }
-
     const isReadyToAssign = newTransaction.transactionType === 'inflow' &&
       newTransaction.categoryId === 'inflow_ready_to_assign';
 
@@ -738,8 +1022,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       categoryId: isReadyToAssign ? null : newTransaction.categoryId,
       memo: newTransaction.memo,
       cleared: newTransaction.cleared ? 1 : 0,
-      frequency: newTransaction.frequency || null
+      frequency: newTransaction.frequency || null,
+      // Add payee tracking
+      payeeId: finalPayeeId,
+      // Add transfer flags (false for regular transaction)
+      isTransfer: 0,
+      transferAccountId: null
     };
+
+    console.log('📝 Creating regular transaction:', transactionData);
 
     const result = await window.electronAPI.addTransaction(transactionData);
     if (!result.success) {
@@ -748,15 +1039,148 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
     const currentBalance = account.balance || 0;
     const newBalance = currentBalance + balanceChange;
-
     await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-    
-    // Auto-transfer for credit card transactions
-    if (account.type === 'credit' && !isLoanPayment && isExpense && transactionData.categoryId) {
-      console.log('💳 Credit card transaction detected - initiating auto-transfer to payment category');
-      const creditCardName = account.name;
-      await handleCreditCardAutoTransfer(amountValue, transactionData.categoryId, creditCardName);
+
+    console.log(`✅ Regular transaction added. Balance: ${currentBalance} → ${newBalance}`);
+
+    return newBalance;
+  };
+
+  // Create loan payment transaction (simplified version)
+  const createLoanPaymentTransaction = async (amountValue, userId) => {
+    console.log('🔷 LOAN PAYMENT: Starting...');
+    console.log('Amount:', amountValue);
+    console.log('To loan account:', selectedLoanAccount?.name, selectedLoanAccount?.id);
+
+    if (!amountValue || amountValue <= 0) throw new Error('Invalid amount');
+    if (!selectedLoanAccount) throw new Error('No loan account selected');
+    if (!account) throw new Error('No source account');
+
+    // Check if this is the first payment of the month for interest calculation
+    const paymentMonth = newTransaction.date.substring(0, 7);
+    let isFirstPaymentOfMonth = true;
+    try {
+      const loanTransactions = await window.electronAPI.getAccountTransactions(selectedLoanAccount.id);
+      if (loanTransactions?.success) {
+        const paymentsThisMonth = loanTransactions.data.filter(tx => 
+          tx.date && tx.date.startsWith(paymentMonth) && 
+          (tx.is_loan_payment_inflow === 1 || tx.is_transfer === 1)
+        );
+        isFirstPaymentOfMonth = paymentsThisMonth.length === 0;
+      }
+    } catch (err) {
+      console.warn('Could not check previous payments, assuming first payment:', err);
     }
+    
+    // Calculate payment breakdown
+    const breakdown = calculatePaymentBreakdown(selectedLoanAccount, amountValue, isFirstPaymentOfMonth);
+    if (!breakdown) throw new Error('Failed to calculate payment breakdown');
+
+    console.log('Breakdown:', breakdown);
+
+    // ========== STEP 1: Create OUTFLOW in checking account ==========
+    const outflowData = {
+      accountId: account.id,
+      userId: userId,
+      date: newTransaction.date,
+      description: `Transfer: ${selectedLoanAccount.name}`,
+      amount: -amountValue,
+      payee: `Transfer: ${selectedLoanAccount.name}`,
+      memo: newTransaction.memo || `Loan payment to ${selectedLoanAccount.name}`,
+      cleared: newTransaction.cleared ? 1 : 0,
+      isTransfer: 1,
+      transferAccountId: selectedLoanAccount.id
+    };
+
+    console.log('📤 Creating outflow transaction...');
+    const outflowResult = await window.electronAPI.addTransaction(outflowData);
+    
+    if (!outflowResult.success) {
+      throw new Error('Failed to create outflow: ' + outflowResult.error);
+    }
+
+    const outflowTransaction = outflowResult.data;
+    const outflowId = outflowTransaction.id;
+    console.log('✅ Outflow created with ID:', outflowId);
+
+    // ========== STEP 2: Create INFLOW in loan account ==========
+    const inflowData = {
+      accountId: selectedLoanAccount.id,
+      userId: userId,
+      date: newTransaction.date,
+      description: `Transfer: ${account.name}`,
+      amount: breakdown.principalPortion,
+      payee: `Transfer: ${account.name}`,
+      memo: newTransaction.memo || `Payment from ${account.name}`,
+      cleared: newTransaction.cleared ? 1 : 0,
+      isTransfer: 1,
+      transferAccountId: account.id,
+      linkedTransactionId: outflowId,
+      isLoanPaymentInflow: true,
+      isPrincipalPayment: true
+    };
+
+    console.log('📥 Creating inflow transaction...');
+    const inflowResult = await window.electronAPI.addTransaction(inflowData);
+    
+    if (!inflowResult.success) {
+      console.error('❌ Inflow creation failed:', inflowResult.error);
+      throw new Error('Failed to create inflow: ' + inflowResult.error);
+    }
+
+    const inflowTransaction = inflowResult.data;
+    const inflowId = inflowTransaction.id;
+    console.log('✅ Inflow created with ID:', inflowId);
+
+    // ========== STEP 3: Link outflow to inflow ==========
+    try {
+      await window.electronAPI.updateTransaction(outflowId, {
+        linked_transaction_id: inflowId
+      });
+      console.log('✅ Transactions linked: outflow', outflowId, '<-> inflow', inflowId);
+    } catch (linkError) {
+      console.warn('⚠️ Could not link transactions:', linkError.message);
+    }
+
+    // ========== STEP 4: Create interest transaction if needed ==========
+    if (breakdown.interestPortion > 0 && isFirstPaymentOfMonth) {
+      const interestData = {
+        accountId: selectedLoanAccount.id,
+        userId: userId,
+        date: newTransaction.date,
+        description: `Interest Charge - ${selectedLoanAccount.name}`,
+        amount: -breakdown.interestPortion,
+        payee: `Interest Charge - ${selectedLoanAccount.name}`,
+        memo: `Monthly interest at ${breakdown.interestRate}% APR`,
+        cleared: 1,
+        isInterestCharge: true,
+        interestRate: breakdown.interestRate
+      };
+
+      console.log('💰 Creating interest transaction...');
+      const interestResult = await window.electronAPI.addTransaction(interestData);
+      if (interestResult.success) {
+        console.log('✅ Interest created with ID:', interestResult.data.id);
+      } else {
+        console.warn('⚠️ Interest creation failed:', interestResult.error);
+      }
+    }
+
+    // ========== STEP 5: Update account balances ==========
+    const balanceChange = -amountValue;
+    const currentBalance = account.balance || 0;
+    const newBalance = currentBalance + balanceChange;
+    
+    await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+    console.log('✅ Checking balance updated:', newBalance);
+
+    const currentLoanBalance = selectedLoanAccount.balance || 0;
+    const newLoanBalance = currentLoanBalance + breakdown.principalPortion;
+    
+    await window.electronAPI.updateAccount(selectedLoanAccount.id, userId, { balance: newLoanBalance });
+    console.log('✅ Loan balance updated:', newLoanBalance);
+
+    console.log('🔷 LOAN PAYMENT: Complete!');
     
     return newBalance;
   };
@@ -787,27 +1211,27 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     if (!result.success) {
       throw new Error(result.error || 'Failed to add scheduled transaction');
     }
-    
+
     return null;
   };
 
   // Main handler for adding transactions
   const handleAddTransaction = async () => {
     setAddTransactionError(null);
-    
+
     const amountValue = parseFloat(newTransaction.amount);
     const isFuture = isFutureLocalDate(newTransaction.date);
-    
+
     if (isNaN(amountValue) || amountValue === 0) {
       setAddTransactionError('Please enter a valid amount');
       return;
     }
     if (!newTransaction.payee.trim()) {
-      setAddTransactionError('Please enter a payee');
+      setAddTransactionError('Please select or enter a payee');
       return;
     }
-    
-    if (!isLoanPayment && !newTransaction.categoryId) {
+
+    if (!newTransaction.isTransfer && !newTransaction.categoryId) {
       setAddTransactionError('Please select a category');
       return;
     }
@@ -833,7 +1257,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           frequencyMessage = `\n\n🔄 This is a ${newTransaction.frequency} recurring transaction.`;
         }
         let loanMessage = '';
-        if (isLoanPayment && selectedLoanAccount) {
+        if (newTransaction.isTransfer && isLoanPayment && selectedLoanAccount) {
           loanMessage = `\n\n🏦 This is a payment to ${selectedLoanAccount.name}. Interest will be calculated on the approval date.`;
         }
         alert(`📅 Scheduled transaction added for ${displayDate}${frequencyMessage}${loanMessage}\n\nThis will NOT affect your balance until approved on that date.`);
@@ -845,7 +1269,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           frequencyMessage = `\n\n🔄 This is a ${newTransaction.frequency} recurring transaction.`;
         }
         let loanMessage = '';
-        if (isLoanPayment && selectedLoanAccount && paymentBreakdown) {
+        if (newTransaction.isTransfer && isLoanPayment && selectedLoanAccount && paymentBreakdown) {
           loanMessage = `\n\n🏦 Payment to ${selectedLoanAccount.name}:\n   • Total Payment: ${formatCurrency(paymentBreakdown.paymentAmount)}\n   • Interest: ${formatCurrency(paymentBreakdown.interestPortion)}\n   • Principal: ${formatCurrency(paymentBreakdown.principalPortion)}\n   • New Balance: ${formatCurrency(paymentBreakdown.newBalance)}`;
           if (paymentBreakdown.isFirstPaymentOfMonth && paymentBreakdown.interestPortion > 0) {
             loanMessage += `\n\n💡 Interest calculated at ${paymentBreakdown.interestRate}% APR (${paymentBreakdown.monthlyRate.toFixed(2)}% monthly)`;
@@ -853,17 +1277,17 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
             loanMessage += `\n\n💡 Since you've already made a payment this month, the entire payment goes to principal (no additional interest).`;
           }
         }
-        
+
         let autoTransferMessage = '';
-        if (account.type === 'credit' && !isLoanPayment && newTransaction.transactionType === 'outflow' && newTransaction.categoryId) {
+        if (account.type === 'credit' && !newTransaction.isTransfer && newTransaction.transactionType === 'outflow' && newTransaction.categoryId) {
           autoTransferMessage = `\n\n💳 Auto-transfer: $${amountValue.toFixed(2)} moved from "${categories.find(c => c.id === newTransaction.categoryId)?.name || 'spending category'}" to "${account.name} Payment" category.`;
         }
-        
+
         alert(`✅ Transaction added successfully!${frequencyMessage}${loanMessage}${autoTransferMessage}\n\nNew balance: ${formatCurrency(newBalance)}`);
       }
-      
+
       await loadAccountData(account.id);
-      
+
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
 
@@ -871,6 +1295,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       setNewTransaction({
         date: getTodayLocalDate(),
         payee: '',
+        payeeId: null,
+        isTransfer: false,
+        transferAccountId: null,
         amount: '',
         transactionType: 'outflow',
         categoryId: '',
@@ -881,7 +1308,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       setIsLoanPayment(false);
       setSelectedLoanAccount(null);
       setPaymentBreakdown(null);
-      
+      fetchPayees();
+
     } catch (error) {
       console.error('Error adding transaction:', error);
       setAddTransactionError(error.message || 'An unexpected error occurred');
@@ -928,10 +1356,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const isCreditCard = account.type === 'credit';
   const creditLimit = account.credit_limit || account.limit || 0;
   const availableCredit = isCreditCard ? creditLimit + (account.balance || 0) : 0;
-  
+
   // Check if this is a loan account for special display
   const isLoanAccount = account.type === 'loan';
-  
+
   // Calculate loan statistics if this is a loan account
   const loanStats = isLoanAccount ? (() => {
     const originalBalance = account.original_balance || Math.abs(account.balance);
@@ -955,16 +1383,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           🔄 Refresh
         </button>
         {(isCreditCard || isLoanAccount) && (
-          <button 
+          <button
             onClick={() => {
               if (isCreditCard && onMakePayment) {
-                // Credit card: use existing payment flow
                 onMakePayment(account.id);
               } else if (isLoanAccount) {
-                // Loan account: show helpful instructions
-                alert(`💡 How to make a payment to "${account.name}":\n\n1. Go to your CHECKING or SAVINGS account page\n2. Click "Add Transaction"\n3. Set Payee to "Payment/Transfer: ${account.name}"\n4. Enter the payment amount\n5. The system will automatically calculate:\n   • Interest portion (first payment of month)\n   • Principal reduction\n   • Update both account balances\n\nThis ensures accurate interest calculations and proper tracking.`);
+                alert(`💡 How to make a payment to "${account.name}":\n\n1. Go to your CHECKING or SAVINGS account page\n2. Click "Add Transaction"\n3. Set Payee to "Transfer: ${account.name}"\n4. Enter the payment amount\n5. The system will automatically calculate:\n   • Interest portion (first payment of month)\n   • Principal reduction\n   • Update both account balances\n\nThis ensures accurate interest calculations and proper tracking.`);
               }
-            }} 
+            }}
             style={styles.paymentButton}
           >
             💰 Make Payment
@@ -1023,7 +1449,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           <div style={styles.infoBannerContent}>
             <strong>📋 Making Loan Payments:</strong><br />
             To pay down this loan, go to your <strong>checking or savings account</strong> and create a transaction with payee:<br />
-            <code style={styles.codeExample}>Payment/Transfer: {account.name}</code><br />
+            <code style={styles.codeExample}>Transfer: {account.name}</code><br />
             The system will automatically calculate interest (first payment of month) and apply the rest to principal.
           </div>
         </div>
@@ -1032,8 +1458,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       {/* Scheduled Transactions Section */}
       {scheduledTransactions.length > 0 && (
         <div style={styles.scheduledSection}>
-          <div 
-            style={styles.scheduledHeader} 
+          <div
+            style={styles.scheduledHeader}
             onClick={() => setShowScheduledSection(!showScheduledSection)}
           >
             <span style={styles.scheduledHeaderLeft}>
@@ -1043,7 +1469,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
             </span>
             <span style={styles.scheduledToggle}>{showScheduledSection ? '▼' : '▶'}</span>
           </div>
-          
+
           {showScheduledSection && (
             <div style={styles.scheduledList}>
               {scheduledTransactions.map(tx => {
@@ -1071,15 +1497,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       {tx.transactionType === 'outflow' ? '-' : '+'}{formatCurrency(tx.amount)}
                     </div>
                     <div style={styles.scheduledActions}>
-                      <button 
-                        onClick={() => handleApproveScheduled(tx)} 
+                      <button
+                        onClick={() => handleApproveScheduled(tx)}
                         style={styles.approveButton}
                         title="Approve and move to transactions"
                       >
                         ✅ Approve
                       </button>
-                      <button 
-                        onClick={() => handleRejectScheduled(tx)} 
+                      <button
+                        onClick={() => handleRejectScheduled(tx)}
                         style={styles.rejectButton}
                         title="Delete scheduled transaction"
                       >
@@ -1099,8 +1525,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         <h3 style={styles.transactionsTitle}>Recent Transactions</h3>
         <div style={styles.headerButtons}>
           {selectedTransactions.size > 0 && (
-            <button 
-              onClick={handleDeleteSelected} 
+            <button
+              onClick={handleDeleteSelected}
               style={styles.deleteSelectedButton}
             >
               🗑️ Delete Selected ({selectedTransactions.size})
@@ -1138,21 +1564,20 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               <div style={styles.transactionAmountHeader}>Amount</div>
               <div style={styles.transactionActionsHeader}>Actions</div>
             </div>
-            
+
             {/* Transaction Rows with Inline Editing */}
             {transactions.map((tx) => {
               const isEditing = editingTransactionId === tx.id;
               const category = categories.find(c => c.id === tx.category_id);
-              
-              // UPDATED: Determine transaction type display - now includes is_transfer flag
+
               const isInflowToLoan = isLoanAccount && tx.amount > 0 && (tx.isLoanPaymentInflow === true || tx.is_transfer === 1);
               const isInterestCharge = tx.isInterestCharge === true;
               const isPrincipalPayment = tx.isPrincipalPayment === true;
               const isTransfer = tx.is_transfer === 1;
-              
+
               if (isEditing) {
                 const editCategories = getAllCategories();
-                
+
                 return (
                   <div key={tx.id} style={styles.transactionRowEditing}>
                     <div style={styles.checkboxCell}>
@@ -1195,15 +1620,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       </div>
                     </div>
                     <div style={styles.transactionActions}>
-                      <button 
-                        onClick={() => saveEditedTransaction(tx.id)} 
+                      <button
+                        onClick={() => saveEditedTransaction(tx.id)}
                         style={styles.saveButton}
                         disabled={isUpdating}
                       >
                         {isUpdating ? '💾 Saving...' : '💾 Save'}
                       </button>
-                      <button 
-                        onClick={cancelEditing} 
+                      <button
+                        onClick={cancelEditing}
                         style={styles.cancelButton}
                         disabled={isUpdating}
                       >
@@ -1249,8 +1674,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       )}
                     </div>
                     <div style={styles.transactionActions}>
-                      <button 
-                        onClick={() => startEditing(tx)} 
+                      <button
+                        onClick={() => startEditing(tx)}
                         style={styles.editButton}
                       >
                         ✏️ Edit
@@ -1295,34 +1720,65 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       transactionType: e.target.value,
                       categoryId: ''
                     });
-                    if (newTransaction.payee) {
-                      checkIfLoanPayment(newTransaction.payee);
-                    }
                   }}
                   style={styles.select}
-                  disabled={isLoanPayment}
+                  disabled={newTransaction.isTransfer}
                 >
                   <option value="outflow">Outflow (Expense)</option>
                   <option value="inflow">Inflow (Income/Payment)</option>
                 </select>
               </div>
 
+              {/* Payee Dropdown with Transfer Options */}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Payee *</label>
+                {loadingPayees ? (
+                  <div style={styles.loadingPayees}>Loading payees...</div>
+                ) : (
+                  renderPayeeDropdown()
+                )}
+                {newTransaction.isTransfer && (
+                  <div style={styles.payeeHint}>
+                    💡 Transfer selected. Category will be auto-managed.
+                  </div>
+                )}
+              </div>
+
+              {/* Manual Payee Input (shown when "Other" is selected or payee needs manual entry) */}
+              {(newTransaction.payee === '' || (newTransaction.payee && !payees.transferPayees.some(p => p.name === newTransaction.payee) &&
+                !payees.regularPayees.some(p => p.name === newTransaction.payee))) && (
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Enter Payee Name</label>
+                  <input
+                    type="text"
+                    value={newTransaction.payee}
+                    onChange={(e) => setNewTransaction(prev => ({ ...prev, payee: e.target.value, isTransfer: false }))}
+                    style={styles.input}
+                    placeholder="Enter payee name (e.g., Starbucks, Rent, Amazon)"
+                  />
+                </div>
+              )}
+
               {/* Category Dropdown - Grayed out for loan payments */}
               <div style={styles.formGroup}>
-                <label style={{ ...styles.label, ...(isLoanPayment ? styles.disabledLabel : {}) }}>
-                  Category {isLoanPayment && <span style={styles.autoManagedBadge}>(Auto-managed for loan payment)</span>}
+                <label style={{ ...styles.label, ...(newTransaction.isTransfer ? styles.disabledLabel : {}) }}>
+                  Category {newTransaction.isTransfer && <span style={styles.autoManagedBadge}>(Auto-managed for transfer)</span>}
                 </label>
-                {isLoanPayment ? (
-                  <div style={styles.loanPaymentInfo}>
-                    <div style={styles.loanPaymentBadge}>
-                      🏦 Loan Payment (YNAB-style)
+                {newTransaction.isTransfer ? (
+                  <div style={styles.transferPaymentInfo}>
+                    <div style={styles.transferPaymentBadge}>
+                      {isLoanPayment ? '🏦 Loan Payment (Transfer)' : '🔄 Account Transfer'}
                     </div>
-                    <div style={styles.loanPaymentMessage}>
-                      This is a payment to <strong>{selectedLoanAccount?.name}</strong>.
-                      The payment will be split: interest first, then principal.
-                      A corresponding inflow will appear in your loan account.
+                    <div style={styles.transferPaymentMessage}>
+                      {isLoanPayment ? (
+                        <>This is a payment transfer to <strong>{selectedLoanAccount?.name}</strong>.<br />
+                          The payment will be split: interest first, then principal.<br />
+                          A corresponding inflow will appear in your loan account.</>
+                      ) : (
+                        <>This is a transfer to another account. No category is needed.</>
+                      )}
                     </div>
-                    {paymentBreakdown && paymentBreakdown.paymentAmount > 0 && (
+                    {isLoanPayment && paymentBreakdown && paymentBreakdown.paymentAmount > 0 && (
                       <div style={styles.paymentBreakdown}>
                         <div style={styles.breakdownTitle}>Payment Breakdown (YNAB-style):</div>
                         <div style={styles.breakdownRow}>
@@ -1343,8 +1799,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                         </div>
                         <div style={styles.breakdownNote}>
                           ℹ️ Interest calculated at {paymentBreakdown.interestRate}% APR ({paymentBreakdown.monthlyRate.toFixed(2)}% monthly)
-                          {paymentBreakdown.isFirstPaymentOfMonth ? 
-                            ' - First payment of the month (interest applied)' : 
+                          {paymentBreakdown.isFirstPaymentOfMonth ?
+                            ' - First payment of the month (interest applied)' :
                             ' - Subsequent payment this month (no additional interest)'}
                         </div>
                       </div>
@@ -1377,7 +1833,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                     onChange={(e) => {
                       const newAmount = e.target.value;
                       setNewTransaction({ ...newTransaction, amount: newAmount });
-                      if (isLoanPayment && selectedLoanAccount && newAmount && parseFloat(newAmount) > 0) {
+                      if (newTransaction.isTransfer && isLoanPayment && selectedLoanAccount && newAmount && parseFloat(newAmount) > 0) {
                         const breakdown = calculatePaymentBreakdown(selectedLoanAccount, parseFloat(newAmount), true);
                         setPaymentBreakdown(breakdown);
                       }
@@ -1402,27 +1858,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 {isFutureDate && (
                   <div style={styles.futureDateWarning}>
                     📅 Future date detected. This will be saved as a <strong>scheduled transaction</strong> and will NOT affect your balance until approved on {formatDisplayDate(newTransaction.date)}.
-                  </div>
-                )}
-              </div>
-
-              {/* Payee */}
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Payee *</label>
-                <input
-                  type="text"
-                  value={newTransaction.payee}
-                  onChange={(e) => {
-                    const newPayee = e.target.value;
-                    setNewTransaction({ ...newTransaction, payee: newPayee });
-                    checkIfLoanPayment(newPayee);
-                  }}
-                  style={styles.input}
-                  placeholder={isLoanPayment ? `Payment/Transfer: ${selectedLoanAccount?.name || 'Loan'}` : "e.g., Starbucks, Rent, Paycheck"}
-                />
-                {!isLoanPayment && (
-                  <div style={styles.payeeHint}>
-                    💡 For loan payments, enter "Payment: [Loan Name]" or "Transfer: [Loan Name]" (e.g., "Payment: Car Loan")
                   </div>
                 )}
               </div>
@@ -1474,23 +1909,23 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               )}
 
               {/* Balance Preview */}
-              {!isFutureDate && newTransaction.amount && parseFloat(newTransaction.amount) > 0 && !isLoanPayment && (
+              {!isFutureDate && newTransaction.amount && parseFloat(newTransaction.amount) > 0 && !newTransaction.isTransfer && (
                 (() => {
                   const currentBalance = account.balance;
                   const amountValue = parseFloat(newTransaction.amount) || 0;
                   const balanceChange = calculateBalanceChange(account.type, newTransaction.transactionType, amountValue);
                   const newBalance = currentBalance + balanceChange;
-                  
+
                   const isCreditOrLoan = account.type === 'credit' || account.type === 'loan';
                   const isInflow = newTransaction.transactionType === 'inflow';
-                  
+
                   let actionText = '';
                   if (isCreditOrLoan) {
                     actionText = isInflow ? 'Payment' : 'Purchase';
                   } else {
                     actionText = isInflow ? 'Income' : 'Expense';
                   }
-                  
+
                   return (
                     <div style={styles.balancePreview}>
                       <div style={styles.balancePreviewLabel}>New Balance after transaction:</div>
@@ -1503,8 +1938,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       </div>
                       <div style={styles.balancePreviewDetail}>
                         Current: {formatCurrency(Math.abs(currentBalance))}
-                        {currentBalance < 0 && ' (owed)'} → 
-                        {actionText}: {formatCurrency(amountValue)} → 
+                        {currentBalance < 0 && ' (owed)'} →
+                        {actionText}: {formatCurrency(amountValue)} →
                         New: {formatCurrency(Math.abs(newBalance))}
                         {newBalance < 0 && ' (owed)'}
                       </div>
@@ -1534,7 +1969,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               <h3 style={styles.modalTitle}>Confirm Delete</h3>
               <button style={styles.closeButton} onClick={() => !isDeleting && setShowDeleteModal(false)}>✕</button>
             </div>
-            
+
             <div style={styles.modalBody}>
               <p style={styles.confirmText}>
                 Are you sure you want to delete <strong>{selectedTransactions.size}</strong> transaction(s)?
@@ -1567,17 +2002,17 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 ⚠️ This action cannot be undone.
               </p>
             </div>
-            
+
             <div style={styles.modalFooter}>
-              <button 
-                style={styles.cancelModalButton} 
+              <button
+                style={styles.cancelModalButton}
                 onClick={() => setShowDeleteModal(false)}
                 disabled={isDeleting}
               >
                 Cancel
               </button>
-              <button 
-                style={styles.deleteConfirmButton} 
+              <button
+                style={styles.deleteConfirmButton}
                 onClick={confirmDelete}
                 disabled={isDeleting}
               >
@@ -2269,14 +2704,20 @@ const styles = {
     color: '#F87171',
     marginBottom: '1rem',
   },
+  loadingPayees: {
+    padding: '0.75rem',
+    textAlign: 'center',
+    color: '#9CA3AF',
+    fontSize: '0.875rem',
+  },
   // Loan payment specific styles
-  loanPaymentInfo: {
+  transferPaymentInfo: {
     background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
     padding: '1rem',
     borderRadius: '0.75rem',
     border: '1px solid #F59E0B',
   },
-  loanPaymentBadge: {
+  transferPaymentBadge: {
     fontSize: '0.7rem',
     color: '#F59E0B',
     textTransform: 'uppercase',
@@ -2284,7 +2725,7 @@ const styles = {
     marginBottom: '0.5rem',
     fontWeight: 'bold',
   },
-  loanPaymentMessage: {
+  transferPaymentMessage: {
     fontSize: '0.875rem',
     color: '#9CA3AF',
     marginBottom: '0.75rem',
