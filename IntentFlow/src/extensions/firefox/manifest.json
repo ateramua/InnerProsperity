@@ -1,0 +1,50 @@
+{
+  "manifest_version": 2,
+  "name": "Money Manager Companion",
+  "version": "1.0.0",
+  "description": "Quick capture transactions and manage your money from any webpage",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "clipboardWrite",
+    "notifications",
+    "http://localhost:8765/*",
+    "ws://localhost:8765/*",
+    "https://api.plaid.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_title": "Money Manager",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "_execute_browser_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+M",
+        "mac": "Command+Shift+M"
+      },
+      "description": "Open Money Manager popup"
+    }
+  }
+}

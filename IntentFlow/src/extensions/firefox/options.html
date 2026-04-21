@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Money Manager Extension - Settings</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        /* Firefox-specific scrollbar styling */
+        @-moz-document url-prefix() {
+            .selector-list {
+                scrollbar-width: thin;
+                scrollbar-color: #667eea #e5e7eb;
+            }
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            animation: slideUp 0.4s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 32px;
+            color: white;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .header h1::before {
+            content: "💰";
+            font-size: 32px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .version-badge {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            margin-top: 12px;
+        }
+
+        /* Firefox badge */
+        .ff-badge {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.15);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            margin-left: 8px;
+            font-family: monospace;
+        }
+
+        /* Content */
+        .content {
+            padding: 32px;
+        }
+
+        /* Sections */
+        .section {
+            margin-bottom: 32px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 24px;
+        }
+
+        .section:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1f2937;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title::before {
+            font-size: 20px;
+        }
+
+        /* Settings Group */
+        .setting-group {
+            margin-bottom: 20px;
+        }
+
+        .setting-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .setting-description {
+            font-size: 13px;
+            color: #6b7280;
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+
+        /* Inputs - Firefox optimized */
+        input[type="text"],
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            font-size: 14px;
+            transition: all 0.2s;
+            background: white;
+        }
+
+        /* Firefox focus ring */
+        input:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        /* Firefox-specific input styling */
+        @-moz-document url-prefix() {
+            input, select, button {
+                font-family: inherit;
+            }
+            input[type="number"] {
+                -moz-appearance: textfield;
+            }
+        }
+
+        /* Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 52px;
+            height: 28px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: 0.3s;
+            border-radius: 34px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+
+        input:checked + .toggle-slider {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+        }
+
+        /* Color Picker - Firefox optimized */
+        input[type="color"] {
+            width: 60px;
+            height: 40px;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            cursor: pointer;
+            padding: 2px;
+            background: white;
+        }
+
+        /* Range Slider - Firefox optimized */
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e5e7eb;
+            outline: none;
+        }
+
+        /* Firefox range thumb */
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+
+        .range-value {
+            display: inline-block;
+            margin-left: 12px;
+            font-size: 14px;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        /* Buttons - Firefox optimized */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        /* Firefox button hover */
+        @-moz-document url-prefix() {
+            .btn-primary:hover {
+                filter: brightness(1.05);
+            }
+        }
+
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        /* Status Messages */
+        .status-message {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 10px;
+            background: #10b981;
+            color: white;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            animation: slideInRight 0.3s ease-out;
+            z-index: 1000;
+        }
+
+        .status-message.error {
+            background: #ef4444;
+        }
+
+        @keyframes slideInRight {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOutRight {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+        }
+
+        /* Selector List */
+        .selector-list {
+            background: #f9fafb;
+            border-radius: 12px;
+            padding: 12px;
+            margin-top: 8px;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .selector-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+            transition: all 0.2s;
+        }
+
+        .selector-item:hover {
+            border-color: #667eea;
+            transform: translateX(2px);
+        }
+
+        .selector-text {
+            font-family: 'Courier New', 'SF Mono', monospace;
+            font-size: 13px;
+            color: #1f2937;
+            word-break: break-all;
+        }
+
+        .remove-selector {
+            background: none;
+            border: none;
+            color: #ef4444;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 0 8px;
+            transition: all 0.2s;
+            font-weight: bold;
+        }
+
+        .remove-selector:hover {
+            transform: scale(1.1);
+            color: #dc2626;
+        }
+
+        .add-selector {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .add-selector input {
+            flex: 1;
+        }
+
+        /* Stats Cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+
+        /* Footer */
+        .footer {
+            background: #f9fafb;
+            padding: 20px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        /* Warning Box */
+        .warning-box {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 12px 16px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #92400e;
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .content {
+                padding: 20px;
+            }
+            .footer {
+                flex-direction: column;
+                gap: 12px;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .add-selector {
+                flex-direction: column;
+            }
+            .section-title {
+                font-size: 16px;
+            }
+        }
+
+        /* Dark mode support for Firefox */
+        @media (prefers-color-scheme: dark) {
+            @-moz-document url-prefix() {
+                .container {
+                    background: #1f2937;
+                }
+                .section-title {
+                    color: #f3f4f6;
+                }
+                .setting-label {
+                    color: #e5e7eb;
+                }
+                .selector-list {
+                    background: #374151;
+                }
+                .selector-item {
+                    background: #1f2937;
+                    border-color: #4b5563;
+                }
+                .selector-text {
+                    color: #f3f4f6;
+                }
+                .stat-card {
+                    background: linear-gradient(135deg, #374151 0%, #1f2937 100%);
+                }
+                .stat-label {
+                    color: #9ca3af;
+                }
+                .footer {
+                    background: #111827;
+                    border-top-color: #374151;
+                }
+                .btn-secondary {
+                    background: #374151;
+                    color: #f3f4f6;
+                }
+                .btn-secondary:hover {
+                    background: #4b5563;
+                }
+                input[type="text"],
+                input[type="number"],
+                select {
+                    background: #374151;
+                    border-color: #4b5563;
+                    color: #f3f4f6;
+                }
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                Money Manager Extension
+                <span class="ff-badge">Firefox</span>
+            </h1>
+            <p>Configure your transaction detection and synchronization settings</p>
+            <div class="version-badge" id="version">Version 1.0.0</div>
+        </div>
+
+        <div class="content">
+            <!-- Firefox Compatibility Note -->
+            <div class="warning-box" id="compatNote" style="display: none;">
+                🔥 <strong>Firefox Extension</strong> - Some features may require additional permissions. 
+                <a href="#" id="requestPermissions" style="color: #667eea; text-decoration: underline;">Request permissions</a>
+            </div>
+
+            <!-- Connection Settings -->
+            <div class="section">
+                <div class="section-title">🔌 Connection Settings</div>
+                
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Desktop App Host</span>
+                    </div>
+                    <input type="text" id="host" placeholder="localhost" spellcheck="false">
+                    <div class="setting-description">The host where your Money Manager desktop app is running</div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>WebSocket Port</span>
+                    </div>
+                    <input type="number" id="port" placeholder="8765" min="1" max="65535">
+                    <div class="setting-description">Port for WebSocket communication with desktop app</div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Auto-reconnect</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="autoReconnect">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-description">Automatically reconnect to desktop app if connection is lost</div>
+                </div>
+            </div>
+
+            <!-- Detection Settings -->
+            <div class="section">
+                <div class="section-title">🎯 Detection Settings</div>
+                
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Auto-detect Transactions</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="autoDetect">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-description">Automatically detect transaction amounts on web pages</div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Show Notifications</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="showNotifications">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-description">Show floating notifications when transactions are detected</div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Detection Delay (ms)</span>
+                    </div>
+                    <input type="range" id="detectionDelay" min="100" max="2000" step="100">
+                    <span class="range-value" id="delayValue">500ms</span>
+                    <div class="setting-description">Delay before detecting after page changes (prevents excessive detection)</div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Confidence Threshold</span>
+                    </div>
+                    <input type="range" id="confidenceThreshold" min="0" max="100" step="5">
+                    <span class="range-value" id="confidenceValue">70%</span>
+                    <div class="setting-description">Minimum confidence level to auto-add transaction (0-100%)</div>
+                </div>
+            </div>
+
+            <!-- Price Selectors -->
+            <div class="section">
+                <div class="section-title">🔍 Custom Price Selectors</div>
+                <div class="setting-description">CSS selectors used to detect prices on web pages</div>
+                <div id="priceSelectorsList" class="selector-list"></div>
+                <div class="add-selector">
+                    <input type="text" id="newPriceSelector" placeholder="e.g., .product-price, [data-price]" spellcheck="false">
+                    <button class="btn btn-secondary" id="addPriceSelector">+ Add</button>
+                </div>
+            </div>
+
+            <!-- Description Selectors -->
+            <div class="section">
+                <div class="section-title">📝 Custom Description Selectors</div>
+                <div class="setting-description">CSS selectors used to detect transaction descriptions</div>
+                <div id="descSelectorsList" class="selector-list"></div>
+                <div class="add-selector">
+                    <input type="text" id="newDescSelector" placeholder="e.g., .product-title, .item-name" spellcheck="false">
+                    <button class="btn btn-secondary" id="addDescSelector">+ Add</button>
+                </div>
+            </div>
+
+            <!-- Whitelist/Blacklist -->
+            <div class="section">
+                <div class="section-title">🌐 Site Settings</div>
+                
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Mode</span>
+                        <select id="filterMode">
+                            <option value="all">Detect on all sites</option>
+                            <option value="whitelist">Only on whitelisted sites</option>
+                            <option value="blacklist">Except blacklisted sites</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="setting-group" id="whitelistGroup" style="display: none;">
+                    <div class="setting-label">Whitelisted Sites</div>
+                    <div id="whitelistList" class="selector-list"></div>
+                    <div class="add-selector">
+                        <input type="text" id="newWhitelist" placeholder="e.g., amazon.com, ebay.com" spellcheck="false">
+                        <button class="btn btn-secondary" id="addWhitelist">+ Add</button>
+                    </div>
+                </div>
+
+                <div class="setting-group" id="blacklistGroup" style="display: none;">
+                    <div class="setting-label">Blacklisted Sites</div>
+                    <div id="blacklistList" class="selector-list"></div>
+                    <div class="add-selector">
+                        <input type="text" id="newBlacklist" placeholder="e.g., banking.example.com" spellcheck="false">
+                        <button class="btn btn-secondary" id="addBlacklist">+ Add</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Appearance -->
+            <div class="section">
+                <div class="section-title">🎨 Appearance</div>
+                
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Theme</span>
+                        <select id="theme">
+                            <option value="light">Light</option>
+                            <option value="dark">Dark</option>
+                            <option value="auto">Auto (Follow System)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Primary Color</span>
+                        <input type="color" id="primaryColor">
+                    </div>
+                </div>
+
+                <div class="setting-group">
+                    <div class="setting-label">
+                        <span>Notification Position</span>
+                        <select id="notificationPosition">
+                            <option value="bottom-right">Bottom Right</option>
+                            <option value="bottom-left">Bottom Left</option>
+                            <option value="top-right">Top Right</option>
+                            <option value="top-left">Top Left</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Statistics -->
+            <div class="section">
+                <div class="section-title">📊 Statistics</div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="statTransactions">0</div>
+                        <div class="stat-label">Transactions Captured</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statOffline">0</div>
+                        <div class="stat-label">Offline Queue</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statSites">0</div>
+                        <div class="stat-label">Active Sites</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statAccuracy">0%</div>
+                        <div class="stat-label">Detection Accuracy</div>
+                    </div>
+                </div>
+                <button class="btn btn-secondary" id="resetStats" style="margin-top: 16px; width: 100%;">Reset Statistics</button>
+            </div>
+
+            <!-- Export/Import -->
+            <div class="section">
+                <div class="section-title">💾 Backup & Restore</div>
+                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                    <button class="btn btn-secondary" id="exportSettings">📤 Export Settings</button>
+                    <button class="btn btn-secondary" id="importSettings">📥 Import Settings</button>
+                    <input type="file" id="importFile" accept=".json" style="display: none;">
+                    <button class="btn btn-danger" id="resetAll">⚠️ Reset All Settings</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <button class="btn btn-secondary" id="cancelBtn">Cancel</button>
+            <button class="btn btn-primary" id="saveBtn">💾 Save Settings</button>
+        </div>
+    </div>
+
+    <script src="options.js"></script>
+</body>
+</html>

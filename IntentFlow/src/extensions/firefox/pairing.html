@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pair Extension - Money Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 500px;
+            width: 100%;
+            background: white;
+            border-radius: 32px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            overflow: hidden;
+            animation: slideUp 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px) scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 32px;
+            text-align: center;
+            color: white;
+            position: relative;
+        }
+
+        .header-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+            display: inline-block;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(-10px);
+            }
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        /* Content */
+        .content {
+            padding: 32px;
+        }
+
+        /* Step Indicator */
+        .step-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 32px;
+            position: relative;
+        }
+
+        .step-indicator::before {
+            content: '';
+            position: absolute;
+            top: 20px;
+            left: 10%;
+            right: 10%;
+            height: 2px;
+            background: #e5e7eb;
+            z-index: 0;
+        }
+
+        .step {
+            text-align: center;
+            position: relative;
+            z-index: 1;
+            flex: 1;
+        }
+
+        .step-number {
+            width: 40px;
+            height: 40px;
+            background: #f3f4f6;
+            border: 2px solid #e5e7eb;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 8px;
+            font-weight: 600;
+            color: #6b7280;
+            transition: all 0.3s;
+        }
+
+        .step.active .step-number {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: #667eea;
+            color: white;
+            transform: scale(1.1);
+        }
+
+        .step.completed .step-number {
+            background: #10b981;
+            border-color: #10b981;
+            color: white;
+        }
+
+        .step.completed .step-number::after {
+            content: "✓";
+        }
+
+        .step.completed .step-number span {
+            display: none;
+        }
+
+        .step-label {
+            font-size: 12px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .step.active .step-label {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        /* Connection Form */
+        .connection-form {
+            margin-bottom: 32px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            font-size: 14px;
+            transition: all 0.2s;
+            background: white;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-group input.error {
+            border-color: #ef4444;
+        }
+
+        .input-hint {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            background: #f9fafb;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+
+        .status-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .status-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .status-message {
+            font-size: 13px;
+            color: #6b7280;
+        }
+
+        .status-details {
+            margin-top: 12px;
+            font-size: 12px;
+            color: #9ca3af;
+            font-family: monospace;
+        }
+
+        /* Pairing Code Section */
+        .pairing-section {
+            text-align: center;
+        }
+
+        .pairing-code-container {
+            background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        .pairing-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .pairing-code {
+            font-size: 48px;
+            font-weight: 800;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 8px;
+            color: #1f2937;
+            background: white;
+            padding: 16px;
+            border-radius: 16px;
+            display: inline-block;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .pairing-timer {
+            font-size: 13px;
+            color: #ef4444;
+            font-weight: 500;
+        }
+
+        .pairing-instructions {
+            font-size: 13px;
+            color: #6b7280;
+            line-height: 1.5;
+        }
+
+        /* QR Code */
+        .qr-container {
+            text-align: center;
+            margin-bottom: 24px;
+            padding: 20px;
+            background: #f9fafb;
+            border-radius: 16px;
+        }
+
+        .qr-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 12px;
+        }
+
+        #qrCode {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            background: white;
+            padding: 12px;
+            border-radius: 16px;
+        }
+
+        /* Buttons */
+        .button-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid #e5e7eb;
+            color: #6b7280;
+        }
+
+        .btn-outline:hover {
+            border-color: #667eea;
+            color: #667eea;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Success Animation */
+        .success-check {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            background: #10b981;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: scaleIn 0.5s ease-out;
+        }
+
+        .success-check::after {
+            content: "✓";
+            font-size: 48px;
+            color: white;
+            font-weight: bold;
+        }
+
+        @keyframes scaleIn {
+            from {
+                transform: scale(0);
+                opacity: 0;
+            }
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        /* Alert */
+        .alert {
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .alert-error {
+            background: #fef2f2;
+            border-left: 4px solid #ef4444;
+            color: #991b1b;
+        }
+
+        .alert-success {
+            background: #f0fdf4;
+            border-left: 4px solid #10b981;
+            color: #166534;
+        }
+
+        .alert-info {
+            background: #eff6ff;
+            border-left: 4px solid #3b82f6;
+            color: #1e40af;
+        }
+
+        /* Footer */
+        .footer {
+            background: #f9fafb;
+            padding: 16px 32px;
+            text-align: center;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .footer-text {
+            font-size: 11px;
+            color: #9ca3af;
+        }
+
+        .footer-text a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        /* Hidden */
+        .hidden {
+            display: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 500px) {
+            .container {
+                border-radius: 24px;
+            }
+            .content {
+                padding: 24px;
+            }
+            .pairing-code {
+                font-size: 32px;
+                letter-spacing: 4px;
+            }
+        }
+
+        /* Firefox-specific */
+        @-moz-document url-prefix() {
+            .btn-primary:hover:not(:disabled) {
+                filter: brightness(1.05);
+                transform: translateY(-1px);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container" id="app">
+        <div class="header">
+            <div class="header-icon">🔐</div>
+            <h1>Pair Extension</h1>
+            <p>Connect your browser to Money Manager desktop app</p>
+        </div>
+
+        <div class="content">
+            <!-- Step Indicator -->
+            <div class="step-indicator">
+                <div class="step" id="step1">
+                    <div class="step-number"><span>1</span></div>
+                    <div class="step-label">Connect</div>
+                </div>
+                <div class="step" id="step2">
+                    <div class="step-number"><span>2</span></div>
+                    <div class="step-label">Pair</div>
+                </div>
+                <div class="step" id="step3">
+                    <div class="step-number"><span>3</span></div>
+                    <div class="step-label">Complete</div>
+                </div>
+            </div>
+
+            <!-- Step 1: Connection Settings -->
+            <div id="step1Content">
+                <div class="connection-form">
+                    <div class="form-group">
+                        <label>Desktop App Host</label>
+                        <input type="text" id="host" value="localhost" placeholder="localhost or IP address">
+                        <div class="input-hint">The host where Money Manager desktop app is running</div>
+                    </div>
+                    <div class="form-group">
+                        <label>WebSocket Port</label>
+                        <input type="number" id="port" value="8765" placeholder="8765">
+                        <div class="input-hint">Port configured in your desktop app settings</div>
+                    </div>
+                </div>
+
+                <div id="connectionStatus" class="connection-status">
+                    <div class="status-icon">🔌</div>
+                    <div class="status-title">Not Connected</div>
+                    <div class="status-message">Enter your desktop app connection details and click "Test Connection"</div>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-secondary" id="testConnectionBtn">🔍 Test Connection</button>
+                    <button class="btn btn-primary" id="nextToPairBtn" disabled>Continue →</button>
+                </div>
+            </div>
+
+            <!-- Step 2: Pairing -->
+            <div id="step2Content" class="hidden">
+                <div class="pairing-section">
+                    <div class="pairing-code-container">
+                        <div class="pairing-label">Your Pairing Code</div>
+                        <div class="pairing-code" id="pairingCode">------</div>
+                        <div class="pairing-timer" id="pairingTimer"></div>
+                    </div>
+                    <div class="pairing-instructions">
+                        <p>📱 Enter this code in your Money Manager desktop app</p>
+                        <p style="margin-top: 8px; font-size: 12px;">The code expires in <strong>5 minutes</strong></p>
+                    </div>
+                </div>
+
+                <div id="pairingStatus" class="connection-status">
+                    <div class="status-icon">⏳</div>
+                    <div class="status-title">Waiting for Pairing...</div>
+                    <div class="status-message">Enter the pairing code in your desktop app to complete setup</div>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-secondary" id="backToConnectBtn">← Back</button>
+                    <button class="btn btn-outline" id="regenerateCodeBtn">⟳ Regenerate Code</button>
+                </div>
+            </div>
+
+            <!-- Step 3: Complete -->
+            <div id="step3Content" class="hidden">
+                <div class="success-check"></div>
+                <div class="connection-status" style="background: #f0fdf4;">
+                    <div class="status-title" style="color: #166534;">✓ Successfully Paired!</div>
+                    <div class="status-message" style="color: #166534;">Your browser extension is now connected to Money Manager desktop app</div>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-primary" id="goToExtensionBtn">🎉 Go to Extension</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="footer-text">
+                Need help? <a href="#" id="helpLink">View documentation</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="pairing.js"></script>
+</body>
+</html>
