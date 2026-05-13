@@ -298,10 +298,33 @@ class SettingsService {
   async addSortOrderColumn() {
     const db = getDatabase();
     return new Promise((resolve, reject) => {
-      db.run(`ALTER TABLE accounts ADD COLUMN sortOrder INTEGER DEFAULT 0`, (err) => {
-        db.close();
-        if (err && !err.message.includes('duplicate column')) reject(err);
-        else resolve({ success: true });
+      // First check if column exists
+      db.all("PRAGMA table_info(accounts)", [], (err, columns) => {
+        if (err) {
+          db.close();
+          return reject(err);
+        }
+
+        const columnExists = columns.some(col => col.name === 'sortOrder');
+        if (columnExists) {
+          db.close();
+          return resolve({ success: true });
+        }
+
+        // Add column without default first
+        db.run(`ALTER TABLE accounts ADD COLUMN sortOrder INTEGER`, (err) => {
+          if (err) {
+            db.close();
+            return reject(err);
+          }
+
+          // Then set default values
+          db.run(`UPDATE accounts SET sortOrder = 0 WHERE sortOrder IS NULL`, (err) => {
+            db.close();
+            if (err) reject(err);
+            else resolve({ success: true });
+          });
+        });
       });
     });
   }
@@ -312,11 +335,35 @@ class SettingsService {
 
     return new Promise((resolve, reject) => {
       // First ensure sortOrder column exists
-      db.run(`ALTER TABLE accounts ADD COLUMN sortOrder INTEGER DEFAULT 0`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
+      db.all("PRAGMA table_info(accounts)", [], (err, columns) => {
+        if (err) {
           db.close();
           return reject(err);
         }
+
+        const columnExists = columns.some(col => col.name === 'sortOrder');
+        if (!columnExists) {
+          // Add column without default first
+          db.run(`ALTER TABLE accounts ADD COLUMN sortOrder INTEGER`, (err) => {
+            if (err) {
+              db.close();
+              return reject(err);
+            }
+
+            // Then set default values
+            db.run(`UPDATE accounts SET sortOrder = 0 WHERE sortOrder IS NULL`, (err) => {
+              if (err) {
+                db.close();
+                return reject(err);
+              }
+              proceedWithReorder();
+            });
+          });
+        } else {
+          proceedWithReorder();
+        }
+
+        function proceedWithReorder() {
 
         db.serialize(() => {
           db.run('BEGIN TRANSACTION');

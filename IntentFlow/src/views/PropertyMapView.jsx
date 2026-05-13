@@ -1956,17 +1956,19 @@ const PropertyMapView = () => {
 const styles = {
   container: {
     display: 'flex',
-    height: '100vh',
+    minHeight: '100%',
+    width: '100%',
     backgroundColor: '#2563EB',
     fontFamily: 'system-ui, -apple-system, sans-serif',
-    overflow: 'hidden'
+    overflow: 'auto'
   },
   budgetTableContainer: {
     flex: 3,
     overflowY: 'auto',
     padding: '24px',
     borderRight: '1px solid #334155',
-    backgroundColor: '#2563EB'
+    backgroundColor: '#2563EB',
+    minWidth: '0'
   },
   rightColumn: {
     flex: 1.2,
@@ -2102,6 +2104,7 @@ const styles = {
   },
   tableContainer: {
     overflowX: 'auto',
+    maxWidth: '100%',
     borderRadius: '12px',
     border: '1px solid #334155',
     backgroundColor: '#2563EB'

@@ -4,7 +4,54 @@ const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs');
 // Add this near the top with your other requires
-const { app } = require('electron');
+// const { app } = require('electron'); // Commented out to avoid requiring electron when not needed
+
+async function columnExists(db, tableName, columnName) {
+    const columns = await db.all(`PRAGMA table_info(${tableName})`);
+    return columns.some(col => col.name === columnName);
+}
+
+async function executeMigrationSql(db, sql) {
+    const statements = sql
+        .split(/;\s*(?:\r?\n|$)/)
+        .map(stmt => stmt.trim())
+        .filter(Boolean);
+
+    for (const statement of statements) {
+        const cleanedStatement = statement.replace(/--.*$/gm, '').trim();
+        if (!cleanedStatement) {
+            continue;
+        }
+
+        const alterMatch = cleanedStatement.match(/^\s*ALTER\s+TABLE\s+([`"']?[^`"'\s]+[`"']?)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?[^`"'\s]+[`"']?)\s+(.+)$/i);
+        if (alterMatch) {
+            const tableName = alterMatch[1].replace(/^[`"']|[`"']$/g, '');
+            const columnName = alterMatch[2].replace(/^[`"']|[`"']$/g, '');
+            const columnDefinition = alterMatch[3].trim();
+
+            if (await columnExists(db, tableName, columnName)) {
+                console.log(`⏭️  Skipping existing column ${tableName}.${columnName}`);
+                continue;
+            }
+
+            const defaultMatch = columnDefinition.match(/\bDEFAULT\s+(.+)$/i);
+            if (defaultMatch) {
+                const defaultExpression = defaultMatch[1].trim();
+                const isConstantDefault = /^('(?:[^']*)'|\d+(?:\.\d+)?|NULL)$/i.test(defaultExpression);
+
+                if (!isConstantDefault) {
+                    console.log(`⚠️  Rewriting dynamic default for ${tableName}.${columnName}`);
+                    const definitionWithoutDefault = columnDefinition.replace(/\s+DEFAULT\s+(.+)$/i, '').trim();
+                    await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionWithoutDefault}`);
+                    await db.exec(`UPDATE ${tableName} SET ${columnName} = ${defaultExpression} WHERE ${columnName} IS NULL`);
+                    continue;
+                }
+            }
+        }
+
+        await db.exec(cleanedStatement);
+    }
+}
 
 async function runMigrations(existingDb) {
     let db = existingDb;
@@ -60,7 +107,9 @@ async function runMigrations(existingDb) {
             '006_create_monthly_budgets.sql',
             '007_create_account_history.sql',
             '008_create_triggers_and_views.sql',
-            '009_fix_account_summary_view.sql'
+            '009_fix_account_summary_view.sql',
+            '010_add_check_number.sql',
+            '011_add_user_password_columns.sql'
         ];
 
         for (const migration of migrations) {
@@ -78,9 +127,9 @@ async function runMigrations(existingDb) {
                 }
 
                 if (migration.endsWith('.sql')) {
-                    // Run SQL migration
+                    // Run SQL migration with idempotent column additions
                     const sql = fs.readFileSync(migrationPath, 'utf8');
-                    await db.exec(sql);
+                    await executeMigrationSql(db, sql);
                 } else {
                     // Run JS migration
                     const migrationModule = require(migrationPath);

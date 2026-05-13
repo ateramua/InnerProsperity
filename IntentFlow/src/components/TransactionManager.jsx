@@ -1,6 +1,17 @@
 // src/components/TransactionManager.jsx
 import React, { useState } from 'react';
 
+/**
+ * TransactionManager component for managing financial transactions
+ * @param {Array} transactions - List of transaction objects
+ * @param {Array} categories - Available categories for transactions
+ * @param {Array} accounts - Available accounts
+ * @param {Function} onAddTransaction - Callback to add a new transaction
+ * @param {Function} onUpdateTransaction - Callback to update an existing transaction
+ * @param {Function} onDeleteTransaction - Callback to delete a transaction
+ * @param {Function} onToggleCleared - Callback to toggle cleared status
+ * @param {string|number} accountId - ID of the current account
+ */
 const TransactionManager = ({ transactions, categories, accounts, onAddTransaction, onUpdateTransaction, onDeleteTransaction, onToggleCleared, accountId }) => {
     const [editingId, setEditingId] = useState(null);
     const [editForm, setEditForm] = useState({});
@@ -19,17 +30,17 @@ const TransactionManager = ({ transactions, categories, accounts, onAddTransacti
     };
 
     // FIXED: This should update transactions, not accounts
-    const handleSaveEdit = async (cardId, updatedData) => {
-        console.log('handleSaveEdit called with:', cardId, updatedData);
+    const handleSaveEdit = async (transactionId, updatedData) => {
+        console.log('handleSaveEdit called with:', transactionId, updatedData);
         if (!updatedData) {
             console.error('❌ updatedData is undefined in handleSaveEdit');
             return;
         }
-       if (onUpdateCard) {
-  const result = await onUpdateCard(cardId, updatedData);
+        if (onUpdateTransaction) {
+            const result = await onUpdateTransaction(transactionId, updatedData);
             if (result?.success) {
-                setShowEditModal(false);
-                setEditingCard(null);
+                setEditingId(null);
+                setEditForm({});
             }
             return result;
         }

@@ -243,6 +243,10 @@ export default function Login() {
               ? 'Already have an account? Login' 
               : 'Need an account? Register'}
           </button>
+          <button onClick={() => router.push('/settings')} style={styles.secondaryButton}>
+            <i className="fas fa-save" style={{ marginRight: '8px' }}></i>
+            Use Backup Without Login
+          </button>
         </div>
       </div>
     </div>
@@ -379,5 +383,16 @@ const styles = {
     cursor: 'pointer',
     fontWeight: 500,
     textDecoration: 'underline'
+  },
+  secondaryButton: {
+    background: '#e2e8f0',
+    border: 'none',
+    color: '#1f2937',
+    fontSize: '0.95rem',
+    cursor: 'pointer',
+    fontWeight: 600,
+    padding: '10px 16px',
+    borderRadius: '999px',
+    marginTop: '8px'
   }
 };

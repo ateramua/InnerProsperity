@@ -1,7 +1,5 @@
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+const { getDatabasePath } = require('../db/database.config.js');
 const crypto = require('crypto');
 
 class LocalAuth {
@@ -12,18 +10,7 @@ class LocalAuth {
   }
 
   init() {
-    const appName = 'money-manager';
-    let userDataPath;
-
-    if (process.platform === 'darwin') {
-      userDataPath = path.join(os.homedir(), 'Library', 'Application Support', appName);
-    } else if (process.platform === 'win32') {
-      userDataPath = path.join(process.env.APPDATA, appName);
-    } else {
-      userDataPath = path.join(os.homedir(), '.local', 'share', appName);
-    }
-
-    const dbPath = path.join(userDataPath, 'money-manager.db');
+    const dbPath = getDatabasePath();
     this.db = new sqlite3.Database(dbPath);
   }
 

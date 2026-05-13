@@ -179,6 +179,12 @@ try {
     getUserSetting: (key, defaultValue) =>
       ipcRenderer.invoke('get-user-setting', key, defaultValue),
 
+    backupDatabase: (password, options) =>
+      ipcRenderer.invoke('backup-database', password, options),
+
+    restoreDatabase: (password) =>
+      ipcRenderer.invoke('restore-database', password),
+
     // ==================== DEBUG ====================
     debugDbPath: () =>
       ipcRenderer.invoke('debug-db-path'),

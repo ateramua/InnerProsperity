@@ -13,6 +13,9 @@ const dbConfig = requireModule('../db/database.config.js');
 let getConfiguredDatabasePath = dbConfig?.getDatabasePath;
 let ensureDatabaseDirectory = dbConfig?.ensureDatabaseDirectory;
 
+const initSchema = requireModule('../db/initSchema.cjs') || require(path.join(__dirname, '../db/initSchema.cjs'));
+const { ensureSchema, injectTemporaryRecoveryUser, initializeDatabase } = initSchema || {};
+
 // ✅ FIXED: Proper fallback assignment (no shadowing)
 if (!getConfiguredDatabasePath || !ensureDatabaseDirectory) {
     console.error('❌ Database config module not loaded! Using fallback paths.');
@@ -46,6 +49,13 @@ function getAppPath() {
         return path.join(process.resourcesPath, 'app.asar');
     }
     return path.resolve(__dirname, '../..');
+}
+
+function getProductionFilePath(relativePath) {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'out', relativePath);
+    }
+    return path.join(__dirname, '../../out', relativePath);
 }
 
 function requireModule(modulePath) {
@@ -117,6 +127,7 @@ const ValidationService = requireModule('../services/forecast/validationService.
 };
 
 const updateService = requireModule('../services/realtime/updateService.cjs') || { publish: () => { } };
+const fileEncryption = requireModule('../services/fileEncryption.cjs') || require(path.join(__dirname, '../services/fileEncryption.cjs'));
 
 const splashModule = requireModule('./splash.cjs') || {
     createSplashWindow: () => null,
@@ -328,211 +339,6 @@ async function getDatabase() {
     }
 }
 
-// ==================== TABLE CREATION HELPER ====================
-async function ensureAllTablesExist(dbConnection) {
-    console.log('🔧 Ensuring all required tables exist...');
-
-    await dbConnection.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            email TEXT UNIQUE,
-            full_name TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS category_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            name TEXT NOT NULL,
-            sort_order INTEGER DEFAULT 0,
-            is_hidden INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS categories (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            group_id TEXT,
-            assigned REAL DEFAULT 0,
-            activity REAL DEFAULT 0,
-            available REAL DEFAULT 0,
-            target_type TEXT,
-            target_amount REAL,
-            target_date DATE,
-            priority INTEGER DEFAULT 2,
-            last_month_assigned REAL DEFAULT 0,
-            average_spending REAL DEFAULT 0,
-            is_hidden INTEGER DEFAULT 0,
-            archived INTEGER DEFAULT 0,
-            archived_at DATETIME,
-            restored_at DATETIME,
-            original_group_id TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-         CREATE TABLE IF NOT EXISTS scheduled_transactions (
-        id TEXT PRIMARY KEY,
-        account_id TEXT NOT NULL,
-        date TEXT NOT NULL,
-        payee TEXT NOT NULL,
-        amount REAL NOT NULL,
-        transaction_type TEXT NOT NULL,
-        category_id TEXT,
-        memo TEXT,
-        user_id TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-    );
-        
-        CREATE TABLE IF NOT EXISTS accounts (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            type TEXT NOT NULL,
-            balance REAL DEFAULT 0,
-            cleared_balance REAL DEFAULT 0,
-            working_balance REAL DEFAULT 0,
-            account_type_category TEXT DEFAULT 'budget',
-            currency TEXT DEFAULT 'USD',
-            institution TEXT,
-            credit_limit REAL,
-            interest_rate REAL,
-            due_date DATE,
-            minimum_payment REAL,
-            original_balance REAL,
-            term_months INTEGER,
-            payment_amount REAL,
-            payment_frequency TEXT DEFAULT 'monthly',
-            next_payment_date DATE,
-            is_active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id TEXT NOT NULL,
-            user_id INTEGER NOT NULL,
-            date DATE NOT NULL,
-            description TEXT,
-            amount REAL NOT NULL,
-            category_id TEXT,
-            payee TEXT,
-            memo TEXT,
-            is_cleared INTEGER DEFAULT 0,
-            plaid_transaction_id TEXT UNIQUE,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (account_id) REFERENCES accounts(id),
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (category_id) REFERENCES categories(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS migrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            description TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS plaid_items (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            access_token TEXT NOT NULL,
-            institution_id TEXT,
-            institution_name TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            last_sync DATETIME,
-            cursor TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS plaid_accounts (
-            plaid_account_id TEXT PRIMARY KEY,
-            item_id TEXT NOT NULL,
-            account_id TEXT,
-            mask TEXT,
-            name TEXT,
-            official_name TEXT,
-            type TEXT,
-            subtype TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (item_id) REFERENCES plaid_items(id),
-            FOREIGN KEY (account_id) REFERENCES accounts(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS plaid_category_mappings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            plaid_category TEXT NOT NULL,
-            category_id TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (category_id) REFERENCES categories(id),
-            UNIQUE(user_id, plaid_category)
-        );
-        
-        CREATE TABLE IF NOT EXISTS user_settings (
-            user_id INTEGER NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT,
-            updated_at DATETIME,
-            PRIMARY KEY (user_id, key),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    `);
-
-    const userCount = await dbConnection.get('SELECT COUNT(*) as count FROM users');
-    if (userCount.count === 0) {
-        console.log('📝 Inserting demo user...');
-        await dbConnection.run(`INSERT OR IGNORE INTO users (id, username, email, full_name) VALUES (2, 'demo', 'demo@example.com', 'Demo User')`);
-    }
-
-    const groupCount = await dbConnection.get('SELECT COUNT(*) as count FROM category_groups WHERE user_id = 2');
-    const SKIP_DEMO_SEEDING = true;
-    if (groupCount.count === 0 && !SKIP_DEMO_SEEDING) {
-        console.log('📝 Inserting demo category groups...');
-        await dbConnection.run(`INSERT OR IGNORE INTO category_groups (id, user_id, name, sort_order) VALUES 
-        (1, 2, 'Fixed Expenses', 1), 
-        (2, 2, 'Variable Expenses', 2)`);
-    } else {
-        console.log('✅ Demo group seeding disabled or groups already exist');
-    }
-
-    const catCount = await dbConnection.get('SELECT COUNT(*) as count FROM categories WHERE user_id = 2');
-    if (catCount.count === 0 && !SKIP_DEMO_SEEDING) {
-        console.log('📝 Inserting demo categories...');
-        await dbConnection.run(`INSERT OR IGNORE INTO categories (id, user_id, name, group_id, assigned) VALUES 
-        ('cat1', 2, 'Groceries', 2, 0), 
-        ('cat2', 2, 'Rent', 1, 1500), 
-        ('cat3', 2, 'Utilities', 1, 200),
-        ('cat4', 2, 'Dining Out', 2, 300), 
-        ('cat5', 2, 'Transportation', 2, 150)`);
-    } else {
-        console.log('✅ Demo category seeding disabled or categories already exist');
-    }
-
-    const accountCount = await dbConnection.get('SELECT COUNT(*) as count FROM accounts WHERE user_id = 2');
-    if (accountCount.count === 0) {
-        console.log('📝 Inserting demo accounts...');
-        await dbConnection.run(`INSERT OR IGNORE INTO accounts (id, user_id, name, type, balance, institution) VALUES 
-            ('test4', 2, 'Checking', 'checking', 3450.89, 'Chase'), 
-            ('1faa4471-bbd8-4fbb-9c06-716c9373eb75', 2, 'Savings', 'savings', 10000, 'Chase')`);
-    }
-
-    console.log('✅ Tables verified and demo data seeded');
-}
 
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
@@ -545,32 +351,19 @@ async function initDatabase() {
         console.log('📂 Database directory:', dbDir);
         console.log('📂 Database path:', dbPath);
 
-        if (!fs.existsSync(dbDir)) {
-            console.log(`📁 Creating database directory: ${dbDir}`);
-            fs.mkdirSync(dbDir, { recursive: true });
-        }
-
         const dbExists = fs.existsSync(dbPath);
         console.log('📂 Database file exists:', dbExists);
 
         if (!dbExists) {
-            console.log('🆕 No existing database found. Will create new database with tables.');
+            console.log('🆕 No existing database found. Creating new database with full schema...');
         }
 
-        const database = await getDatabase();
-        await ensureAllTablesExist(database);
+        // Use the full schema initialization from initSchema.cjs
+        const database = await initializeDatabase(dbPath, {
+            injectRecoveryUser: false // Automatic startup should only create structure/schema
+        });
 
-        const tableCheck = await database.get(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='categories'"
-        );
-
-        if (tableCheck) {
-            console.log('✅ Categories table verified');
-        } else {
-            console.warn('⚠️ Categories table not found after initialization');
-        }
-
-        console.log('✅ Database initialized successfully');
+        console.log('✅ Database initialized successfully with full schema');
         return database;
     } catch (error) {
         console.error('❌ Failed to initialize database:', error);
@@ -947,7 +740,7 @@ function createWindow() {
         win.loadURL('http://localhost:3000');
         win.webContents.openDevTools({ mode: 'detach' });
     } else {
-        const indexPath = path.join(__dirname, '../../out/index.html');
+        const indexPath = getProductionFilePath('index.html');
         console.log('📄 Loading production file:', indexPath);
 
         if (fs.existsSync(indexPath)) {
@@ -985,24 +778,24 @@ function createWindow() {
             }
 
             if (filePath.startsWith('accounts/')) {
-                const accountPagePath = path.join(__dirname, '../../out/accounts/[id].html');
+                const accountPagePath = getProductionFilePath('accounts/[id].html');
 
                 if (fs.existsSync(accountPagePath)) {
                     console.log('📄 Loading account page:', accountPagePath);
                     win.loadFile(accountPagePath).catch(err => {
                         console.error('❌ Failed to load account page:', err);
-                        win.loadFile(path.join(__dirname, '../../out/index.html'));
+                        win.loadFile(getProductionFilePath('index.html'));
                     });
                 } else {
                     console.log('📄 Account page not found, loading index');
-                    win.loadFile(path.join(__dirname, '../../out/index.html'));
+                    win.loadFile(getProductionFilePath('index.html'));
                 }
             } else {
-                const routePath = path.join(__dirname, '../../out', filePath, 'index.html');
+                const routePath = getProductionFilePath(path.join(filePath, 'index.html'));
                 if (fs.existsSync(routePath)) {
                     win.loadFile(routePath);
                 } else {
-                    win.loadFile(path.join(__dirname, '../../out/index.html'));
+                    win.loadFile(getProductionFilePath('index.html'));
                 }
             }
         }
@@ -1287,6 +1080,136 @@ function setupIpcHandlers() {
     ipcMain.handle('get-current-user', () => {
         const user = userService.getCurrentUser();
         return { success: true, data: user };
+    });
+
+    ipcMain.handle('backup-database', async (event, password, options = {}) => {
+        if (!fileEncryption) {
+            return { success: false, error: 'Backup service is unavailable' };
+        }
+
+        const dbPath = getDatabasePath();
+        if (!fs.existsSync(dbPath)) {
+            return { success: false, error: 'No database found to export. Please ensure IntentFlow has been used at least once.' };
+        }
+
+        const snapshotPath = path.join(app.getPath('temp'), `intentflow-db-snapshot-${Date.now()}.db`);
+        let snapshotCreated = false;
+
+        try {
+            if (db && typeof db.exec === 'function') {
+                try {
+                    await db.exec('PRAGMA wal_checkpoint(FULL)');
+                } catch (checkpointError) {
+                    console.warn('⚠️ WAL checkpoint failed before snapshot:', checkpointError.message);
+                }
+            }
+
+            fs.copyFileSync(dbPath, snapshotPath);
+            snapshotCreated = true;
+
+            return await fileEncryption.backupDatabase(password, snapshotPath, null, options);
+        } catch (error) {
+            console.error('❌ Backup database failed:', error);
+            if (error.code === 'ENOSPC') {
+                return { success: false, error: 'Not enough disk space to create backup. Please free up space and try again.' };
+            }
+            return { success: false, error: error.message };
+        } finally {
+            if (snapshotCreated && fs.existsSync(snapshotPath)) {
+                try {
+                    fs.unlinkSync(snapshotPath);
+                } catch (cleanupError) {
+                    console.warn('⚠️ Failed to delete backup snapshot:', cleanupError.message);
+                }
+            }
+        }
+    });
+
+    ipcMain.handle('restore-database', async (event, password) => {
+        if (!fileEncryption) {
+            return { success: false, error: 'Backup service is unavailable' };
+        }
+
+        const dbPath = getDatabasePath();
+        const rollbackTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const rollbackPath = path.join(path.dirname(dbPath), `${path.basename(dbPath)}.rollback-${rollbackTimestamp}`);
+        let rollbackCreated = false;
+
+        try {
+            const selected = await fileEncryption.openEncryptedBackupDialog();
+            if (!selected.success) {
+                return selected;
+            }
+
+            if (fs.existsSync(dbPath)) {
+                fs.copyFileSync(dbPath, rollbackPath);
+                rollbackCreated = true;
+            }
+
+            if (db && typeof db.close === 'function') {
+                try {
+                    await db.close();
+                } catch (closeError) {
+                    console.warn('⚠️ Failed closing DB before restore:', closeError.message);
+                }
+                db = null;
+            }
+
+            const result = await fileEncryption.decryptFile(selected.filePath, password, dbPath);
+            if (!result.success) {
+                if (rollbackCreated && fs.existsSync(rollbackPath)) {
+                    try {
+                        fs.copyFileSync(rollbackPath, dbPath);
+                    } catch (restoreError) {
+                        console.error('❌ Failed to restore rollback copy after restore failure:', restoreError.message);
+                    }
+                }
+                return result;
+            }
+
+            const restartMessage = 'Backup restored successfully. Restarting the application now.';
+            setTimeout(() => {
+                app.relaunch();
+                app.exit(0);
+            }, 600);
+
+            return {
+                success: true,
+                message: restartMessage,
+                rollbackBackup: rollbackCreated ? rollbackPath : null
+            };
+        } catch (error) {
+            console.error('❌ Restore database failed:', error);
+            if (rollbackCreated && fs.existsSync(rollbackPath)) {
+                try {
+                    fs.copyFileSync(rollbackPath, dbPath);
+                } catch (restoreError) {
+                    console.error('❌ Failed to restore rollback copy after exception:', restoreError.message);
+                }
+            }
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('saveBudgetToFile', async (event, payload) => {
+        if (!fileEncryption) {
+            return { success: false, error: 'File encryption service unavailable' };
+        }
+        return await fileEncryption.saveBudgetToFile(payload.budget, payload.password);
+    });
+
+    ipcMain.handle('loadBudgetFromFile', async (event, payload) => {
+        if (!fileEncryption) {
+            return { success: false, error: 'File encryption service unavailable' };
+        }
+        return await fileEncryption.loadBudgetFromFile(payload.password);
+    });
+
+    ipcMain.handle('exportBudget', async (event, budgetData) => {
+        if (!fileEncryption) {
+            return { success: false, error: 'File export service unavailable' };
+        }
+        return await fileEncryption.exportAsJSON(budgetData);
     });
 
     // Add at the top of the file with other requires

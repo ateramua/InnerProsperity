@@ -1,12 +1,15 @@
 // src/pages/settings.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from 'next/router';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function Settings() {
+  const router = useRouter();
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState("general");
   const [isRedirecting, setIsRedirecting] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
 
   const [groups, setGroups] = useState([
     {
@@ -32,6 +35,57 @@ export default function Settings() {
   const [budget, setBudget] = useState(1000);
   const [currency, setCurrency] = useState("USD");
   const [theme, setTheme] = useState("light");
+
+  const [backupPassword, setBackupPassword] = useState("");
+  const [backupStatus, setBackupStatus] = useState("Unavailable");
+  const [lastBackup, setLastBackup] = useState(null);
+  const [backupMessage, setBackupMessage] = useState("");
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [encryptionSettings, setEncryptionSettings] = useState({
+    kdf: 'Argon2id',
+    memoryCost: 64,
+    iterations: 3
+  });
+
+  // ✅ FIX: stable disabled style helper
+  const isDisabled = (state) => ({
+    pointerEvents: state ? "none" : "auto",
+    opacity: state ? 0.5 : 1,
+    cursor: state ? "not-allowed" : "pointer",
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const stored = window.localStorage.getItem('intentflowEncryptionSettings');
+      if (stored) {
+        try {
+          setEncryptionSettings(JSON.parse(stored));
+        } catch (error) {
+          console.warn('Unable to parse stored encryption settings:', error);
+        }
+      }
+
+      const meta = window.localStorage.getItem('intentflowBackupMeta');
+      if (meta) {
+        try {
+          const parsed = JSON.parse(meta);
+          if (parsed.lastBackup) {
+            setLastBackup(parsed.lastBackup);
+            setBackupStatus('Available');
+          }
+        } catch (error) {
+          console.warn('Unable to parse backup metadata:', error);
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user && activeTab !== 'backup') {
+      setActiveTab('backup');
+    }
+  }, [user]);
 
   const addGroup = () => {
     if (!newGroupName.trim()) return;
@@ -100,8 +154,12 @@ export default function Settings() {
   const saveSettings = async () => {
     setIsRedirecting(true);
     
-    const settings = { currency, theme, budget, groups };
+    const settings = { currency, theme, budget, groups, encryptionSettings };
     console.log("Saving settings:", settings);
+
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('intentflowEncryptionSettings', JSON.stringify(encryptionSettings));
+    }
     
     try {
       if (window.electronAPI) {
@@ -119,17 +177,104 @@ export default function Settings() {
     
     console.log("🔄 Redirecting to home page...");
     
-    if (window.history && window.history.length > 1) {
+    if (router && typeof router.push === "function") {
+      router.push('/');
+    } else if (window.history && window.history.length > 1) {
       window.history.back();
     } else {
       window.location.replace('/');
     }
-    
+
     setTimeout(() => {
       if (window.location.pathname !== '/') {
         window.location.href = '/';
       }
     }, 100);
+  };
+
+  const handleBackupResult = (result) => {
+    if (result?.success) {
+      setBackupStatus('Available');
+      setLastBackup(new Date().toISOString());
+      setBackupMessage(result.message || 'Backup completed successfully');
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('intentflowBackupMeta', JSON.stringify({ lastBackup: new Date().toISOString() }));
+      }
+    } else if (result?.canceled) {
+      setBackupMessage('Backup operation canceled');
+    } else {
+      setBackupMessage(result?.error || 'Backup failed');
+    }
+  };
+
+  const handleExportBackup = async () => {
+    if (!backupPassword) {
+      setBackupMessage('Password is required');
+      return;
+    }
+
+    if (backupPassword.length < 8) {
+      setBackupMessage('Warning: password is weak. Use at least 8 characters for better protection.');
+    }
+
+    setIsBackingUp(true);
+    setBackupMessage('Exporting backup...');
+
+    try {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.backupDatabase(backupPassword, encryptionSettings);
+        handleBackupResult(result);
+      } else {
+        setBackupMessage('Electron API not available');
+      }
+    } catch (error) {
+      setBackupMessage(error.message || 'Backup failed');
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  const handleImportBackup = async () => {
+    if (!backupPassword) {
+      setBackupMessage('Password is required');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'WARNING: This will replace ALL current data with the backup. A rollback backup will be created automatically. Continue?'
+    );
+
+    if (!confirmed) {
+      setBackupMessage('Restore operation canceled');
+      return;
+    }
+
+    if (backupPassword.length < 8) {
+      setBackupMessage('Warning: password is weak. Use at least 8 characters for better protection.');
+    }
+
+    setIsRestoring(true);
+    setBackupMessage('Restoring backup...');
+
+    try {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.restoreDatabase(backupPassword);
+        if (result?.success) {
+          setBackupStatus('Available');
+          setBackupMessage(result.message || 'Backup restored successfully. Restarting app...');
+        } else if (result?.canceled) {
+          setBackupMessage('Restore operation canceled');
+        } else {
+          setBackupMessage(result?.error || 'Restore failed');
+        }
+      } else {
+        setBackupMessage('Electron API not available');
+      }
+    } catch (error) {
+      setBackupMessage(error.message || 'Restore failed');
+    } finally {
+      setIsRestoring(false);
+    }
   };
 
   const cancelRedirect = () => {
@@ -139,6 +284,32 @@ export default function Settings() {
   const handleLogout = async () => {
     await logout();
     window.location.href = '/login';
+  };
+
+  const handleBackToPropertyMap = () => {
+    // Prevent navigation during ongoing backup/restore operations
+    if (isBackingUp || isRestoring) {
+      setBackupMessage('Please wait for current operation to complete before navigating');
+      return;
+    }
+    
+    // Prevent multiple navigation attempts
+    if (isNavigating) return;
+    
+    setIsNavigating(true);
+    
+    // Use requestAnimationFrame to ensure clean navigation
+    requestAnimationFrame(() => {
+      if (router && typeof router.push === "function") {
+        router.push('/').finally(() => {
+          setIsNavigating(false);
+        });
+      } else if (window.location) {
+        window.location.href = '/';
+      } else {
+        setIsNavigating(false);
+      }
+    });
   };
 
   return (
@@ -161,11 +332,26 @@ export default function Settings() {
               </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={handleBackToPropertyMap}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleBackToPropertyMap();
+              }
+            }}
+            style={styles.backButton}
+            aria-label="Return to PropertyMap view"
+            disabled={isBackingUp || isRestoring || isNavigating}
+          >
+            ← Back to PropertyMap
+          </button>
           
           {/* User menu */}
           {user && (
             <div style={styles.userMenuContainer}>
-              <button
+              <button type="button"
                 onClick={() => setShowUserMenu(!showUserMenu)}
                 style={styles.userButton}
               >
@@ -188,7 +374,7 @@ export default function Settings() {
                       {user.email && <div style={styles.userEmail}>{user.email}</div>}
                     </div>
                   </div>
-                  <button
+                  <button type="button"
                     onClick={handleLogout}
                     style={styles.logoutButton}
                     onMouseEnter={(e) => e.target.style.background = '#fee2e2'}
@@ -203,36 +389,195 @@ export default function Settings() {
           )}
         </div>
 
-        {/* Tabs */}
+        {/* Tabs - Reordered: General first, then Prosperity Map, then Backup, then Categories */}
         <div style={styles.tabContainer}>
-          <button
-            onClick={() => setActiveTab("general")}
+          {user && (
+            <>
+              <button type="button"
+                onClick={() => setActiveTab("general")}
+                style={{
+                  ...styles.tab,
+                  ...(activeTab === "general" ? styles.activeTab : styles.inactiveTab)
+                }}
+              >
+                <i className="fas fa-cog"></i> General
+              </button>
+              <button type="button"
+                onClick={() => setActiveTab("budget")}
+                style={{
+                  ...styles.tab,
+                  ...(activeTab === "budget" ? styles.activeTab : styles.inactiveTab)
+                }}
+              >
+                <i className="fas fa-chart-pie"></i> Prosperity Map
+              </button>
+            </>
+          )}
+          
+          <button type="button"
+            onClick={() => setActiveTab("backup")}
             style={{
               ...styles.tab,
-              ...(activeTab === "general" ? styles.activeTab : styles.inactiveTab)
+              ...(activeTab === "backup" ? styles.activeTab : styles.inactiveTab)
             }}
           >
-            <i className="fas fa-cog"></i> General
+            <i className="fas fa-save"></i> Backup
           </button>
-          <button
-            onClick={() => setActiveTab("budget")}
-            style={{
-              ...styles.tab,
-              ...(activeTab === "budget" ? styles.activeTab : styles.inactiveTab)
-            }}
-          >
-            <i className="fas fa-chart-pie"></i> Prosperity Map
-          </button>
-          <button
-            onClick={() => setActiveTab("categories")}
-            style={{
-              ...styles.tab,
-              ...(activeTab === "categories" ? styles.activeTab : styles.inactiveTab)
-            }}
-          >
-            <i className="fas fa-tags"></i> Categories
-          </button>
+
+          {user && (
+            <>
+              <button type="button"
+                onClick={() => setActiveTab("categories")}
+                style={{
+                  ...styles.tab,
+                  ...(activeTab === "categories" ? styles.activeTab : styles.inactiveTab)
+                }}
+              >
+                <i className="fas fa-tags"></i> Categories
+              </button>
+            </>
+          )}
         </div>
+
+        {/* BACKUP TAB */}
+        {activeTab === "backup" && (
+          <div style={styles.tabContent}>
+            <h2 style={styles.sectionTitle}>Backup & Restore</h2>
+            <div style={styles.panelBox}>
+              <div style={styles.sectionHeader}>
+                <div>
+                  <strong>Backup Status:</strong> {backupStatus === 'Available' ? '✅ Available' : '⚠️ Unavailable'}
+                </div>
+                <div>
+                  <strong>Last Backup:</strong> {lastBackup ? new Date(lastBackup).toLocaleString() : 'Never'}
+                </div>
+              </div>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Backup Password</label>
+                <input
+                  type="password"
+                  value={backupPassword}
+                  onChange={(e) => setBackupPassword(e.target.value)}
+                  placeholder="Enter backup encryption password"
+                  style={styles.input}
+                  disabled={isBackingUp || isRestoring}
+                  aria-label="Backup encryption password"
+                />
+                {backupPassword && backupPassword.length < 8 && (
+                  <p style={{ ...styles.infoText, color: '#b45309' }}>
+                    Password is weak. Use at least 8 characters for improved security.
+                  </p>
+                )}
+              </div>
+
+              <div style={styles.backupButtonsRow}>
+                <button
+                  type="button"
+                  onClick={handleExportBackup}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleExportBackup();
+                    }
+                  }}
+                  disabled={isBackingUp || isRestoring}
+                  style={{
+                    ...styles.actionButton,
+                    ...(isBackingUp ? styles.disabledButton : {})
+                  }}
+                  aria-label="Export encrypted backup file"
+                >
+                  {isBackingUp ? 'Exporting...' : 'Export Backup'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleImportBackup}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleImportBackup();
+                    }
+                  }}
+                  disabled={isBackingUp || isRestoring}
+                  style={{
+                    ...styles.actionButton,
+                    ...(isRestoring ? styles.disabledButton : {}),
+                    background: '#1e40af'
+                  }}
+                  aria-label="Import encrypted backup file"
+                >
+                  {isRestoring ? 'Restoring...' : 'Import Backup'}
+                </button>
+              </div>
+
+              <div style={styles.infoGrid}>
+                <div style={styles.infoCard}>
+                  <strong>Encryption</strong>
+                  <p style={styles.infoText}>All backup files are encrypted locally with the password you choose.</p>
+                </div>
+                <div style={styles.infoCard}>
+                  <strong>Local Only</strong>
+                  <p style={styles.infoText}>Backups remain on your device and do not require a cloud account.</p>
+                </div>
+              </div>
+
+              <div style={styles.sectionTitle}>Encryption Preferences</div>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Default KDF</label>
+                <select
+                  value={encryptionSettings.kdf}
+                  onChange={(e) => {
+                    const next = { ...encryptionSettings, kdf: e.target.value };
+                    setEncryptionSettings(next);
+                    window.localStorage?.setItem('intentflowEncryptionSettings', JSON.stringify(next));
+                  }}
+                  style={styles.select}
+                  disabled={isBackingUp || isRestoring}
+                >
+                  <option value="Argon2id">Argon2id</option>
+                  <option value="PBKDF2">PBKDF2</option>
+                </select>
+              </div>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Memory Cost (MB)</label>
+                <input
+                  type="number"
+                  min={32}
+                  value={encryptionSettings.memoryCost}
+                  onChange={(e) => {
+                    const next = { ...encryptionSettings, memoryCost: Number(e.target.value) };
+                    setEncryptionSettings(next);
+                    window.localStorage?.setItem('intentflowEncryptionSettings', JSON.stringify(next));
+                  }}
+                  style={styles.input}
+                  disabled={isBackingUp || isRestoring}
+                />
+              </div>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Iterations</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={encryptionSettings.iterations}
+                  onChange={(e) => {
+                    const next = { ...encryptionSettings, iterations: Number(e.target.value) };
+                    setEncryptionSettings(next);
+                    window.localStorage?.setItem('intentflowEncryptionSettings', JSON.stringify(next));
+                  }}
+                  style={styles.input}
+                  disabled={isBackingUp || isRestoring}
+                />
+              </div>
+
+              {backupMessage && (
+                <div style={styles.messageBox} role="status" aria-live="polite">
+                  {backupMessage}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* GENERAL TAB */}
         {activeTab === "general" && (
@@ -321,7 +666,7 @@ export default function Settings() {
                       style={styles.categoryInput}
                     />
 
-                    <button
+                    <button type="button"
                       onClick={() => deleteCategory(group.id, cat.id)}
                       style={styles.deleteButton}
                     >
@@ -343,7 +688,7 @@ export default function Settings() {
                     style={styles.categoryInput}
                   />
 
-                  <button 
+                  <button type="button" 
                     onClick={() => addCategory(group.id)}
                     style={styles.addCategoryButton}
                   >
@@ -361,7 +706,7 @@ export default function Settings() {
                 style={styles.groupInput}
               />
 
-              <button 
+              <button type="button" 
                 onClick={addGroup}
                 style={styles.addGroupButton}
               >
@@ -372,35 +717,37 @@ export default function Settings() {
         )}
 
         {/* Save Settings Button */}
-        <div style={styles.saveButtonContainer}>
-          {isRedirecting && (
-            <button 
-              onClick={cancelRedirect}
-              style={styles.cancelButton}
-            >
-              Cancel
-            </button>
-          )}
-          <button 
-            onClick={saveSettings}
-            disabled={isRedirecting}
-            style={{
-              ...styles.saveButton,
-              opacity: isRedirecting ? 0.7 : 1,
-              cursor: isRedirecting ? "wait" : "pointer"
-            }}
-          >
-            {isRedirecting ? (
-              <>
-                <i className="fas fa-spinner fa-spin"></i> Redirecting...
-              </>
-            ) : (
-              <>
-                <i className="fas fa-save"></i> Save Settings
-              </>
+        {user && (
+          <div style={styles.saveButtonContainer}>
+            {isRedirecting && (
+              <button type="button" 
+                onClick={cancelRedirect}
+                style={styles.cancelButton}
+              >
+                Cancel
+              </button>
             )}
-          </button>
-        </div>
+            <button type="button" 
+              onClick={saveSettings}
+              disabled={isRedirecting}
+              style={{
+                ...styles.saveButton,
+                opacity: isRedirecting ? 0.7 : 1,
+                cursor: isRedirecting ? "wait" : "pointer"
+              }}
+            >
+              {isRedirecting ? (
+                <>
+                  <i className="fas fa-spinner fa-spin"></i> Redirecting...
+                </>
+              ) : (
+                <>
+                  <i className="fas fa-save"></i> Save Settings
+                </>
+              )}
+            </button>
+          </div>
+        )}
         
         {/* Footer */}
         <div style={styles.footer}>
@@ -628,6 +975,77 @@ const styles = {
     border: "1px solid #ddd",
     fontSize: "1rem",
     fontFamily: "'Inter', sans-serif"
+  },
+  panelBox: {
+    border: "1px solid #e2e8f0",
+    borderRadius: "24px",
+    padding: "24px",
+    background: "#f8fafc",
+    display: "flex",
+    flexDirection: "column",
+    gap: "18px"
+  },
+  sectionHeader: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: "16px",
+    paddingBottom: "12px",
+    borderBottom: "1px solid #e2e8f0"
+  },
+  backupButtonsRow: {
+    display: "flex",
+    gap: "12px",
+    flexWrap: "wrap"
+  },
+  actionButton: {
+    padding: "12px 20px",
+    border: "none",
+    borderRadius: "14px",
+    cursor: "pointer",
+    background: "#2a5298",
+    color: "white",
+    fontWeight: 600,
+    minWidth: "160px"
+  },
+  disabledButton: {
+    opacity: 0.65,
+    cursor: "not-allowed"
+  },
+  infoGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: "12px",
+    marginTop: "10px"
+  },
+  infoCard: {
+    background: "white",
+    borderRadius: "16px",
+    border: "1px solid #e2e8f0",
+    padding: "16px"
+  },
+  infoText: {
+    margin: "8px 0 0 0",
+    color: "#475569",
+    lineHeight: 1.5
+  },
+  messageBox: {
+    padding: "16px",
+    borderRadius: "14px",
+    background: "#ffffff",
+    border: "1px solid #cbd5e1",
+    color: "#334155",
+    fontWeight: 500
+  },
+  backButton: {
+    marginLeft: "auto",
+    padding: "10px 16px",
+    borderRadius: "14px",
+    border: "1px solid #cbd5e1",
+    background: "white",
+    color: "#334155",
+    cursor: "pointer",
+    fontWeight: 600,
+    transition: "all 0.2s"
   },
   timezoneBox: {
     background: "#f8fafc",

@@ -24,6 +24,8 @@ export default function HomePage() {
   const [currentView, setCurrentView] = useState('propertyMap');
   const [accounts, setAccounts] = useState([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
 
   const { lastUpdate, refresh } = useRealtimeUpdates(
     [
@@ -83,6 +85,13 @@ export default function HomePage() {
     }
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    const handleResize = () => setIsDesktop(window.innerWidth >= 768);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // ✅ Listen for "accounts-updated" events and refresh accounts
   useEffect(() => {
     const handleAccountsUpdated = () => {
@@ -106,22 +115,29 @@ export default function HomePage() {
 
   if (loading || loadingAccounts) {
     return (
-      <div style={styles.loadingContainer}>
-        <div style={styles.loadingSpinner}></div>
-        <p style={{ marginTop: 12 }}>Loading your workspace...</p>
+      <div className="min-h-screen bg-gradient-to-br from-primary-900 via-primary-800 to-secondary-900 flex flex-col items-center justify-center text-white">
+        <div className="w-14 h-14 border-4 border-white/20 border-t-primary-400 rounded-full animate-spin shadow-lg shadow-primary-500/50"></div>
+        <p className="mt-3 text-lg font-medium">Loading your workspace...</p>
       </div>
     );
   }
 
   return (
-    <div style={styles.container}>
+    <div className="flex min-h-screen bg-gradient-to-br from-primary-900 via-primary-800 to-secondary-900 font-sans">
       <Sidebar
         onNavigate={handleNavigation}
         currentView={currentView}
+        collapsed={isSidebarCollapsed}
+        onToggleCollapse={() => setIsSidebarCollapsed(prev => !prev)}
       />
 
-      <main style={styles.main}>
-        <div style={styles.mainGlass}>
+      <main
+        className="flex-1 p-4 md:p-8 min-h-screen text-white transition-all duration-300"
+        style={{
+          marginLeft: isDesktop ? (isSidebarCollapsed ? 72 : 280) : 0
+        }}
+      >
+        <div className="glass rounded-2xl p-4 md:p-8 min-h-[85vh] shadow-2xl shadow-black/40 border border-white/10">
           <ViewContainers
             currentView={currentView}
             accounts={accounts}
@@ -139,46 +155,3 @@ export default function HomePage() {
     </div>
   );
 }
-
-const styles = {
-  container: {
-    display: 'flex',
-    minHeight: '100vh',
-    background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 40%, #0f2e1c 100%)',
-    fontFamily: 'Inter, system-ui, sans-serif'
-  },
-  main: {
-    flex: 1,
-    marginLeft: '280px',
-    padding: '2rem',
-    minHeight: '100vh',
-    color: 'white'
-  },
-  mainGlass: {
-    backdropFilter: 'blur(16px)',
-    background: '#0047AB',
-    borderRadius: '18px',
-    padding: '2rem',
-    border: '1px solid rgba(255,255,255,0.08)',
-    boxShadow: '0 10px 40px rgba(0,0,0,0.4), 0 0 40px rgba(99,102,241,0.15)',
-    minHeight: '85vh'
-  },
-  loadingContainer: {
-    minHeight: '100vh',
-    background: 'linear-gradient(135deg, #0047AB, #0047AB, #0047AB)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: 'white'
-  },
-  loadingSpinner: {
-    width: '56px',
-    height: '56px',
-    border: '5px solid rgba(255,255,255,0.15)',
-    borderTopColor: '#6366F1',
-    borderRadius: '50%',
-    animation: 'spin 0.9s linear infinite',
-    boxShadow: '0 0 20px rgba(99,102,241,0.6)'
-  }
-};

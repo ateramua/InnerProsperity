@@ -3,12 +3,14 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../../contexts/AuthContext';
 
-const Sidebar = ({ onNavigate, currentView }) => {
+const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse }) => {
     const [expandedSection, setExpandedSection] = useState(null);
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
     const [accountType, setAccountType] = useState('credit');
+    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const router = useRouter();
     const { logout } = useAuth();
+    const isCollapsed = collapsed;
 
     // Form state for new account
     const [newAccountData, setNewAccountData] = useState({
@@ -461,11 +463,21 @@ const Sidebar = ({ onNavigate, currentView }) => {
 
     return (
         <>
-            <div style={styles.sidebar}>
+            <div style={{ ...styles.sidebar, width: isCollapsed ? '72px' : '280px' }}>
                 {/* Header */}
-                <div style={styles.header}>
-                    <h2 style={styles.title}>IntentFlow</h2>
-                    <div style={styles.version}>v1.0.0</div>
+                <div style={{ ...styles.header, ...(isCollapsed ? { padding: '24px 12px' } : {}) }}>
+                    <button
+                        type="button"
+                        onClick={onToggleCollapse}
+                        style={styles.collapseToggle}
+                        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                    >
+                        {isCollapsed ? '➡' : '⬅'}
+                    </button>
+                    <div style={{ display: isCollapsed ? 'none' : 'block' }}>
+                        <h2 style={styles.title}>IntentFlow</h2>
+                        <div style={styles.version}>v1.0.0</div>
+                    </div>
                 </div>
 
                 {/* Navigation Items */}
@@ -476,13 +488,12 @@ const Sidebar = ({ onNavigate, currentView }) => {
                             <div
                                 style={{
                                     ...styles.navItem,
+                                    ...(isCollapsed ? styles.collapsedNavItem : {}),
                                     ...(currentView === item.id ? styles.activeNavItem : {}),
                                     ...(item.hasSubItems ? styles.navItemWithSubItems : {})
                                 }}
                                 onClick={() => {
-                                    if (item.hasSubItems) {
-                                        toggleSection(item.id);
-                                    } else if (item.accounts && item.accounts.length > 0) {
+                                    if ((item.hasSubItems || (item.accounts && item.accounts.length > 0)) && !isCollapsed) {
                                         toggleSection(item.id);
                                     } else {
                                         handleNavigation(item.id);
@@ -490,8 +501,8 @@ const Sidebar = ({ onNavigate, currentView }) => {
                                 }}
                             >
                                 <span style={styles.navIcon}>{item.icon}</span>
-                                <span style={styles.navLabel}>{item.label}</span>
-                                {(item.hasSubItems || (item.accounts && item.accounts.length > 0)) && (
+                                <span style={{ ...styles.navLabel, ...(isCollapsed ? styles.hiddenLabel : {}) }}>{item.label}</span>
+                                {(item.hasSubItems || (item.accounts && item.accounts.length > 0)) && !isCollapsed && (
                                     <span style={styles.navChevron}>
                                         {expandedSection === item.id ? '▼' : '▶'}
                                     </span>
@@ -499,24 +510,24 @@ const Sidebar = ({ onNavigate, currentView }) => {
                             </div>
 
                             {/* Render sub-items for credit cards and loans */}
-                            {item.hasSubItems && renderSubItems(item)}
+                            {item.hasSubItems && !isCollapsed && renderSubItems(item)}
                         </div>
                     ))}
                 </nav>
 
                 {/* Footer */}
                 <div style={styles.footer}>
-                    <div style={styles.footerItem} onClick={() => router.push('/settings')}>
+                    <div style={{ ...styles.footerItem, ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={() => router.push('/settings')}>
                         <span style={styles.footerIcon}>⚙️</span>
-                        <span>Settings</span>
+                        <span style={isCollapsed ? styles.hiddenLabel : undefined}>Settings</span>
                     </div>
-                    <div style={styles.footerItem} onClick={() => router.push('/reports')}>
+                    <div style={{ ...styles.footerItem, ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={() => router.push('/reports')}>
                         <span style={styles.footerIcon}>📊</span>
-                        <span>Reports</span>
+                        <span style={isCollapsed ? styles.hiddenLabel : undefined}>Reports</span>
                     </div>
-                    <div style={{ ...styles.footerItem, borderTop: '1px solid #374151', marginTop: '8px', paddingTop: '12px' }} onClick={handleLogout}>
+                    <div style={{ ...styles.footerItem, borderTop: '1px solid #374151', marginTop: '8px', paddingTop: '12px', ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={handleLogout}>
                         <span style={styles.footerIcon}>🚪</span>
-                        <span style={{ color: '#F87171' }}>Logout</span>
+                        <span style={{ color: '#F87171', ...(isCollapsed ? styles.hiddenLabel : {}) }}>Logout</span>
                     </div>
                 </div>
             </div>
@@ -712,7 +723,8 @@ const styles = {
         position: 'fixed',
         left: 0,
         top: 0,
-        overflowY: 'auto'
+        overflowY: 'auto',
+        transition: 'width 0.25s ease'
     },
     header: {
         padding: '24px 20px',
@@ -744,6 +756,10 @@ const styles = {
             background: '#374151'
         }
     },
+    collapsedNavItem: {
+        justifyContent: 'center',
+        padding: '12px 0'
+    },
     navItemWithSubItems: {
         borderBottom: '1px solid transparent',
         ':hover': {
@@ -766,6 +782,9 @@ const styles = {
         flex: 1,
         fontSize: '0.95rem',
         fontWeight: '500'
+    },
+    hiddenLabel: {
+        display: 'none'
     },
     navChevron: {
         fontSize: '0.75rem',
@@ -853,6 +872,19 @@ const styles = {
         ':hover': {
             color: 'white'
         }
+    },
+    collapseToggle: {
+        background: 'transparent',
+        border: '1px solid rgba(255,255,255,0.18)',
+        color: 'white',
+        width: '36px',
+        height: '36px',
+        borderRadius: '12px',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: '12px'
     },
     footerIcon: {
         fontSize: '1.1rem',

@@ -11,7 +11,7 @@ async function migrate(db) {
         const existingColumns = tableInfo.map(col => col.name);
 
         const columnsToAdd = [
-            { name: 'account_type_category', type: 'TEXT DEFAULT "budget"' },
+            { name: 'account_type_category', type: 'TEXT' },
             { name: 'cleared_balance', type: 'REAL DEFAULT 0' },
             { name: 'working_balance', type: 'REAL DEFAULT 0' },
             { name: 'credit_limit', type: 'REAL' },
@@ -34,6 +34,11 @@ async function migrate(db) {
                 WHEN type IN ('investment','mortgage','loan','asset') THEN 'tracking'
                 ELSE 'budget'
             END
+            WHERE account_type_category IS NULL
+        `);
+        await db.exec(`
+            UPDATE accounts 
+            SET account_type_category = 'budget'
             WHERE account_type_category IS NULL
         `);
 
