@@ -1,7 +1,7 @@
-// src/pages/login.jsx
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useRouter } from 'next/router';
+import Button from '../components/ui/Button';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -15,384 +15,203 @@ export default function Login() {
   const [electronReady, setElectronReady] = useState(false);
   const redirectAttempted = useRef(false);
 
-  const { login, register, isAuthenticated } = useAuth(); // ✅ Make sure isAuthenticated is here!
+  const { login, register, isAuthenticated } = useAuth();
   const router = useRouter();
 
-  // Check if electronAPI is available
   useEffect(() => {
     const checkElectron = () => {
-      if (window.electronAPI) {
-        console.log('✅ electronAPI is available');
+      if (window?.electronAPI) {
         setElectronReady(true);
-        
-        // Check if already logged in
-        window.electronAPI.getCurrentUser().then(result => {
-          console.log('Current user check:', result);
-          if (result && result.success && result.data) {
-            redirectAttempted.current = true;
-            router.replace('/');
-          }
-        }).catch(err => {
-          console.error('Failed to check current user:', err);
-        });
+        window.electronAPI.getCurrentUser()
+          .then((result) => {
+            if (result?.success && result.data && !redirectAttempted.current) {
+              redirectAttempted.current = true;
+              router.replace('/');
+            }
+          })
+          .catch((err) => console.error('Failed to check current user:', err));
       } else {
-        console.log('❌ electronAPI not available, retrying in 1 second...');
-        setTimeout(checkElectron, 1000);
+        setTimeout(checkElectron, 800);
       }
     };
-    
+
     checkElectron();
   }, [router]);
 
-  // Redirect to home if already logged in
   useEffect(() => {
-    console.log('🔄 Login page - checking authentication status');
-    console.log('isAuthenticated:', isAuthenticated);
-    console.log('loading:', loading);
-    
     if (!loading && isAuthenticated && !redirectAttempted.current) {
-      console.log('✅ User is authenticated, redirecting to home');
       redirectAttempted.current = true;
       router.replace('/');
     }
   }, [isAuthenticated, loading, router]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleSubmit = async (event) => {
+    event.preventDefault();
     setError('');
     setSuccess('');
     setLoading(true);
 
     try {
-      if (!window.electronAPI) {
-        throw new Error('Electron API not available');
+      if (!window?.electronAPI) {
+        throw new Error('Electron API is unavailable');
       }
 
       if (isRegistering) {
-        // Register new user
-        console.log('📝 Registering user:', { username, fullName, email });
-        const result = await register({ 
-          username, 
-          password, 
-          fullName: fullName || username, 
-          email: email || null 
+        const result = await register({
+          username,
+          password,
+          fullName: fullName || username,
+          email: email || null,
         });
-        
-        console.log('📝 Register result:', result);
-        
-        if (result && result.success) {
-          setSuccess('Account created successfully! You can now login.');
+
+        if (result?.success) {
+          setSuccess('Account created. Please login to continue.');
           setIsRegistering(false);
           setUsername('');
           setPassword('');
           setFullName('');
           setEmail('');
         } else {
-          setError(result?.error || 'Registration failed');
+          setError(result?.error || 'Registration failed.');
         }
       } else {
-        // Login existing user
-        console.log('🔐 Logging in:', username);
         const result = await login(username, password);
-        console.log('🔐 Login result:', result);
-        
-        if (result && result.success) {
+        if (result?.success) {
           setSuccess(`Welcome back, ${result.data?.fullName || result.data?.username || username}!`);
-          // Redirect will happen via the useEffect above
           setTimeout(() => {
             if (!redirectAttempted.current) {
               redirectAttempted.current = true;
               router.replace('/');
             }
-          }, 1500);
+          }, 400);
         } else {
           setError(result?.error || 'Invalid username or password');
         }
       }
     } catch (err) {
-      console.error('❌ Error:', err);
-      setError(err.message || 'An unexpected error occurred');
+      console.error('Login error:', err);
+      setError(err?.message || 'An unexpected error occurred.');
     } finally {
       setLoading(false);
     }
   };
 
   const toggleMode = () => {
-    setIsRegistering(!isRegistering);
+    setIsRegistering((current) => !current);
     setError('');
     setSuccess('');
   };
 
   if (!electronReady) {
     return (
-      <div style={styles.container}>
-        <div style={styles.card}>
-          <div style={styles.iconContainer}>
-            <i className="fas fa-spinner fa-spin" style={styles.icon}></i>
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4 py-12">
+        <div className="rounded-[2rem] border border-slate-800 bg-slate-900/95 p-10 text-center shadow-2xl shadow-slate-950/40">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-cyan-500 text-3xl shadow-lg shadow-cyan-500/20">
+            <span className="animate-spin">⏳</span>
           </div>
-          <h1 style={styles.title}>Loading...</h1>
-          <p style={styles.subtitle}>Initializing application...</p>
+          <h1 className="text-2xl font-semibold text-white">Loading IntentFlow</h1>
+          <p className="mt-3 text-sm text-slate-400">Preparing your secure desktop experience...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.gradientOverlay} />
-      
-      <div style={styles.card}>
-        <div style={styles.iconContainer}>
-          <i className="fas fa-wallet" style={styles.icon}></i>
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 text-slate-100 flex items-center justify-center px-4 py-12">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.18),_transparent_22%),radial-gradient(circle_at_bottom_right,_rgba(16,185,129,0.14),_transparent_32%)]" />
+      <div className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[2rem] border border-slate-800 bg-slate-950/95 p-8 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
+        <div className="mb-8 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-slate-500">IntentFlow</p>
+            <h1 className="mt-3 text-4xl font-semibold text-white">{isRegistering ? 'Create your account' : 'Welcome back'}</h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
+              {isRegistering
+                ? 'Sign up to keep your financial goals organized, protected, and ready for action.'
+                : 'Login to access your Prosperity Map, budget dashboard, and secure backups.'}
+            </p>
+          </div>
+          <div className="rounded-[1.5rem] border border-slate-800 bg-slate-900/90 px-4 py-3 text-sm text-slate-300">
+            Secure desktop finance, encrypted local backup support.
+          </div>
         </div>
-        
-        <h1 style={styles.title}>
-          {isRegistering ? 'Create Account' : 'Welcome Back'}
-        </h1>
-        <p style={styles.subtitle}>
-          {isRegistering 
-            ? 'Sign up to start managing your money' 
-            : 'Login to access your prosperity map'}
-        </p>
 
         {error && (
-          <div style={styles.errorBox}>
-            <i className="fas fa-exclamation-circle"></i> {error}
+          <div className="mb-4 rounded-3xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            {error}
           </div>
         )}
-
         {success && (
-          <div style={styles.successBox}>
-            <i className="fas fa-check-circle"></i> {success}
+          <div className="mb-4 rounded-3xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+            {success}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} style={styles.form}>
+        <form onSubmit={handleSubmit} className="space-y-5">
           {isRegistering && (
-            <>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Full Name (Optional)</label>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-sm font-semibold text-slate-300">Full name</label>
                 <input
-                  type="text"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  style={styles.input}
-                  placeholder="Enter your full name"
+                  placeholder="John Doe"
+                  className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                 />
               </div>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Email (Optional)</label>
+              <div>
+                <label className="block text-sm font-semibold text-slate-300">Email</label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  style={styles.input}
-                  placeholder="Enter your email"
+                  placeholder="you@example.com"
+                  className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                 />
               </div>
-            </>
+            </div>
           )}
 
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              style={styles.input}
-              placeholder="Enter username"
-              required
-              autoFocus={!isRegistering}
-            />
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="block text-sm font-semibold text-slate-300">Username</label>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Username"
+                required
+                className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-slate-300">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                required
+                className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+              />
+            </div>
           </div>
 
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={styles.input}
-              placeholder="Enter password"
-              required
-            />
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <Button type="submit" disabled={loading} className="w-full sm:w-auto">
+              {loading ? 'Working…' : isRegistering ? 'Create account' : 'Login'}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => router.push('/settings')} disabled={loading} className="w-full sm:w-auto">
+              Backup & Restore
+            </Button>
           </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              ...styles.submitButton,
-              opacity: loading ? 0.7 : 1,
-              cursor: loading ? 'wait' : 'pointer'
-            }}
-          >
-            {loading ? (
-              <><i className="fas fa-spinner fa-spin"></i> Processing...</>
-            ) : (
-              <><i className={`fas ${isRegistering ? 'fa-user-plus' : 'fa-sign-in-alt'}`}></i> 
-                {isRegistering ? 'Create Account' : 'Login'}
-              </>
-            )}
-          </button>
         </form>
 
-        <div style={styles.footer}>
-          <button onClick={toggleMode} style={styles.toggleButton}>
-            {isRegistering 
-              ? 'Already have an account? Login' 
-              : 'Need an account? Register'}
+        <div className="mt-8 flex flex-col gap-3 border-t border-slate-800 pt-6 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+          <button type="button" onClick={toggleMode} className="text-sky-300 hover:text-white underline-offset-4 transition">
+            {isRegistering ? 'Already have an account? Login' : 'Need an account? Register'}
           </button>
-          <button onClick={() => router.push('/settings')} style={styles.secondaryButton}>
-            <i className="fas fa-save" style={{ marginRight: '8px' }}></i>
-            Use Backup Without Login
-          </button>
+          <span className="text-slate-500">{isRegistering ? 'Secure local backups powered by Electron.' : 'Enter credentials to unlock your Prosperity Map.'}</span>
         </div>
       </div>
     </div>
   );
 }
-
-const styles = {
-  container: {
-    minHeight: '100vh',
-    background: 'linear-gradient(135deg, #1e3c72 0%, #2a5298 50%, #1e5f4b 100%)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '20px',
-    position: 'relative',
-    fontFamily: "'Inter', sans-serif"
-  },
-  gradientOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'radial-gradient(circle at 20% 80%, rgba(64, 224, 208, 0.15) 0%, transparent 50%), radial-gradient(circle at 80% 20%, rgba(72, 202, 228, 0.15) 0%, transparent 50%)',
-    pointerEvents: 'none',
-    zIndex: 0
-  },
-  card: {
-    background: 'white',
-    borderRadius: '48px',
-    padding: '48px',
-    boxShadow: '0 30px 60px -20px rgba(0,0,0,0.4)',
-    width: '100%',
-    maxWidth: '500px',
-    position: 'relative',
-    zIndex: 1
-  },
-  iconContainer: {
-    background: 'linear-gradient(135deg, #2a5298, #1e5f4b)',
-    borderRadius: '32px',
-    width: '80px',
-    height: '80px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    margin: '0 auto 24px'
-  },
-  icon: {
-    fontSize: '40px',
-    color: 'white'
-  },
-  title: {
-    fontSize: '2rem',
-    fontWeight: 600,
-    textAlign: 'center',
-    margin: '0 0 8px',
-    color: '#0f172a'
-  },
-  subtitle: {
-    fontSize: '1rem',
-    color: '#64748b',
-    textAlign: 'center',
-    marginBottom: '32px'
-  },
-  errorBox: {
-    background: '#fee2e2',
-    border: '1px solid #ef4444',
-    borderRadius: '12px',
-    padding: '12px 16px',
-    marginBottom: '20px',
-    color: '#b91c1c',
-    fontSize: '0.95rem',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px'
-  },
-  successBox: {
-    background: '#d1fae5',
-    border: '1px solid #10b981',
-    borderRadius: '12px',
-    padding: '12px 16px',
-    marginBottom: '20px',
-    color: '#065f46',
-    fontSize: '0.95rem',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px'
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px'
-  },
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px'
-  },
-  label: {
-    fontSize: '0.9rem',
-    fontWeight: 600,
-    color: '#334155'
-  },
-  input: {
-    padding: '12px 16px',
-    borderRadius: '12px',
-    border: '1px solid #e2e8f0',
-    fontSize: '1rem',
-    transition: 'all 0.2s ease'
-  },
-  submitButton: {
-    background: 'linear-gradient(135deg, #2a5298, #1e3c72)',
-    color: 'white',
-    border: 'none',
-    padding: '14px',
-    borderRadius: '40px',
-    fontSize: '1rem',
-    fontWeight: 600,
-    marginTop: '20px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '8px'
-  },
-  footer: {
-    marginTop: '24px',
-    textAlign: 'center'
-  },
-  toggleButton: {
-    background: 'none',
-    border: 'none',
-    color: '#2a5298',
-    fontSize: '0.95rem',
-    cursor: 'pointer',
-    fontWeight: 500,
-    textDecoration: 'underline'
-  },
-  secondaryButton: {
-    background: '#e2e8f0',
-    border: 'none',
-    color: '#1f2937',
-    fontSize: '0.95rem',
-    cursor: 'pointer',
-    fontWeight: 600,
-    padding: '10px 16px',
-    borderRadius: '999px',
-    marginTop: '8px'
-  }
-};

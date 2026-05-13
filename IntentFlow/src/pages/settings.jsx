@@ -1,1192 +1,547 @@
-// src/pages/settings.jsx
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../contexts/AuthContext';
+import AppShell from '../components/layout/AppShell';
+import Button from '../components/ui/Button';
+
+const defaultGroups = [
+  {
+    id: 1,
+    name: 'Living',
+    categories: [{ id: 11, name: 'Rent' }, { id: 12, name: 'Utilities' }],
+  },
+  {
+    id: 2,
+    name: 'Lifestyle',
+    categories: [{ id: 21, name: 'Food' }, { id: 22, name: 'Entertainment' }],
+  },
+];
+
+const defaultEncryptionSettings = {
+  kdf: 'Argon2id',
+  memoryCost: 64,
+  iterations: 3,
+};
 
 export default function Settings() {
   const router = useRouter();
   const { user, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState("general");
-  const [isRedirecting, setIsRedirecting] = useState(false);
-  const [showUserMenu, setShowUserMenu] = useState(false);
-  const [isNavigating, setIsNavigating] = useState(false);
 
-  const [groups, setGroups] = useState([
-    {
-      id: 1,
-      name: "Living",
-      categories: [
-        { id: 11, name: "Rent" },
-        { id: 12, name: "Utilities" },
-      ],
-    },
-    {
-      id: 2,
-      name: "Lifestyle",
-      categories: [
-        { id: 21, name: "Food" },
-        { id: 22, name: "Entertainment" },
-      ],
-    },
-  ]);
-
-  const [newGroupName, setNewGroupName] = useState("");
+  const [activeTab, setActiveTab] = useState('general');
+  const [groups, setGroups] = useState(defaultGroups);
+  const [newGroupName, setNewGroupName] = useState('');
   const [newCategoryName, setNewCategoryName] = useState({});
-  const [budget, setBudget] = useState(1000);
-  const [currency, setCurrency] = useState("USD");
-  const [theme, setTheme] = useState("light");
-
-  const [backupPassword, setBackupPassword] = useState("");
-  const [backupStatus, setBackupStatus] = useState("Unavailable");
+  const [budget, setBudget] = useState(2400);
+  const [currency, setCurrency] = useState('USD');
+  const [theme, setTheme] = useState('light');
+  const [backupPassword, setBackupPassword] = useState('');
+  const [backupStatus, setBackupStatus] = useState('Unavailable');
   const [lastBackup, setLastBackup] = useState(null);
-  const [backupMessage, setBackupMessage] = useState("");
+  const [backupMessage, setBackupMessage] = useState('');
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
-  const [encryptionSettings, setEncryptionSettings] = useState({
-    kdf: 'Argon2id',
-    memoryCost: 64,
-    iterations: 3
-  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [encryptionSettings, setEncryptionSettings] = useState(defaultEncryptionSettings);
 
-  // ✅ FIX: stable disabled style helper
-  const isDisabled = (state) => ({
-    pointerEvents: state ? "none" : "auto",
-    opacity: state ? 0.5 : 1,
-    cursor: state ? "not-allowed" : "pointer",
-  });
+  const tabItems = useMemo(
+    () => [
+      { key: 'general', label: 'General', description: 'Core preferences and appearance.' },
+      { key: 'prosperity', label: 'Prosperity Map', description: 'Budget and outcome settings.' },
+      { key: 'backup', label: 'Backup', description: 'Export or restore encrypted backups.' },
+      { key: 'categories', label: 'Categories', description: 'Edit groups and categories.' },
+    ],
+    []
+  );
+
+  const isBusy = isBackingUp || isRestoring || isSaving;
+  const canChangeTabs = !isBusy;
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const stored = window.localStorage.getItem('intentflowEncryptionSettings');
-      if (stored) {
-        try {
-          setEncryptionSettings(JSON.parse(stored));
-        } catch (error) {
-          console.warn('Unable to parse stored encryption settings:', error);
-        }
-      }
+    if (typeof window === 'undefined') return;
 
-      const meta = window.localStorage.getItem('intentflowBackupMeta');
-      if (meta) {
-        try {
-          const parsed = JSON.parse(meta);
-          if (parsed.lastBackup) {
-            setLastBackup(parsed.lastBackup);
-            setBackupStatus('Available');
-          }
-        } catch (error) {
-          console.warn('Unable to parse backup metadata:', error);
+    const settingsJson = window.localStorage.getItem('intentflowSettings');
+    if (settingsJson) {
+      try {
+        const stored = JSON.parse(settingsJson);
+        if (stored.currency) setCurrency(stored.currency);
+        if (stored.theme) setTheme(stored.theme);
+        if (typeof stored.budget === 'number') setBudget(stored.budget);
+        if (Array.isArray(stored.groups)) setGroups(stored.groups);
+      } catch (error) {
+        console.warn('Failed to load stored settings:', error);
+      }
+    }
+
+    const encryptionJson = window.localStorage.getItem('intentflowEncryptionSettings');
+    if (encryptionJson) {
+      try {
+        const stored = JSON.parse(encryptionJson);
+        setEncryptionSettings({ ...defaultEncryptionSettings, ...stored });
+      } catch (error) {
+        console.warn('Failed to load encryption settings:', error);
+      }
+    }
+
+    const backupMeta = window.localStorage.getItem('intentflowBackupMeta');
+    if (backupMeta) {
+      try {
+        const parsed = JSON.parse(backupMeta);
+        if (parsed.lastBackup) {
+          setLastBackup(parsed.lastBackup);
+          setBackupStatus('Available');
         }
+      } catch (error) {
+        console.warn('Failed to parse backup metadata:', error);
       }
     }
   }, []);
 
   useEffect(() => {
-    if (!user && activeTab !== 'backup') {
-      setActiveTab('backup');
+    if (!user && activeTab === 'categories') {
+      setActiveTab('general');
     }
-  }, [user]);
+  }, [activeTab, user]);
 
-  const addGroup = () => {
-    if (!newGroupName.trim()) return;
-    setGroups([
-      ...groups,
-      {
-        id: Date.now(),
-        name: newGroupName,
-        categories: [],
-      },
-    ]);
-    setNewGroupName("");
+  const persistBackupMeta = (lastBackupAt) => {
+    const payload = { lastBackup: lastBackupAt };
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('intentflowBackupMeta', JSON.stringify(payload));
+    }
   };
 
-  const updateGroupName = (id, value) => {
-    setGroups(groups.map(g => (g.id === id ? { ...g, name: value } : g)));
-  };
+  const saveSettings = async (event) => {
+    event.preventDefault();
+    if (isSaving) return;
 
-  const addCategory = (groupId) => {
-    const name = newCategoryName[groupId];
-    if (!name || !name.trim()) return;
-    setGroups(
-      groups.map((g) =>
-        g.id === groupId
-          ? {
-              ...g,
-              categories: [
-                ...g.categories,
-                { id: Date.now(), name: name.trim() },
-              ],
-            }
-          : g
-      )
-    );
-    setNewCategoryName({ ...newCategoryName, [groupId]: "" });
-  };
+    setIsSaving(true);
+    setBackupMessage('Saving settings...');
 
-  const updateCategory = (groupId, catId, value) => {
-    setGroups(
-      groups.map((g) =>
-        g.id === groupId
-          ? {
-              ...g,
-              categories: g.categories.map((c) =>
-                c.id === catId ? { ...c, name: value } : c
-              ),
-            }
-          : g
-      )
-    );
-  };
-
-  const deleteCategory = (groupId, catId) => {
-    setGroups(
-      groups.map((g) =>
-        g.id === groupId
-          ? {
-              ...g,
-              categories: g.categories.filter((c) => c.id !== catId),
-            }
-          : g
-      )
-    );
-  };
-
-  const saveSettings = async () => {
-    setIsRedirecting(true);
-    
-    const settings = { currency, theme, budget, groups, encryptionSettings };
-    console.log("Saving settings:", settings);
+    const settings = {
+      currency,
+      theme,
+      budget,
+      groups,
+      encryptionSettings,
+    };
 
     if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('intentflowSettings', JSON.stringify(settings));
       window.localStorage.setItem('intentflowEncryptionSettings', JSON.stringify(encryptionSettings));
     }
-    
-    try {
-      if (window.electronAPI) {
-        const savePromise = window.electronAPI.saveSettings(settings);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Save timeout')), 2000)
-        );
-        
-        await Promise.race([savePromise, timeoutPromise])
-          .catch(error => console.warn("Save warning:", error.message));
-      }
-    } catch (error) {
-      console.error("❌ Error saving settings:", error);
-    }
-    
-    console.log("🔄 Redirecting to home page...");
-    
-    if (router && typeof router.push === "function") {
-      router.push('/');
-    } else if (window.history && window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.replace('/');
-    }
 
-    setTimeout(() => {
-      if (window.location.pathname !== '/') {
-        window.location.href = '/';
+    try {
+      if (window.electronAPI?.saveSettings) {
+        await window.electronAPI.saveSettings(settings);
       }
-    }, 100);
+      setBackupMessage('Settings saved successfully. Redirecting...');
+      await router.push('/');
+    } catch (error) {
+      setBackupMessage(error?.message || 'Unable to save settings.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleBackupResult = (result) => {
-    if (result?.success) {
-      setBackupStatus('Available');
-      setLastBackup(new Date().toISOString());
-      setBackupMessage(result.message || 'Backup completed successfully');
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem('intentflowBackupMeta', JSON.stringify({ lastBackup: new Date().toISOString() }));
-      }
-    } else if (result?.canceled) {
-      setBackupMessage('Backup operation canceled');
-    } else {
-      setBackupMessage(result?.error || 'Backup failed');
+    if (!result) {
+      setBackupMessage('Unexpected backup response.');
+      return;
     }
+
+    if (result.success) {
+      const now = new Date().toISOString();
+      setBackupStatus('Available');
+      setLastBackup(now);
+      setBackupMessage(result.message || 'Backup complete.');
+      persistBackupMeta(now);
+      return;
+    }
+
+    if (result.canceled) {
+      setBackupMessage('Backup cancelled.');
+      return;
+    }
+
+    setBackupMessage(result.error || 'Backup failed.');
   };
 
   const handleExportBackup = async () => {
-    if (!backupPassword) {
-      setBackupMessage('Password is required');
+    if (!backupPassword.trim()) {
+      setBackupMessage('Password is required to export a backup.');
       return;
     }
 
     if (backupPassword.length < 8) {
-      setBackupMessage('Warning: password is weak. Use at least 8 characters for better protection.');
+      setBackupMessage('Use at least 8 characters for stronger backup encryption.');
+      return;
     }
 
     setIsBackingUp(true);
-    setBackupMessage('Exporting backup...');
+    setBackupMessage('Preparing backup file...');
 
     try {
-      if (window.electronAPI) {
-        const result = await window.electronAPI.backupDatabase(backupPassword, encryptionSettings);
-        handleBackupResult(result);
-      } else {
-        setBackupMessage('Electron API not available');
+      if (!window.electronAPI?.backupDatabase) {
+        setBackupMessage('Backup API is unavailable.');
+        return;
       }
+      const result = await window.electronAPI.backupDatabase(backupPassword, encryptionSettings);
+      handleBackupResult(result);
     } catch (error) {
-      setBackupMessage(error.message || 'Backup failed');
+      setBackupMessage(error?.message || 'Backup export failed.');
     } finally {
       setIsBackingUp(false);
     }
   };
 
   const handleImportBackup = async () => {
-    if (!backupPassword) {
-      setBackupMessage('Password is required');
+    if (!backupPassword.trim()) {
+      setBackupMessage('Password is required to restore a backup.');
       return;
     }
 
     const confirmed = window.confirm(
-      'WARNING: This will replace ALL current data with the backup. A rollback backup will be created automatically. Continue?'
+      'Restoring a backup will replace all current data. A rollback snapshot will be created automatically. Continue?'
     );
-
     if (!confirmed) {
-      setBackupMessage('Restore operation canceled');
+      setBackupMessage('Restore canceled.');
       return;
-    }
-
-    if (backupPassword.length < 8) {
-      setBackupMessage('Warning: password is weak. Use at least 8 characters for better protection.');
     }
 
     setIsRestoring(true);
     setBackupMessage('Restoring backup...');
 
     try {
-      if (window.electronAPI) {
-        const result = await window.electronAPI.restoreDatabase(backupPassword);
-        if (result?.success) {
-          setBackupStatus('Available');
-          setBackupMessage(result.message || 'Backup restored successfully. Restarting app...');
-        } else if (result?.canceled) {
-          setBackupMessage('Restore operation canceled');
-        } else {
-          setBackupMessage(result?.error || 'Restore failed');
-        }
+      if (!window.electronAPI?.restoreDatabase) {
+        setBackupMessage('Restore API is unavailable.');
+        return;
+      }
+
+      const result = await window.electronAPI.restoreDatabase(backupPassword);
+      if (result?.success) {
+        const now = new Date().toISOString();
+        setBackupStatus('Available');
+        setLastBackup(now);
+        setBackupMessage(result.message || 'Restore completed successfully.');
+        persistBackupMeta(now);
+      } else if (result?.canceled) {
+        setBackupMessage('Restore canceled.');
       } else {
-        setBackupMessage('Electron API not available');
+        setBackupMessage(result?.error || 'Restore failed.');
       }
     } catch (error) {
-      setBackupMessage(error.message || 'Restore failed');
+      setBackupMessage(error?.message || 'Restore failed.');
     } finally {
       setIsRestoring(false);
     }
   };
 
-  const cancelRedirect = () => {
-    setIsRedirecting(false);
+  const handleBackToPropertyMap = () => {
+    if (isBusy || isNavigating) return;
+    setIsNavigating(true);
+    router.push('/').finally(() => setIsNavigating(false));
   };
 
   const handleLogout = async () => {
     await logout();
-    window.location.href = '/login';
+    router.replace('/login');
   };
 
-  const handleBackToPropertyMap = () => {
-    // Prevent navigation during ongoing backup/restore operations
-    if (isBackingUp || isRestoring) {
-      setBackupMessage('Please wait for current operation to complete before navigating');
-      return;
-    }
-    
-    // Prevent multiple navigation attempts
-    if (isNavigating) return;
-    
-    setIsNavigating(true);
-    
-    // Use requestAnimationFrame to ensure clean navigation
-    requestAnimationFrame(() => {
-      if (router && typeof router.push === "function") {
-        router.push('/').finally(() => {
-          setIsNavigating(false);
-        });
-      } else if (window.location) {
-        window.location.href = '/';
-      } else {
-        setIsNavigating(false);
-      }
-    });
+  const createGroup = () => {
+    const trimmed = newGroupName.trim();
+    if (!trimmed) return;
+    setGroups((previous) => [
+      ...previous,
+      { id: Date.now(), name: trimmed, categories: [] },
+    ]);
+    setNewGroupName('');
+  };
+
+  const addCategory = (groupId) => {
+    const name = (newCategoryName[groupId] || '').trim();
+    if (!name) return;
+
+    setGroups((previous) =>
+      previous.map((group) =>
+        group.id === groupId
+          ? { ...group, categories: [...group.categories, { id: Date.now(), name }] }
+          : group
+      )
+    );
+    setNewCategoryName((current) => ({ ...current, [groupId]: '' }));
+  };
+
+  const updateGroupName = (groupId, value) => {
+    setGroups((previous) =>
+      previous.map((group) => (group.id === groupId ? { ...group, name: value } : group))
+    );
+  };
+
+  const updateCategory = (groupId, categoryId, value) => {
+    setGroups((previous) =>
+      previous.map((group) =>
+        group.id === groupId
+          ? {
+              ...group,
+              categories: group.categories.map((category) =>
+                category.id === categoryId ? { ...category, name: value } : category
+              ),
+            }
+          : group
+      )
+    );
+  };
+
+  const removeCategory = (groupId, categoryId) => {
+    setGroups((previous) =>
+      previous.map((group) =>
+        group.id === groupId
+          ? { ...group, categories: group.categories.filter((category) => category.id !== categoryId) }
+          : group
+      )
+    );
+  };
+
+  const removeGroup = (groupId) => {
+    setGroups((previous) => previous.filter((group) => group.id !== groupId));
   };
 
   return (
-    <div style={styles.container}>
-      {/* Decorative overlay */}
-      <div style={styles.gradientOverlay} />
-
-      {/* Main white card */}
-      <div style={styles.card}>
-        {/* Header with user info */}
-        <div style={styles.header}>
-          <div style={styles.headerLeft}>
-            <div style={styles.iconCircle}>
-              <i className="fas fa-sliders-h"></i>
-            </div>
-            <div>
-              <h1 style={styles.title}>settings</h1>
-              <p style={styles.subtitle}>
-                <i className="fas fa-magic" style={{ color: "#2a5298" }}></i> fine-tune your workspace
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleBackToPropertyMap}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleBackToPropertyMap();
-              }
-            }}
-            style={styles.backButton}
-            aria-label="Return to PropertyMap view"
-            disabled={isBackingUp || isRestoring || isNavigating}
-          >
-            ← Back to PropertyMap
-          </button>
-          
-          {/* User menu */}
+    <AppShell
+      title="Settings"
+      subtitle="A modern control center for budget, categories, backups, and app preferences."
+      actions={(
+        <>
           {user && (
-            <div style={styles.userMenuContainer}>
-              <button type="button"
-                onClick={() => setShowUserMenu(!showUserMenu)}
-                style={styles.userButton}
-              >
-                <div style={{
-                  ...styles.userAvatar,
-                  background: user.avatarColor || '#2a5298'
-                }}>
-                  {(user.fullName || user.username).charAt(0).toUpperCase()}
-                </div>
-                <span style={styles.userName}>{user.fullName || user.username}</span>
-                <i className={`fas fa-chevron-${showUserMenu ? 'up' : 'down'}`} style={styles.chevronIcon}></i>
-              </button>
-
-              {showUserMenu && (
-                <div style={styles.userMenu}>
-                  <div style={styles.userMenuHeader}>
-                    <div style={styles.userInfo}>
-                      <div style={styles.userFullName}>{user.fullName || user.username}</div>
-                      <div style={styles.userUsername}>@{user.username}</div>
-                      {user.email && <div style={styles.userEmail}>{user.email}</div>}
-                    </div>
-                  </div>
-                  <button type="button"
-                    onClick={handleLogout}
-                    style={styles.logoutButton}
-                    onMouseEnter={(e) => e.target.style.background = '#fee2e2'}
-                    onMouseLeave={(e) => e.target.style.background = 'transparent'}
-                  >
-                    <i className="fas fa-sign-out-alt" style={{ color: '#dc3545' }}></i>
-                    <span>Logout</span>
-                  </button>
-                </div>
-              )}
-            </div>
+            <Button variant="secondary" onClick={handleLogout} disabled={isBusy}>
+              Logout
+            </Button>
           )}
-        </div>
-
-        {/* Tabs - Reordered: General first, then Prosperity Map, then Backup, then Categories */}
-        <div style={styles.tabContainer}>
-          {user && (
-            <>
-              <button type="button"
-                onClick={() => setActiveTab("general")}
-                style={{
-                  ...styles.tab,
-                  ...(activeTab === "general" ? styles.activeTab : styles.inactiveTab)
-                }}
+          <Button variant="secondary" onClick={handleBackToPropertyMap} disabled={isBusy || isNavigating}>
+            Back to PropertyMap
+          </Button>
+        </>
+      )}
+    >
+      <div className="grid gap-6 xl:grid-cols-[320px_1fr]">
+        <aside className="rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Workspace tabs</h2>
+          <p className="mt-2 text-sm text-slate-300">Quickly switch between settings sections and keep your workspace stable.</p>
+          <div className="mt-6 space-y-2">
+            {tabItems.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                disabled={!canChangeTabs}
+                className={`w-full rounded-2xl border px-4 py-4 text-left transition ${activeTab === tab.key ? 'border-primary-500 bg-primary-500/10 text-white' : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700 hover:bg-slate-900'}`}
               >
-                <i className="fas fa-cog"></i> General
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold">{tab.label}</span>
+                  <span className="text-xs text-slate-500">{tab.key === 'backup' && 'Safe'}</span>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-slate-400">{tab.description}</p>
               </button>
-              <button type="button"
-                onClick={() => setActiveTab("budget")}
-                style={{
-                  ...styles.tab,
-                  ...(activeTab === "budget" ? styles.activeTab : styles.inactiveTab)
-                }}
-              >
-                <i className="fas fa-chart-pie"></i> Prosperity Map
-              </button>
-            </>
-          )}
-          
-          <button type="button"
-            onClick={() => setActiveTab("backup")}
-            style={{
-              ...styles.tab,
-              ...(activeTab === "backup" ? styles.activeTab : styles.inactiveTab)
-            }}
-          >
-            <i className="fas fa-save"></i> Backup
-          </button>
-
-          {user && (
-            <>
-              <button type="button"
-                onClick={() => setActiveTab("categories")}
-                style={{
-                  ...styles.tab,
-                  ...(activeTab === "categories" ? styles.activeTab : styles.inactiveTab)
-                }}
-              >
-                <i className="fas fa-tags"></i> Categories
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* BACKUP TAB */}
-        {activeTab === "backup" && (
-          <div style={styles.tabContent}>
-            <h2 style={styles.sectionTitle}>Backup & Restore</h2>
-            <div style={styles.panelBox}>
-              <div style={styles.sectionHeader}>
-                <div>
-                  <strong>Backup Status:</strong> {backupStatus === 'Available' ? '✅ Available' : '⚠️ Unavailable'}
-                </div>
-                <div>
-                  <strong>Last Backup:</strong> {lastBackup ? new Date(lastBackup).toLocaleString() : 'Never'}
-                </div>
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Backup Password</label>
-                <input
-                  type="password"
-                  value={backupPassword}
-                  onChange={(e) => setBackupPassword(e.target.value)}
-                  placeholder="Enter backup encryption password"
-                  style={styles.input}
-                  disabled={isBackingUp || isRestoring}
-                  aria-label="Backup encryption password"
-                />
-                {backupPassword && backupPassword.length < 8 && (
-                  <p style={{ ...styles.infoText, color: '#b45309' }}>
-                    Password is weak. Use at least 8 characters for improved security.
-                  </p>
-                )}
-              </div>
-
-              <div style={styles.backupButtonsRow}>
-                <button
-                  type="button"
-                  onClick={handleExportBackup}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleExportBackup();
-                    }
-                  }}
-                  disabled={isBackingUp || isRestoring}
-                  style={{
-                    ...styles.actionButton,
-                    ...(isBackingUp ? styles.disabledButton : {})
-                  }}
-                  aria-label="Export encrypted backup file"
-                >
-                  {isBackingUp ? 'Exporting...' : 'Export Backup'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleImportBackup}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleImportBackup();
-                    }
-                  }}
-                  disabled={isBackingUp || isRestoring}
-                  style={{
-                    ...styles.actionButton,
-                    ...(isRestoring ? styles.disabledButton : {}),
-                    background: '#1e40af'
-                  }}
-                  aria-label="Import encrypted backup file"
-                >
-                  {isRestoring ? 'Restoring...' : 'Import Backup'}
-                </button>
-              </div>
-
-              <div style={styles.infoGrid}>
-                <div style={styles.infoCard}>
-                  <strong>Encryption</strong>
-                  <p style={styles.infoText}>All backup files are encrypted locally with the password you choose.</p>
-                </div>
-                <div style={styles.infoCard}>
-                  <strong>Local Only</strong>
-                  <p style={styles.infoText}>Backups remain on your device and do not require a cloud account.</p>
-                </div>
-              </div>
-
-              <div style={styles.sectionTitle}>Encryption Preferences</div>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Default KDF</label>
-                <select
-                  value={encryptionSettings.kdf}
-                  onChange={(e) => {
-                    const next = { ...encryptionSettings, kdf: e.target.value };
-                    setEncryptionSettings(next);
-                    window.localStorage?.setItem('intentflowEncryptionSettings', JSON.stringify(next));
-                  }}
-                  style={styles.select}
-                  disabled={isBackingUp || isRestoring}
-                >
-                  <option value="Argon2id">Argon2id</option>
-                  <option value="PBKDF2">PBKDF2</option>
-                </select>
-              </div>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Memory Cost (MB)</label>
-                <input
-                  type="number"
-                  min={32}
-                  value={encryptionSettings.memoryCost}
-                  onChange={(e) => {
-                    const next = { ...encryptionSettings, memoryCost: Number(e.target.value) };
-                    setEncryptionSettings(next);
-                    window.localStorage?.setItem('intentflowEncryptionSettings', JSON.stringify(next));
-                  }}
-                  style={styles.input}
-                  disabled={isBackingUp || isRestoring}
-                />
-              </div>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Iterations</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={encryptionSettings.iterations}
-                  onChange={(e) => {
-                    const next = { ...encryptionSettings, iterations: Number(e.target.value) };
-                    setEncryptionSettings(next);
-                    window.localStorage?.setItem('intentflowEncryptionSettings', JSON.stringify(next));
-                  }}
-                  style={styles.input}
-                  disabled={isBackingUp || isRestoring}
-                />
-              </div>
-
-              {backupMessage && (
-                <div style={styles.messageBox} role="status" aria-live="polite">
-                  {backupMessage}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* GENERAL TAB */}
-        {activeTab === "general" && (
-          <div style={styles.tabContent}>
-            <h2 style={styles.sectionTitle}>General Settings</h2>
-
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Currency</label>
-              <select 
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-                style={styles.select}
-              >
-                <option value="USD">USD ($)</option>
-                <option value="EUR">EUR (€)</option>
-                <option value="GBP">GBP (£)</option>
-              </select>
-            </div>
-
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Theme</label>
-              <select 
-                value={theme}
-                onChange={(e) => setTheme(e.target.value)}
-                style={styles.select}
-              >
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-                <option value="system">System</option>
-              </select>
-            </div>
-            
-            <div style={styles.timezoneBox}>
-              <i className="fas fa-clock" style={{ color: "#1e5f4b" }}></i>
-              <span style={styles.timezoneText}>Timezone: <strong>America/New_York</strong> (detected)</span>
-            </div>
-          </div>
-        )}
-
-        {/* PROSPERITY MAP TAB */}
-        {activeTab === "budget" && (
-          <div style={styles.tabContent}>
-            <h2 style={styles.sectionTitle}>Prosperity Map</h2>
-
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Monthly Budget Amount</label>
-              <input
-                type="number"
-                value={budget}
-                onChange={(e) => setBudget(Number(e.target.value))}
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.prosperityBox}>
-              <p style={styles.prosperityText}>
-                <i className="fas fa-chart-line" style={{ color: "#2a5298", marginRight: 8 }}></i>
-                Projected savings: <strong>${Math.round(budget * 0.2)}</strong> (20% of budget)
-              </p>
-              <p style={styles.prosperitySubtext}>
-                <i className="fas fa-leaf" style={{ marginRight: 8 }}></i>
-                Your prosperity path is clear. Stay on track!
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* CATEGORIES TAB */}
-        {activeTab === "categories" && (
-          <div style={styles.tabContent}>
-            <h2 style={styles.sectionTitle}>Category Groups</h2>
-
-            {groups.map((group) => (
-              <div key={group.id} style={styles.groupCard}>
-                <input
-                  value={group.name}
-                  onChange={(e) => updateGroupName(group.id, e.target.value)}
-                  style={styles.groupNameInput}
-                />
-
-                {group.categories.map((cat) => (
-                  <div key={cat.id} style={styles.categoryRow}>
-                    <input
-                      value={cat.name}
-                      onChange={(e) => updateCategory(group.id, cat.id, e.target.value)}
-                      style={styles.categoryInput}
-                    />
-
-                    <button type="button"
-                      onClick={() => deleteCategory(group.id, cat.id)}
-                      style={styles.deleteButton}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-
-                <div style={styles.addCategoryRow}>
-                  <input
-                    placeholder="New category"
-                    value={newCategoryName[group.id] || ""}
-                    onChange={(e) =>
-                      setNewCategoryName({
-                        ...newCategoryName,
-                        [group.id]: e.target.value,
-                      })
-                    }
-                    style={styles.categoryInput}
-                  />
-
-                  <button type="button" 
-                    onClick={() => addCategory(group.id)}
-                    style={styles.addCategoryButton}
-                  >
-                    Add Category
-                  </button>
-                </div>
-              </div>
             ))}
+          </div>
+        </aside>
 
-            <div style={styles.addGroupRow}>
-              <input
-                placeholder="New group name"
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                style={styles.groupInput}
-              />
-
-              <button type="button" 
-                onClick={addGroup}
-                style={styles.addGroupButton}
-              >
-                Add Group
-              </button>
+        <section className="space-y-6">
+          <div className="rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-semibold text-white">{tabItems.find((tab) => tab.key === activeTab)?.label}</h2>
+                <p className="mt-2 text-sm text-slate-400">{tabItems.find((tab) => tab.key === activeTab)?.description}</p>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-300">
+                {backupStatus} · {lastBackup ? new Date(lastBackup).toLocaleString() : 'No backups yet'}
+              </div>
             </div>
           </div>
-        )}
 
-        {/* Save Settings Button */}
-        {user && (
-          <div style={styles.saveButtonContainer}>
-            {isRedirecting && (
-              <button type="button" 
-                onClick={cancelRedirect}
-                style={styles.cancelButton}
-              >
-                Cancel
-              </button>
-            )}
-            <button type="button" 
-              onClick={saveSettings}
-              disabled={isRedirecting}
-              style={{
-                ...styles.saveButton,
-                opacity: isRedirecting ? 0.7 : 1,
-                cursor: isRedirecting ? "wait" : "pointer"
-              }}
-            >
-              {isRedirecting ? (
-                <>
-                  <i className="fas fa-spinner fa-spin"></i> Redirecting...
-                </>
-              ) : (
-                <>
-                  <i className="fas fa-save"></i> Save Settings
-                </>
-              )}
-            </button>
-          </div>
-        )}
-        
-        {/* Footer */}
-        <div style={styles.footer}>
-          <div>
-            <i className="fas fa-dragon" style={{ marginRight: 8, color: "#2a5298" }}></i> fancy settings · keep it elegant
-          </div>
-          <div style={styles.colorLegend}>
-            <span><i className="fas fa-circle" style={{ color: "#2a5298", fontSize: 8 }}></i> blue</span>
-            <span><i className="fas fa-circle" style={{ color: "#1e5f4b", fontSize: 8 }}></i> green</span>
-          </div>
-        </div>
+          {activeTab === 'backup' && (
+            <div className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+              <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+                <div className="space-y-4">
+                  <div>
+                    <label htmlFor="backup-password" className="block text-sm font-semibold text-slate-200">Backup password</label>
+                    <input
+                      id="backup-password"
+                      type="password"
+                      value={backupPassword}
+                      onChange={(event) => setBackupPassword(event.target.value)}
+                      placeholder="Enter secure password"
+                      className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                      disabled={isBusy}
+                    />
+                    <p className="mt-2 text-sm text-slate-400">Your backup file is encrypted locally before it is saved.</p>
+                  </div>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Button onClick={handleExportBackup} disabled={isBusy}>
+                      {isBackingUp ? 'Exporting...' : 'Export Backup'}
+                    </Button>
+                    <Button variant="secondary" onClick={handleImportBackup} disabled={isBusy}>
+                      {isRestoring ? 'Restoring...' : 'Import Backup'}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-4 rounded-[2rem] border border-slate-800 bg-slate-950/80 p-5">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Status</p>
+                    <p className="mt-3 text-lg font-semibold text-white">{backupStatus === 'Available' ? 'Ready to restore' : 'Backup unavailable'}</p>
+                  </div>
+                  <div className="space-y-3 rounded-3xl bg-slate-900/70 p-4">
+                    <p className="text-sm text-slate-400">Keep your password in a secure place. Lost passwords cannot be recovered.</p>
+                    {backupMessage && <p className="text-sm text-slate-300">{backupMessage}</p>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'general' && (
+            <form onSubmit={saveSettings} className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+              <div className="grid gap-6 md:grid-cols-2">
+                <div className="space-y-3">
+                  <label htmlFor="currency" className="block text-sm font-semibold text-slate-200">Home currency</label>
+                  <select
+                    id="currency"
+                    value={currency}
+                    onChange={(event) => setCurrency(event.target.value)}
+                    className="w-full rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                  >
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                    <option value="GBP">GBP</option>
+                    <option value="JPY">JPY</option>
+                  </select>
+                </div>
+                <div className="space-y-3">
+                  <label htmlFor="theme" className="block text-sm font-semibold text-slate-200">Theme mode</label>
+                  <select
+                    id="theme"
+                    value={theme}
+                    onChange={(event) => setTheme(event.target.value)}
+                    className="w-full rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                  >
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <label htmlFor="budget" className="block text-sm font-semibold text-slate-200">Monthly budget target</label>
+                <input
+                  id="budget"
+                  type="number"
+                  min="0"
+                  value={budget}
+                  onChange={(event) => setBudget(Number(event.target.value))}
+                  className="w-full rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                />
+                <p className="text-sm text-slate-400">This budget is used to guide your Prosperity Map and spending categories.</p>
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm text-slate-400">Encryption settings are saved locally for backup workflows.</p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <Button type="submit" disabled={isSaving || isBusy}>Save Settings</Button>
+                  <Button variant="secondary" onClick={handleBackToPropertyMap} disabled={isBusy || isNavigating}>Cancel</Button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {activeTab === 'prosperity' && (
+            <div className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-5">
+                  <h3 className="text-lg font-semibold text-white">Prosperity Map</h3>
+                  <p className="mt-3 text-sm text-slate-400">Adjust how your income flows across categories and savings targets.</p>
+                </div>
+                <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-slate-400">Monthly budget</span>
+                    <span className="text-lg font-semibold text-white">{currency} {budget.toLocaleString()}</span>
+                  </div>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full rounded-full bg-primary-500" style={{ width: Math.min(100, (budget / 5000) * 100) + '%' }} />
+                  </div>
+                  <p className="mt-3 text-sm text-slate-400">A higher budget gives you more flexibility while preserving prosperity targets.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'categories' && (
+            <div className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+              <div className="grid gap-6">
+                {groups.map((group) => (
+                  <section key={group.id} className="space-y-4 rounded-3xl border border-slate-800 bg-slate-950/80 p-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-slate-200">Group name</label>
+                        <input
+                          type="text"
+                          value={group.name}
+                          onChange={(event) => updateGroupName(group.id, event.target.value)}
+                          className="w-full rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                        />
+                      </div>
+                      <Button variant="danger" onClick={() => removeGroup(group.id)}>
+                        Remove group
+                      </Button>
+                    </div>
+
+                    <div className="space-y-4">
+                      {group.categories.map((category) => (
+                        <div key={category.id} className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <input
+                            type="text"
+                            value={category.name}
+                            onChange={(event) => updateCategory(group.id, category.id, event.target.value)}
+                            className="flex-1 rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                          />
+                          <Button variant="secondary" onClick={() => removeCategory(group.id, category.id)}>
+                            Delete
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                      <input
+                        type="text"
+                        value={newCategoryName[group.id] || ''}
+                        placeholder="New category name"
+                        onChange={(event) => setNewCategoryName((current) => ({ ...current, [group.id]: event.target.value }))}
+                        className="rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                      />
+                      <Button onClick={() => addCategory(group.id)}>Add category</Button>
+                    </div>
+                  </section>
+                ))}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                <input
+                  type="text"
+                  value={newGroupName}
+                  placeholder="New category group"
+                  onChange={(event) => setNewGroupName(event.target.value)}
+                  className="rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                />
+                <Button onClick={createGroup}>Create group</Button>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
-    </div>
+    </AppShell>
   );
 }
-
-const styles = {
-  container: {
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #1e3c72 0%, #2a5298 50%, #1e5f4b 100%)",
-    fontFamily: "'Inter', sans-serif",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "20px",
-    position: "relative"
-  },
-  gradientOverlay: {
-    position: "fixed",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: "radial-gradient(circle at 20% 80%, rgba(64, 224, 208, 0.15) 0%, transparent 50%), radial-gradient(circle at 80% 20%, rgba(72, 202, 228, 0.15) 0%, transparent 50%)",
-    pointerEvents: "none",
-    zIndex: 0
-  },
-  card: {
-    background: "white",
-    borderRadius: "48px",
-    padding: "40px 48px",
-    boxShadow: "0 30px 60px -20px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.3) inset",
-    width: "100%",
-    maxWidth: "860px",
-    margin: "20px",
-    position: "relative",
-    zIndex: 1
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: "32px"
-  },
-  headerLeft: {
-    display: "flex",
-    alignItems: "center",
-    gap: "16px"
-  },
-  iconCircle: {
-    background: "linear-gradient(135deg, #2a5298, #1e5f4b)",
-    borderRadius: "32px",
-    width: "56px",
-    height: "56px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "white",
-    fontSize: "28px",
-    boxShadow: "0 10px 15px -8px rgba(0,0,0,0.3)"
-  },
-  title: {
-    fontSize: "2.4rem",
-    fontWeight: 600,
-    letterSpacing: "-0.02em",
-    margin: 0,
-    color: "#0f172a"
-  },
-  subtitle: {
-    fontSize: "1rem",
-    color: "#64748b",
-    marginTop: "4px",
-    display: "flex",
-    gap: "8px",
-    alignItems: "center"
-  },
-  userMenuContainer: {
-    position: "relative"
-  },
-  userButton: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "8px 16px",
-    background: "white",
-    border: "1px solid #e2e8f0",
-    borderRadius: "40px",
-    cursor: "pointer"
-  },
-  userAvatar: {
-    width: "32px",
-    height: "32px",
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "white",
-    fontWeight: 600
-  },
-  userName: {
-    fontWeight: 500,
-    color: "#334155"
-  },
-  chevronIcon: {
-    fontSize: "12px",
-    color: "#64748b"
-  },
-  userMenu: {
-    position: "absolute",
-    top: "100%",
-    right: 0,
-    marginTop: "8px",
-    background: "white",
-    borderRadius: "12px",
-    boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
-    border: "1px solid #e2e8f0",
-    minWidth: "240px",
-    zIndex: 1000
-  },
-  userMenuHeader: {
-    padding: "16px",
-    borderBottom: "1px solid #e2e8f0"
-  },
-  userInfo: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "4px"
-  },
-  userFullName: {
-    fontWeight: 600,
-    color: "#0f172a",
-    fontSize: "1rem"
-  },
-  userUsername: {
-    color: "#64748b",
-    fontSize: "0.9rem"
-  },
-  userEmail: {
-    color: "#64748b",
-    fontSize: "0.85rem",
-    marginTop: "4px"
-  },
-  logoutButton: {
-    width: "100%",
-    padding: "12px 16px",
-    border: "none",
-    background: "transparent",
-    textAlign: "left",
-    cursor: "pointer",
-    color: "#dc3545",
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    borderRadius: "0 0 12px 12px"
-  },
-  tabContainer: {
-    display: "flex",
-    gap: "12px",
-    marginBottom: "40px",
-    flexWrap: "wrap"
-  },
-  tab: {
-    padding: "12px 28px",
-    borderRadius: "40px",
-    fontWeight: 600,
-    fontSize: "1rem",
-    cursor: "pointer",
-    border: "none",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "8px",
-    transition: "all 0.2s ease"
-  },
-  activeTab: {
-    background: "linear-gradient(135deg, #2a5298, #1e5f4b)",
-    color: "white",
-    boxShadow: "0 8px 18px -6px rgba(30, 60, 114, 0.4)"
-  },
-  inactiveTab: {
-    background: "white",
-    border: "1px solid #e2e8f0",
-    color: "#334155"
-  },
-  tabContent: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "15px"
-  },
-  sectionTitle: {
-    fontSize: "1.6rem",
-    fontWeight: 500,
-    marginBottom: "10px"
-  },
-  inputGroup: {
-    marginBottom: "10px"
-  },
-  label: {
-    display: "block",
-    marginBottom: "5px",
-    fontWeight: 600,
-    color: "#334155"
-  },
-  select: {
-    width: "100%",
-    padding: "10px",
-    borderRadius: "8px",
-    border: "1px solid #ddd",
-    fontSize: "1rem",
-    fontFamily: "'Inter', sans-serif"
-  },
-  input: {
-    width: "100%",
-    padding: "10px",
-    borderRadius: "8px",
-    border: "1px solid #ddd",
-    fontSize: "1rem",
-    fontFamily: "'Inter', sans-serif"
-  },
-  panelBox: {
-    border: "1px solid #e2e8f0",
-    borderRadius: "24px",
-    padding: "24px",
-    background: "#f8fafc",
-    display: "flex",
-    flexDirection: "column",
-    gap: "18px"
-  },
-  sectionHeader: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: "16px",
-    paddingBottom: "12px",
-    borderBottom: "1px solid #e2e8f0"
-  },
-  backupButtonsRow: {
-    display: "flex",
-    gap: "12px",
-    flexWrap: "wrap"
-  },
-  actionButton: {
-    padding: "12px 20px",
-    border: "none",
-    borderRadius: "14px",
-    cursor: "pointer",
-    background: "#2a5298",
-    color: "white",
-    fontWeight: 600,
-    minWidth: "160px"
-  },
-  disabledButton: {
-    opacity: 0.65,
-    cursor: "not-allowed"
-  },
-  infoGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: "12px",
-    marginTop: "10px"
-  },
-  infoCard: {
-    background: "white",
-    borderRadius: "16px",
-    border: "1px solid #e2e8f0",
-    padding: "16px"
-  },
-  infoText: {
-    margin: "8px 0 0 0",
-    color: "#475569",
-    lineHeight: 1.5
-  },
-  messageBox: {
-    padding: "16px",
-    borderRadius: "14px",
-    background: "#ffffff",
-    border: "1px solid #cbd5e1",
-    color: "#334155",
-    fontWeight: 500
-  },
-  backButton: {
-    marginLeft: "auto",
-    padding: "10px 16px",
-    borderRadius: "14px",
-    border: "1px solid #cbd5e1",
-    background: "white",
-    color: "#334155",
-    cursor: "pointer",
-    fontWeight: 600,
-    transition: "all 0.2s"
-  },
-  timezoneBox: {
-    background: "#f8fafc",
-    borderRadius: "40px",
-    padding: "16px",
-    marginTop: "12px",
-    display: "flex",
-    alignItems: "center",
-    gap: "16px",
-    border: "1px solid #e2e8f0"
-  },
-  timezoneText: {
-    fontSize: "0.95rem",
-    color: "#334155"
-  },
-  prosperityBox: {
-    marginTop: "10px",
-    padding: "15px",
-    background: "#f0f8ff",
-    borderRadius: "8px"
-  },
-  prosperityText: {
-    margin: 0
-  },
-  prosperitySubtext: {
-    margin: "10px 0 0 0",
-    color: "#1e5f4b"
-  },
-  groupCard: {
-    border: "1px solid #ddd",
-    padding: "15px",
-    borderRadius: "8px",
-    marginBottom: "15px"
-  },
-  groupNameInput: {
-    fontWeight: "bold",
-    fontSize: "16px",
-    marginBottom: "10px",
-    width: "100%",
-    padding: "8px",
-    border: "1px solid #ddd",
-    borderRadius: "4px",
-    fontFamily: "'Inter', sans-serif"
-  },
-  categoryRow: {
-    display: "flex",
-    gap: "10px",
-    marginBottom: "8px"
-  },
-  categoryInput: {
-    flex: 1,
-    padding: "8px",
-    borderRadius: "4px",
-    border: "1px solid #ddd",
-    fontFamily: "'Inter', sans-serif"
-  },
-  deleteButton: {
-    padding: "8px 16px",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer",
-    background: "#dc3545",
-    color: "white",
-    fontWeight: 500
-  },
-  addCategoryRow: {
-    display: "flex",
-    gap: "10px",
-    marginTop: "10px"
-  },
-  addCategoryButton: {
-    padding: "8px 16px",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer",
-    background: "#28a745",
-    color: "white",
-    fontWeight: 500
-  },
-  addGroupRow: {
-    display: "flex",
-    gap: "10px",
-    marginTop: "10px"
-  },
-  groupInput: {
-    flex: 1,
-    padding: "10px",
-    borderRadius: "4px",
-    border: "1px solid #ddd",
-    fontFamily: "'Inter', sans-serif"
-  },
-  addGroupButton: {
-    padding: "10px 20px",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer",
-    background: "#007bff",
-    color: "white",
-    fontWeight: 500
-  },
-  saveButtonContainer: {
-    marginTop: "30px",
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: "10px"
-  },
-  saveButton: {
-    background: "linear-gradient(135deg, #2a5298, #1e3c72)",
-    color: "white",
-    border: "none",
-    padding: "12px 36px",
-    borderRadius: "40px",
-    fontSize: "16px",
-    fontWeight: 500,
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    transition: "all 0.2s ease"
-  },
-  cancelButton: {
-    background: "#6c757d",
-    color: "white",
-    border: "none",
-    padding: "12px 24px",
-    borderRadius: "40px",
-    fontSize: "16px",
-    fontWeight: 500,
-    cursor: "pointer",
-    transition: "all 0.2s ease"
-  },
-  footer: {
-    marginTop: "48px",
-    display: "flex",
-    justifyContent: "space-between",
-    borderTop: "1px solid #e2e8f0",
-    paddingTop: "24px",
-    color: "#94a3b8",
-    fontSize: "0.85rem"
-  },
-  colorLegend: {
-    display: "flex",
-    gap: "16px"
-  }
-};

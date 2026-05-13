@@ -5,6 +5,7 @@ import AutoAssignView from './AutoAssignView';
 import FutureMonthsView from './FutureMonthsView';
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import BudgetEngine from "../shared/budgetEngine.mjs";
+import Button from '../components/ui/Button';
 import CategoryTargetModal from '../components/CategoryTargetModal';
 
 const PropertyMapView = () => {
@@ -1331,455 +1332,347 @@ const PropertyMapView = () => {
 
   // ==================== RENDER ====================
   return (
-    <div style={styles.container}>
-      <div style={styles.budgetTableContainer}>
-        <div style={styles.header}>
-          <div style={styles.titleSection}>
-            <h1 style={styles.title}>ProspertyMap</h1>
-            <p style={styles.description}>
-              {selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })} budget allocation
-            </p>
+    <div className="grid min-h-full gap-6 xl:grid-cols-[1.8fr_1fr]">
+      <div className="space-y-6">
+        <section className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.35em] text-slate-500">ProsperityMap</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Budget allocation</h1>
+              <p className="mt-2 text-sm text-slate-400">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })} budget snapshot</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="secondary" onClick={() => { loadArchivedCategories(); setShowArchivedModal(true); }}>
+                Archived ({archivedCategories.length})
+              </Button>
+              <Button variant="secondary" onClick={() => setShowAddGroupModal(true)}>
+                + Add Group
+              </Button>
+            </div>
           </div>
-          <div style={styles.controlsRow}>
-            <button
-              onClick={() => {
-                loadArchivedCategories();
-                setShowArchivedModal(true);
-              }}
-              style={styles.archiveButton}
-            >
-              📦 Archived Categories ({archivedCategories.length})
-            </button>
-          </div>
-        </div>
 
-        <div style={styles.unassignedCard}>
-          <div style={styles.unassignedIcon}>💰</div>
-          <div style={styles.unassignedContent}>
-            <div style={styles.unassignedLabel}>Ready to Assign</div>
-            <div style={{
-              ...styles.unassignedValue,
-              color: budgetSummary.unassigned < 0 ? '#F87171' : 'white'
-            }}>
-              {formatCurrency(budgetSummary.unassigned)}
-            </div>
-            <div style={styles.unassignedSubtext}>
-              {budgetSummary.unassigned === 0
-                ? "Every dollar has a job! 🎯"
-                : budgetSummary.unassigned < 0
-                  ? `Overspent by ${formatCurrency(Math.abs(budgetSummary.unassigned))}`
-                  : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`
-              }
-            </div>
-          </div>
-        </div>
-        
-        {(() => {
-          if (!budgetData.categories || !Array.isArray(budgetData.categories)) return null;
-          const overspentCategories = budgetData.categories.filter(c => !c.archived && (c.available || 0) < 0);
-          if (overspentCategories.length === 0) return null;
-          return (
-            <div style={styles.warningBanner}>
-              <div style={styles.warningIcon}>⚠️</div>
-              <div style={styles.warningContent}>
-                <strong>Overspending Alert!</strong>
-                <div style={styles.warningText}>
-                  You have {overspentCategories.length} categor{overspentCategories.length > 1 ? 'ies' : 'y'} with negative Available.
-                  Please cover this overspending from other categories.
+          <div className="mt-6 grid gap-4 xl:grid-cols-[1.45fr_0.85fr]">
+            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-sky-500 to-cyan-500 text-2xl text-white shadow-lg shadow-cyan-500/20">
+                  💰
                 </div>
-                <button
-                  onClick={() => handleQuickAssign('underfunded')}
-                  style={styles.warningButton}
-                >
-                  Cover Overspending
-                </button>
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.3em] text-slate-500">Ready to Assign</p>
+                  <p className={`mt-3 text-4xl font-semibold ${budgetSummary.unassigned < 0 ? 'text-rose-400' : 'text-white'}`}>
+                    {formatCurrency(budgetSummary.unassigned)}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-400">
+                    {budgetSummary.unassigned === 0
+                      ? 'Every dollar has a job! 🎯'
+                      : budgetSummary.unassigned < 0
+                        ? `Overspent by ${formatCurrency(Math.abs(budgetSummary.unassigned))}`
+                        : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`}
+                  </p>
+                </div>
               </div>
             </div>
-          );
-        })()}
-        
-        <div style={styles.controlsRow}>
-          <div style={styles.monthSelector}>
-            <button style={styles.monthNavButton} onClick={() => {
-              const newDate = new Date(selectedMonth);
-              newDate.setMonth(selectedMonth.getMonth() - 1);
-              setSelectedMonth(newDate);
-            }}>◀</button>
-            <span style={styles.currentMonth}>
-              {selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
-            </span>
-            <button style={styles.monthNavButton} onClick={() => {
-              const newDate = new Date(selectedMonth);
-              newDate.setMonth(selectedMonth.getMonth() + 1);
-              setSelectedMonth(newDate);
-            }}>▶</button>
-          </div>
-          <button style={styles.addGroupButton} onClick={() => setShowAddGroupModal(true)}>
-            + Add Category Group
-          </button>
-          <button
-            onClick={async () => {
-              const userResult = await window.electronAPI.getCurrentUser();
-              const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
-              const totalCash = accountsResult.data
-                .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-                .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-              const categories = await window.electronAPI.getCategories(2);
-              const totalAssigned = categories.data.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
-              alert(`Total Cash: $${totalCash}\nTotal Assigned: $${totalAssigned}\nReady to Assign: $${totalCash - totalAssigned}`);
-            }}
-            style={{ background: '#F59E0B', color: 'white', padding: '8px', margin: '8px' }}
-          >
-            🔍 DEBUG READY TO ASSIGN
-          </button>
-          <button
-            onClick={async () => {
-              await loadCategoriesFromDB();
-              await loadCategoryGroups();
-            }}
-            style={{ background: '#10B981', color: 'white', padding: '8px', margin: '8px' }}
-          >
-            🔄 FORCE REFRESH CATEGORIES
-          </button>
-          {budgetSummary.unassigned > 0 && (
-            <div style={styles.quickBudgetTools}>
-              <button onClick={() => handleQuickAssign('smart')} style={{
-                ...styles.quickBudgetButton,
-                background: '#8B5CF6',
-                color: 'white'
-              }} title="Smart assign based on goal priorities">
-                🧠 Smart Assign
-              </button>
-              <button onClick={() => handleQuickAssign('underfunded')} style={{
-                ...styles.quickBudgetButton,
-                background: '#F59E0B',
-                color: 'white'
-              }} title="Assign money to underfunded categories">
-                🎯 Fund Underfunded (${getTotalUnderfunded().toFixed(0)})
-              </button>
-              <button onClick={() => handleQuickAssign('last-month')} style={{
-                ...styles.quickBudgetButton,
-                background: '#3B82F6',
-                color: 'white'
-              }}>📅 Last Month's Amount</button>
-              <button onClick={() => handleQuickAssign('average')} style={{
-                ...styles.quickBudgetButton,
-                background: '#10B981',
-                color: 'white'
-              }}>📊 Average Spending</button>
+
+            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-200">Quick actions</p>
+                  <p className="mt-2 text-sm text-slate-400">Allocate funds faster with recommended workflows.</p>
+                </div>
+              </div>
+              <div className="mt-5 grid gap-3">
+                <Button variant="secondary" onClick={() => handleQuickAssign('smart')}>
+                  🧠 Smart Assign
+                </Button>
+                <Button variant="secondary" onClick={() => handleQuickAssign('underfunded')}>
+                  🎯 Fund Underfunded ({formatCurrency(getTotalUnderfunded())})
+                </Button>
+                <Button variant="secondary" onClick={() => handleQuickAssign('last-month')}>
+                  📅 Last Month
+                </Button>
+                <Button variant="secondary" onClick={() => handleQuickAssign('average')}>
+                  📊 Average Spending
+                </Button>
+              </div>
             </div>
-          )}
-        </div>
+          </div>
 
-        <div style={styles.tableContainer}>
-          {loading ? (
-            <div style={styles.loading}>Loading categories...</div>
-          ) : (
-            <table style={styles.table}>
-              <colgroup>
-                <col style={{ width: '30%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '18%' }} />
-                <col style={{ width: '16%' }} />
-              </colgroup>
-              <thead style={styles.tableHead}>
-                <tr>
-                  <th style={styles.tableHeader}>Category</th>
-                  <th style={styles.tableHeader}>Assigned</th>
-                  <th style={styles.tableHeader}>Activity</th>
-                  <th style={styles.tableHeader}>Available</th>
-                  <th style={styles.tableHeader}>Progress</th>
-                  <th style={styles.tableHeader}>Goal Target</th>
-                </tr>
-              </thead>
-              <tbody>
-                {categoryGroups.map((group, groupIndex) => {
-                  const groupCategories = getCategoriesByGroup(group.id);
-                  const uniqueGroupKey = `group-${group.id}-${groupIndex}`;
+          <div className="mt-6 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="inline-flex items-center gap-3 rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
+              <button
+                type="button"
+                onClick={() => {
+                  const newDate = new Date(selectedMonth);
+                  newDate.setMonth(selectedMonth.getMonth() - 1);
+                  setSelectedMonth(newDate);
+                }}
+                className="rounded-full border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 transition hover:bg-slate-700"
+              >◀</button>
+              <span className="font-medium text-slate-100">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const newDate = new Date(selectedMonth);
+                  newDate.setMonth(selectedMonth.getMonth() + 1);
+                  setSelectedMonth(newDate);
+                }}
+                className="rounded-full border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 transition hover:bg-slate-700"
+              >▶</button>
+            </div>
 
-                  return (
-                    <React.Fragment key={uniqueGroupKey}>
-                      <tr style={styles.categoryGroupRow}>
-                        <td colSpan="6" style={styles.categoryGroupCell}>
-                          <div style={styles.groupHeader}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                              <button
-                                onClick={() => toggleGroupCollapse(group.id)}
-                                style={{
-                                  background: 'none',
-                                  border: 'none',
-                                  color: '#ffffff',
-                                  fontSize: '1rem',
-                                  cursor: 'pointer',
-                                  padding: '4px 8px',
-                                  borderRadius: '4px',
-                                  transform: collapsedGroups[group.id] ? 'rotate(-90deg)' : 'rotate(0deg)'
-                                }}
-                              >▼</button>
-                              <span style={styles.categoryGroupName}>{group.name}</span>
-                              <span style={{
-                                fontSize: '11px',
-                                color: '#9CA3AF',
-                                background: 'rgba(255,255,255,0.1)',
-                                padding: '2px 8px',
-                                borderRadius: '12px'
-                              }}>{groupCategories.length} categories</span>
+            <div className="flex flex-wrap gap-3">
+              <Button variant="secondary" onClick={async () => { await loadCategoriesFromDB(); await loadCategoryGroups(); }}>
+                🔄 Refresh categories
+              </Button>
+              <Button variant="secondary" onClick={async () => {
+                const userResult = await window.electronAPI.getCurrentUser();
+                const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+                const totalCash = accountsResult.data
+                  .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+                  .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+                const categories = await window.electronAPI.getCategories(2);
+                const totalAssigned = categories.data.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
+                alert(`Total Cash: $${totalCash}
+Total Assigned: $${totalAssigned}
+Ready to Assign: $${totalCash - totalAssigned}`);
+              }}>
+                🔍 Quick totals
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-6 overflow-hidden rounded-[1.75rem] border border-slate-800 bg-slate-900">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-700 text-left text-sm text-slate-200">
+                <colgroup>
+                  <col style={{ width: '30%' }} />
+                  <col style={{ width: '12%' }} />
+                  <col style={{ width: '12%' }} />
+                  <col style={{ width: '12%' }} />
+                  <col style={{ width: '18%' }} />
+                  <col style={{ width: '16%' }} />
+                </colgroup>
+                <thead className="bg-slate-950/80">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold text-slate-400">Category</th>
+                    <th className="px-4 py-3 font-semibold text-slate-400">Assigned</th>
+                    <th className="px-4 py-3 font-semibold text-slate-400">Activity</th>
+                    <th className="px-4 py-3 font-semibold text-slate-400">Available</th>
+                    <th className="px-4 py-3 font-semibold text-slate-400">Progress</th>
+                    <th className="px-4 py-3 font-semibold text-slate-400">Goal Target</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {categoryGroups.map((group, groupIndex) => {
+                    const groupCategories = getCategoriesByGroup(group.id);
+                    const uniqueGroupKey = `group-${group.id}-${groupIndex}`;
+
+                    return (
+                      <React.Fragment key={uniqueGroupKey}>
+                        <tr className="bg-slate-950/70">
+                          <td colSpan="6" className="px-4 py-4 text-slate-100">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex items-center gap-3">
+                                <button
+                                  onClick={() => toggleGroupCollapse(group.id)}
+                                  className="rounded-full border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 transition hover:bg-slate-700"
+                                >
+                                  ▼
+                                </button>
+                                <span className="text-base font-semibold text-white">{group.name}</span>
+                                <span className="rounded-full bg-slate-800 px-3 py-1 text-xs uppercase tracking-[0.2em] text-slate-400">{groupCategories.length} categories</span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button variant="secondary" onClick={() => handleAddCategory(group)}>+ Category</Button>
+                                <Button variant="secondary" onClick={() => handleEditGroup(group)}>Edit</Button>
+                                <Button variant="danger" onClick={() => handleDeleteGroup(group.id)}>Delete</Button>
+                              </div>
                             </div>
-                            <div style={styles.groupActions}>
-                              <button onClick={() => handleAddCategory(group)} style={styles.addCategoryButton}>+</button>
-                              <button onClick={() => handleEditGroup(group)} style={styles.editGroupButton}>✏️</button>
-                              <button onClick={() => handleDeleteGroup(group.id)} style={styles.deleteGroupButton}>✕</button>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
+                          </td>
+                        </tr>
 
-                      {!collapsedGroups[group.id] && (
-                        <React.Fragment key={`content-${uniqueGroupKey}`}>
-                          {groupCategories.length > 0 ? (
-                            groupCategories.map((cat, catIndex) => {
-                              const targetInfo = getTargetInfo(cat);
-                              const hasTarget = targetInfo.status !== 'no-target';
-                              const isEditing = editingCategory === cat.id;
-                              const categoryKey = `cat-${cat.id}-${groupIndex}-${catIndex}`;
+                        {!collapsedGroups[group.id] && (
+                          <React.Fragment key={`content-${uniqueGroupKey}`}>
+                            {groupCategories.length > 0 ? (
+                              groupCategories.map((cat, catIndex) => {
+                                const targetInfo = getTargetInfo(cat);
+                                const hasTarget = targetInfo.status !== 'no-target';
+                                const isEditing = editingCategory === cat.id;
+                                const categoryKey = `cat-${cat.id}-${groupIndex}-${catIndex}`;
 
-                              if (isEditing) {
+                                if (isEditing) {
+                                  return (
+                                    <tr key={`${categoryKey}-edit`} className="bg-slate-950/90">
+                                      <td className="px-4 py-4">
+                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                          <div className="min-w-0">
+                                            <div className="text-white">{cat.name}</div>
+                                            <div className="mt-1 text-xs text-slate-400">Edit details and goal for this category.</div>
+                                          </div>
+                                          <div className="flex gap-2">
+                                            <Button variant="secondary" onClick={() => handleArchiveCategory(cat)}>Archive</Button>
+                                            <Button variant="danger" onClick={() => handleDeleteCategory(cat.id)}>Delete</Button>
+                                          </div>
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-4">
+                                        <input
+                                          type="number"
+                                          value={editCategoryData.assigned === 0 ? '' : editCategoryData.assigned}
+                                          onChange={(e) => {
+                                            const value = e.target.value;
+                                            setEditCategoryData({
+                                              ...editCategoryData,
+                                              assigned: value === '' ? 0 : parseFloat(value)
+                                            });
+                                          }}
+                                          className="w-full rounded-3xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          step="0.01"
+                                          min="0"
+                                          placeholder="0.00"
+                                        />
+                                      </td>
+                                      <td className="px-4 py-4">{formatCurrency(cat.activity || 0)}</td>
+                                      <td className="px-4 py-4">{formatCurrency(cat.available || 0)}</td>
+                                      <td className="px-4 py-4">
+                                        <select
+                                          value={editCategoryData.target_type}
+                                          onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
+                                          className="w-full rounded-3xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                        >
+                                          <option value="monthly">Monthly</option>
+                                          <option value="balance">Balance</option>
+                                          <option value="by_date">By Date</option>
+                                          {cat.is_loan_payment_category && <option value="monthly_debt_payment">Monthly Debt</option>}
+                                        </select>
+                                        <input
+                                          type="number"
+                                          value={editCategoryData.target_amount === 0 ? '' : editCategoryData.target_amount}
+                                          onChange={(e) => setEditCategoryData({ ...editCategoryData, target_amount: e.target.value === '' ? 0 : parseFloat(e.target.value) })}
+                                          className="mt-3 w-full rounded-3xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          placeholder="Target amount"
+                                          step="0.01"
+                                          min="0"
+                                        />
+                                      </td>
+                                      <td className="px-4 py-4">
+                                        <div className="flex flex-wrap gap-2">
+                                          <Button variant="primary" onClick={() => handleSaveCategoryEdit(cat.id)}>Save</Button>
+                                          <Button variant="secondary" onClick={handleCancelEdit}>Cancel</Button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                }
+
                                 return (
-                                  <tr key={`${categoryKey}-edit`} style={{ ...styles.categoryRow, background: '#1a3a5a' }}>
-                                    <td style={styles.categoryCell}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                        <span style={styles.categoryName}>{cat.name}</span>
-                                        <div style={styles.categoryActions}>
-                                          <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton}>📦</button>
-                                          <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton}>🗑️</button>
+                                  <tr key={categoryKey} className="border-t border-slate-800">
+                                    <td className="px-4 py-4 align-top">
+                                      <div className="flex flex-col gap-3">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="text-sm font-semibold text-white">{cat.name}</span>
+                                          {hasTarget && <span className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-400">{targetInfo.status}</span>}
+                                        </div>
+                                        <div className="flex flex-wrap gap-2 text-xs text-slate-400">
+                                          <Button variant="secondary" onClick={() => handleEditCategory(cat)}>Edit</Button>
+                                          <Button variant="secondary" onClick={() => handleSetGoal(cat)}>Goal</Button>
+                                          <Button variant="secondary" onClick={() => handleArchiveCategory(cat)}>Archive</Button>
+                                          <Button variant="danger" onClick={() => handleDeleteCategory(cat.id)}>Delete</Button>
                                         </div>
                                       </div>
                                     </td>
-                                    <td style={styles.amountCell}>
-                                      <input
-                                        type="number"
-                                        value={editCategoryData.assigned === 0 ? '' : editCategoryData.assigned}
-                                        onChange={(e) => {
-                                          const value = e.target.value;
-                                          setEditCategoryData({
-                                            ...editCategoryData,
-                                            assigned: value === '' ? 0 : parseFloat(value)
-                                          });
-                                        }}
-                                        style={styles.editInput}
-                                        step="0.01"
-                                        min="0"
-                                        placeholder="0.00"
-                                      />
+                                    <td className="px-4 py-4 align-top">{formatCurrency(cat.assigned || 0)}</td>
+                                    <td className="px-4 py-4 align-top">{formatCurrency(cat.activity || 0)}</td>
+                                    <td className="px-4 py-4 align-top">
+                                      <div className={`${(cat.available || 0) < 0 ? 'text-rose-400' : (cat.available || 0) === 0 ? 'text-amber-300' : 'text-emerald-400'} font-semibold`}>{formatCurrency(cat.available || 0)}</div>
+                                      {(cat.available || 0) < 0 && <div className="mt-1 text-xs text-rose-300">Overspent</div>}
+                                      {(cat.available || 0) === 0 && <div className="mt-1 text-xs text-amber-300">Fully allocated</div>}
                                     </td>
-                                    <td style={styles.amountCell}>{formatCurrency(cat.activity || 0)}</td>
-                                    <td style={styles.amountCell}>{formatCurrency(cat.available || 0)}</td>
-                                    <td style={styles.progressCell}>
-                                      <select
-                                        value={editCategoryData.target_type}
-                                        onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
-                                        style={styles.editSelect}
-                                      >
-                                        <option value="monthly">Monthly</option>
-                                        <option value="balance">Balance</option>
-                                        <option value="by_date">By Date</option>
-                                        {cat.is_loan_payment_category && (
-                                          <option value="monthly_debt_payment">🏦 Monthly Debt Payment (Loan)</option>
-                                        )}
-                                      </select>
-                                      <input
-                                        type="number"
-                                        value={editCategoryData.target_amount === 0 ? '' : editCategoryData.target_amount}
-                                        onChange={(e) => setEditCategoryData({
-                                          ...editCategoryData,
-                                          target_amount: e.target.value === '' ? 0 : parseFloat(e.target.value)
-                                        })}
-                                        style={{ ...styles.editInput, marginTop: '4px' }}
-                                        placeholder="Target amount"
-                                        step="0.01"
-                                        min="0"
-                                      />
+                                    <td className="px-4 py-4 align-top">
+                                      {hasTarget ? (
+                                        <div className="space-y-2">
+                                          <div className="relative h-3 overflow-hidden rounded-full bg-slate-800">
+                                            <div className="h-full rounded-full" style={{ width: `${Math.min(100, targetInfo.progress || 0)}%`, backgroundColor: getProgressColor(targetInfo.status) }} />
+                                          </div>
+                                          <div className="text-xs text-slate-400">{Math.min(100, Math.round(targetInfo.progress || 0))}%</div>
+                                        </div>
+                                      ) : (
+                                        <div className="text-slate-500">—</div>
+                                      )}
                                     </td>
-                                    <td style={styles.amountCell}>
-                                      <div style={styles.editActions}>
-                                        <button onClick={() => handleSaveCategoryEdit(cat.id)} style={styles.saveEditButton} title="Save">✅</button>
-                                        <button onClick={handleCancelEdit} style={styles.cancelEditButton} title="Cancel">❌</button>
-                                      </div>
+                                    <td className="px-4 py-4 align-top">
+                                      {cat.target_amount && cat.target_amount > 0 ? (
+                                        <div className="space-y-1">
+                                          <div className="font-semibold text-white">{formatCurrency(cat.target_amount)}</div>
+                                          <div className="text-xs text-slate-400">{cat.target_type === 'monthly' ? 'Monthly' : cat.target_type === 'balance' ? 'Balance' : cat.target_type === 'by_date' ? 'By Date' : 'Other'}</div>
+                                        </div>
+                                      ) : (
+                                        <Button variant="secondary" onClick={() => handleSetGoal(cat)}>+ Set Goal</Button>
+                                      )}
                                     </td>
                                   </tr>
                                 );
-                              }
+                              })
+                            ) : (
+                              <tr className="border-t border-slate-800">
+                                <td colSpan="6" className="px-4 py-6 text-center text-sm text-slate-400">No categories found in this group.</td>
+                              </tr>
+                            )}
 
-                              return (
-                                <tr key={categoryKey} style={styles.categoryRow}>
-                                  <td style={styles.categoryCell}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                      <span style={styles.categoryName}>{cat.name}</span>
-                                      <div style={styles.categoryActions}>
-                                        <button onClick={() => handleEditCategory(cat)} style={styles.editCategoryButton} title="Edit category">✏️</button>
-                                        <button onClick={() => handleSetGoal(cat)} style={styles.goalButton} title="Set goal">🎯</button>
-                                        <button onClick={() => handleArchiveCategory(cat)} style={styles.archiveCategoryButton} title="Archive category">📦</button>
-                                        <button onClick={() => handleDeleteCategory(cat.id)} style={styles.deleteCategoryButton} title="Delete category">🗑️</button>
-                                      </div>
-                                      {hasTarget && (
-                                        <span style={styles.targetIndicator} title={getGoalTooltip(cat)}>
-                                          {targetInfo.status === 'funded' || targetInfo.status === 'completed' ? '✅' : '🎯'}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </td>
-                                  <td style={styles.amountCell}>
-                                    <div>{formatCurrency(cat.assigned || 0)}</div>
-                                    {hasTarget && targetInfo.status === 'partial' && (
-                                      <div style={{ fontSize: '11px', color: '#F59E0B' }}>
-                                        Need ${targetInfo.needed?.toFixed(0)} more
-                                      </div>
-                                    )}
-                                    {hasTarget && targetInfo.status === 'unfunded' && (
-                                      <div style={{ fontSize: '11px', color: '#EF4444' }}>
-                                        Unfunded - ${targetInfo.needed?.toFixed(0)} needed
-                                      </div>
-                                    )}
-                                  </td>
-                                  <td style={styles.amountCell}>
-                                    {formatCurrency(cat.activity || 0)}
-                                  </td>
-                                  <td style={{
-                                    ...styles.amountCell,
-                                    color: (cat.available || 0) < 0 ? '#F87171' : (cat.available || 0) === 0 ? '#F59E0B' : '#4ADE80',
-                                    fontWeight: (cat.available || 0) < 0 ? 'bold' : 'normal'
-                                  }}>
-                                    {formatCurrency(cat.available || 0)}
-                                    {(cat.available || 0) < 0 && (
-                                      <div style={{ fontSize: '10px', color: '#F87171', marginTop: '2px' }}>
-                                        ⚠️ Overspent - Cover from another category
-                                      </div>
-                                    )}
-                                    {(cat.available || 0) === 0 && (
-                                      <div style={{ fontSize: '10px', color: '#F59E0B', marginTop: '2px' }}>
-                                        Fully allocated
-                                      </div>
-                                    )}
-                                  </td>
-                                  <td style={styles.progressCell}>
-                                    {hasTarget ? (
-                                      <div style={styles.progressWrapper}>
-                                        <div style={styles.progressBarContainer}>
-                                          <div style={{
-                                            ...styles.progressBarFill,
-                                            width: `${Math.min(100, targetInfo.progress || 0)}%`,
-                                            backgroundColor: getProgressColor(targetInfo.status)
-                                          }} />
-                                          <span style={styles.progressText}>
-                                            {Math.min(100, Math.round(targetInfo.progress || 0))}%
-                                          </span>
-                                        </div>
-                                        {targetInfo.status === 'partial' && (
-                                          <div style={styles.progressStatus}>Need {formatCurrency(targetInfo.needed)}</div>
-                                        )}
-                                        {targetInfo.status === 'unfunded' && (
-                                          <div style={styles.progressStatus}>Not funded</div>
-                                        )}
-                                        {targetInfo.status === 'funded' && (
-                                          <div style={{ ...styles.progressStatus, color: '#4ADE80' }}>✅ Funded</div>
-                                        )}
-                                        {targetInfo.status === 'completed' && (
-                                          <div style={{ ...styles.progressStatus, color: '#4ADE80' }}>🎉 Achieved</div>
-                                        )}
-                                        {targetInfo.status === 'in-progress' && targetInfo.monthlyNeeded && (
-                                          <div style={styles.progressStatus}>${targetInfo.monthlyNeeded.toFixed(0)}/month</div>
-                                        )}
-                                      </div>
-                                    ) : (
-                                      <div style={styles.noGoalIndicator}>—</div>
-                                    )}
-                                  </td>
-                                  <td style={styles.goalCell}>
-                                    {cat.target_amount && cat.target_amount > 0 ? (
-                                      <div style={styles.goalTargetWrapper}>
-                                        <div style={styles.goalTargetAmount}>
-                                          {formatCurrency(cat.target_amount)}
-                                        </div>
-                                        <div style={styles.goalTypeIndicator}>
-                                          {cat.target_type === 'monthly' && '📅 Monthly'}
-                                          {cat.target_type === 'balance' && '🎯 Balance'}
-                                          {cat.target_type === 'by_date' && '⏰ By Date'}
-                                          {cat.target_type === 'monthly_debt_payment' && '🏦 Monthly Debt Payment'}
-                                          {cat.target_date && cat.target_type === 'by_date' && (
-                                            <span style={styles.goalDateSmall}>
-                                              {new Date(cat.target_date).toLocaleDateString()}
-                                            </span>
-                                          )}
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <div style={styles.noGoalCell}>
-                                        <button
-                                          onClick={() => handleSetGoal(cat)}
-                                          style={styles.quickSetGoalButton}
-                                        >
-                                          + Set Goal
-                                        </button>
-                                      </div>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })
-                          ) : (
-                            <tr key={`empty-${group.id}-${groupIndex}`} style={styles.emptyGroupRow}>
-                              <td colSpan="6" style={styles.emptyGroupCell}>No categories in this group</td>
-                            </tr>
-                          )}
-                          {groupCategories.length > 0 && (
-                            <tr key={`total-${group.id}-${groupIndex}`} style={styles.groupTotalRow}>
-                              <td style={styles.groupTotalCell}><strong>{group.name} Total</strong></td>
-                              <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).assigned)}</strong></td>
-                              <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).activity)}</strong></td>
-                              <td style={styles.groupTotalAmount}><strong>{formatCurrency(getGroupTotals(group.id).available)}</strong></td>
-                              <td style={styles.groupTotalCell}><strong>{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</strong></td>
-                              <td style={styles.groupTotalCell}>—</td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
+                            {groupCategories.length > 0 && (
+                              <tr className="border-t border-slate-800 bg-slate-950/80">
+                                <td className="px-4 py-4 text-sm font-semibold text-slate-100">{group.name} Total</td>
+                                <td className="px-4 py-4 font-semibold text-slate-100">{formatCurrency(getGroupTotals(group.id).assigned)}</td>
+                                <td className="px-4 py-4 font-semibold text-slate-100">{formatCurrency(getGroupTotals(group.id).activity)}</td>
+                                <td className="px-4 py-4 font-semibold text-slate-100">{formatCurrency(getGroupTotals(group.id).available)}</td>
+                                <td className="px-4 py-4 text-sm text-slate-400">{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</td>
+                                <td className="px-4 py-4 text-slate-400">—</td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
 
-                <tr style={styles.totalRow}>
-                  <td style={styles.totalCell}><strong>Total</strong></td>
-                  <td style={styles.totalAmount}><strong>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.assigned || 0), 0))}</strong></td>
-                  <td style={styles.totalAmount}><strong>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.activity || 0), 0))}</strong></td>
-                  <td style={styles.totalAmount}><strong>{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.available || 0), 0))}</strong></td>
-                  <td style={styles.totalCell}>—</td>
-                  <td style={styles.totalCell}>—</td>
-                </tr>
-              </tbody>
-            </table>
-          )}
+                  <tr className="border-t border-slate-800 bg-slate-950/90">
+                    <td className="px-4 py-4 font-semibold text-white">Total</td>
+                    <td className="px-4 py-4 font-semibold text-white">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.assigned || 0), 0))}</td>
+                    <td className="px-4 py-4 font-semibold text-white">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.activity || 0), 0))}</td>
+                    <td className="px-4 py-4 font-semibold text-white">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.available || 0), 0))}</td>
+                    <td className="px-4 py-4 text-slate-400">—</td>
+                    <td className="px-4 py-4 text-slate-400">—</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <aside className="space-y-6">
+        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+          <SummaryView
+            totalAvailable={budgetSummary.totalAvailable}
+            totalActivity={budgetSummary.totalActivity}
+            totalAssigned={budgetSummary.totalAssigned}
+            unassigned={budgetSummary.unassigned}
+            categories={budgetData.categories || []}
+            onAutoAssign={handleAutoAssign}
+            underfundedTotal={getTotalUnderfunded()}
+          />
+          <div className="mt-3 text-sm text-rose-400">Underfunded: {formatCurrency(getTotalUnderfunded())}</div>
         </div>
-      </div>
 
-      <div style={styles.rightColumn}>
-        <SummaryView
-          totalAvailable={budgetSummary.totalAvailable}
-          totalActivity={budgetSummary.totalActivity}
-          totalAssigned={budgetSummary.totalAssigned}
-          unassigned={budgetSummary.unassigned}
-          categories={budgetData.categories || []}
-          onAutoAssign={handleAutoAssign}
-          underfundedTotal={getTotalUnderfunded()}
-        />
+        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+          <AutoAssignView readyToAssign={budgetSummary.unassigned} underfundedTotal={getTotalUnderfunded()} underfundedCategories={calculateUnderfundedCategories()} />
+        </div>
 
-        <div style={{ color: "#F87171", marginTop: 8 }}>Underfunded: {formatCurrency(getTotalUnderfunded())}</div>
-        <AutoAssignView readyToAssign={budgetSummary.unassigned} underfundedTotal={getTotalUnderfunded()} underfundedCategories={calculateUnderfundedCategories()} />
-        <FutureMonthsView futureAssignments={2340.50} nextMonthTarget={5000} monthsAhead={1.5} />
-      </div>
+        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+          <FutureMonthsView futureAssignments={2340.50} nextMonthTarget={5000} monthsAhead={1.5} />
+        </div>
+      </aside>
 
-      {/* Archived Categories Modal */}
       {showArchivedModal && (
         <div style={styles.modalOverlay} onClick={() => setShowArchivedModal(false)}>
           <div style={{ ...styles.modalContent, maxWidth: '600px' }} onClick={e => e.stopPropagation()}>
@@ -1794,8 +1687,7 @@ const PropertyMapView = () => {
                     <div>
                       <div style={{ fontWeight: 'bold', color: 'white' }}>{cat.name}</div>
                       <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
-                        Original group: {categoryGroups.find(g => g.id === cat.original_group_id)?.name || 'Unknown'}
-                        | Archived: {new Date(cat.archived_at || Date.now()).toLocaleDateString()}
+                        Original group: {categoryGroups.find(g => g.id === cat.original_group_id)?.name || 'Unknown'} | Archived: {new Date(cat.archived_at || Date.now()).toLocaleDateString()}
                       </div>
                     </div>
                     <button onClick={() => handleRestoreCategory(cat)} style={styles.restoreButton}>Restore</button>
@@ -1810,7 +1702,6 @@ const PropertyMapView = () => {
         </div>
       )}
 
-      {/* Add Income Modal */}
       {showAddIncomeModal && (
         <div style={styles.modalOverlay} onClick={() => setShowAddIncomeModal(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
@@ -1823,77 +1714,35 @@ const PropertyMapView = () => {
         </div>
       )}
 
-      {/* Record Payment Modal */}
       {showRecordPaymentModal && (
         <div style={styles.modalOverlay} onClick={() => setShowRecordPaymentModal(false)}>
-          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Record Payment</h3>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Amount</label>
-              <input type="number" style={styles.input} value={paymentData.amount} onChange={(e) => setPaymentData({ ...paymentData, amount: e.target.value })} placeholder="0.00" step="0.01" min="0" autoFocus />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Category</label>
-              <select style={styles.select} value={paymentData.categoryId} onChange={(e) => setPaymentData({ ...paymentData, categoryId: e.target.value })}>
-                <option value="">Select a category</option>
-                {budgetData.categories.filter(c => !c.archived).map(cat => (
-                  <option key={cat.id} value={cat.id}>{cat.name} ({formatCurrency(cat.available)} available)</option>
-                ))}
-              </select>
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Payee</label>
-              <input type="text" style={styles.input} value={paymentData.payee} onChange={(e) => setPaymentData({ ...paymentData, payee: e.target.value })} placeholder="Store name, bill payee, etc." />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Date</label>
-              <input type="date" style={styles.input} value={paymentData.date} onChange={(e) => setPaymentData({ ...paymentData, date: e.target.value })} />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Memo (Optional)</label>
-              <input type="text" style={styles.input} value={paymentData.memo} onChange={(e) => setPaymentData({ ...paymentData, memo: e.target.value })} placeholder="Additional details" />
-            </div>
-            <div style={styles.modalActions}>
-              <button style={styles.saveButton} onClick={handleRecordPayment}>Record Payment</button>
-              <button style={styles.cancelButton} onClick={() => setShowRecordPaymentModal(false)}>Cancel</button>
-            </div>
+            <div style={styles.formGroup}><label style={styles.label}>Amount</label><input type="number" style={styles.input} value={paymentData.amount} onChange={(e) => setPaymentData({ ...paymentData, amount: e.target.value })} placeholder="0.00" step="0.01" min="0" autoFocus /></div>
+            <div style={styles.formGroup}><label style={styles.label}>Category</label><select style={styles.select} value={paymentData.categoryId} onChange={(e) => setPaymentData({ ...paymentData, categoryId: e.target.value })}><option value="">Select a category</option>{budgetData.categories.filter((c) => !c.archived).map((cat) => (<option key={cat.id} value={cat.id}>{cat.name} ({formatCurrency(cat.available)})</option>))}</select></div>
+            <div style={styles.formGroup}><label style={styles.label}>Payee</label><input type="text" style={styles.input} value={paymentData.payee} onChange={(e) => setPaymentData({ ...paymentData, payee: e.target.value })} placeholder="Store name, bill payee, etc." /></div>
+            <div style={styles.formGroup}><label style={styles.label}>Date</label><input type="date" style={styles.input} value={paymentData.date} onChange={(e) => setPaymentData({ ...paymentData, date: e.target.value })} /></div>
+            <div style={styles.formGroup}><label style={styles.label}>Memo (Optional)</label><input type="text" style={styles.input} value={paymentData.memo} onChange={(e) => setPaymentData({ ...paymentData, memo: e.target.value })} placeholder="Additional details" /></div>
+            <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleRecordPayment}>Record Payment</button><button style={styles.cancelButton} onClick={() => setShowRecordPaymentModal(false)}>Cancel</button></div>
           </div>
         </div>
       )}
 
-      {/* Move Money Modal */}
       {showMoveMoneyModal && (
         <div style={styles.modalOverlay} onClick={() => setShowMoveMoneyModal(false)}>
-          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Move Money Between Categories</h3>
             <div style={styles.formGroup}><label style={styles.label}>Amount</label><input type="number" style={styles.input} value={moveMoneyData.amount} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, amount: e.target.value })} placeholder="0.00" step="0.01" min="0" autoFocus /></div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>From Category</label>
-              <select style={styles.select} value={moveMoneyData.fromCategoryId} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, fromCategoryId: e.target.value })}>
-                <option value="">Select source category</option>
-                {budgetData.categories.filter(c => !c.archived && (c.available || 0) > 0).map(cat => (
-                  <option key={cat.id} value={cat.id}>{cat.name} ({formatCurrency(cat.available)} available)</option>
-                ))}
-              </select>
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>To Category</label>
-              <select style={styles.select} value={moveMoneyData.toCategoryId} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, toCategoryId: e.target.value })}>
-                <option value="">Select destination category</option>
-                {budgetData.categories.filter(c => !c.archived && c.id !== moveMoneyData.fromCategoryId).map(cat => (
-                  <option key={cat.id} value={cat.id}>{cat.name}</option>
-                ))}
-              </select>
-            </div>
+            <div style={styles.formGroup}><label style={styles.label}>From Category</label><select style={styles.select} value={moveMoneyData.fromCategoryId} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, fromCategoryId: e.target.value })}><option value="">Select source category</option>{budgetData.categories.filter((c) => !c.archived && (c.available || 0) > 0).map((cat) => (<option key={cat.id} value={cat.id}>{cat.name} ({formatCurrency(cat.available)} available)</option>))}</select></div>
+            <div style={styles.formGroup}><label style={styles.label}>To Category</label><select style={styles.select} value={moveMoneyData.toCategoryId} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, toCategoryId: e.target.value })}><option value="">Select destination category</option>{budgetData.categories.filter((c) => !c.archived && c.id !== moveMoneyData.fromCategoryId).map((cat) => (<option key={cat.id} value={cat.id}>{cat.name}</option>))}</select></div>
             <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleMoveMoney}>Move Money</button><button style={styles.cancelButton} onClick={() => setShowMoveMoneyModal(false)}>Cancel</button></div>
           </div>
         </div>
       )}
 
-      {/* Add Group Modal */}
       {showAddGroupModal && (
         <div style={styles.modalOverlay} onClick={() => setShowAddGroupModal(false)}>
-          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Create New Category Group</h3>
             <div style={styles.formGroup}><label style={styles.label}>Group Name</label><input type="text" style={styles.input} value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="e.g., Housing, Transportation, Savings Goals" autoFocus /></div>
             <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleCreateGroup}>Create Group</button><button style={styles.cancelButton} onClick={() => { setShowAddGroupModal(false); setNewGroupName(''); }}>Cancel</button></div>
@@ -1901,10 +1750,9 @@ const PropertyMapView = () => {
         </div>
       )}
 
-      {/* Edit Group Modal */}
       {showEditGroupModal && editingGroup && (
         <div style={styles.modalOverlay} onClick={() => setShowEditGroupModal(false)}>
-          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Edit Category Group</h3>
             <div style={styles.formGroup}><label style={styles.label}>Group Name</label><input type="text" style={styles.input} value={editGroupName} onChange={(e) => setEditGroupName(e.target.value)} autoFocus /></div>
             <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleUpdateGroup}>Save Changes</button><button style={styles.cancelButton} onClick={() => { setShowEditGroupModal(false); setEditingGroup(null); setEditGroupName(''); }}>Cancel</button></div>
@@ -1912,28 +1760,17 @@ const PropertyMapView = () => {
         </div>
       )}
 
-      {/* Add Category Modal */}
       {showAddCategoryModal && selectedGroupForCategory && (
         <div style={styles.modalOverlay} onClick={() => setShowAddCategoryModal(false)}>
-          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Add Category to {selectedGroupForCategory.name}</h3>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Category Name</label>
-              <input type="text" style={styles.input} value={newCategoryData.name} onChange={(e) => setNewCategoryData({ ...newCategoryData, name: e.target.value })} placeholder="e.g., Groceries, Rent, Savings" autoFocus />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Initial Assigned Amount (Optional)</label>
-              <input type="number" style={styles.input} value={newCategoryData.assigned === 0 ? '' : newCategoryData.assigned} onChange={(e) => { const val = e.target.value === '' ? 0 : parseFloat(e.target.value); setNewCategoryData({ ...newCategoryData, assigned: isNaN(val) ? 0 : val }); }} placeholder="0.00" step="0.01" min="0" />
-            </div>
-            <div style={styles.modalActions}>
-              <button style={styles.saveButton} onClick={handleCreateCategory}>Create Category</button>
-              <button style={styles.cancelButton} onClick={() => { setShowAddCategoryModal(false); setNewCategoryData({ name: '', assigned: 0, groupId: null }); setSelectedGroupForCategory(null); }}>Cancel</button>
-            </div>
+            <div style={styles.formGroup}><label style={styles.label}>Category Name</label><input type="text" style={styles.input} value={newCategoryData.name} onChange={(e) => setNewCategoryData({ ...newCategoryData, name: e.target.value })} placeholder="e.g., Groceries, Rent, Savings" autoFocus /></div>
+            <div style={styles.formGroup}><label style={styles.label}>Initial Assigned Amount (Optional)</label><input type="number" style={styles.input} value={newCategoryData.assigned === 0 ? '' : newCategoryData.assigned} onChange={(e) => { const val = e.target.value === '' ? 0 : parseFloat(e.target.value); setNewCategoryData({ ...newCategoryData, assigned: isNaN(val) ? 0 : val }); }} placeholder="0.00" step="0.01" min="0" /></div>
+            <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleCreateCategory}>Create Category</button><button style={styles.cancelButton} onClick={() => { setShowAddCategoryModal(false); setNewCategoryData({ name: '', assigned: 0, groupId: null }); setSelectedGroupForCategory(null); }}>Cancel</button></div>
           </div>
         </div>
       )}
 
-      {/* Set Goal Modal */}
       {showTargetModal && selectedCategoryForTarget && (
         <CategoryTargetModal
           isOpen={showTargetModal}
@@ -1950,8 +1787,7 @@ const PropertyMapView = () => {
       )}
     </div>
   );
-};
-
+}
 // ==================== STYLES ====================
 const styles = {
   container: {

@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 
+import AppShell from '../components/layout/AppShell';
 import Sidebar from '../components/Navigation/Sidebar';
 import ViewContainers from '../views/ViewContainer';
 import UpdateIndicator from '../components/UpdateIndicator';
@@ -123,35 +124,29 @@ export default function HomePage() {
   }
 
   return (
-    <div className="flex min-h-screen bg-gradient-to-br from-primary-900 via-primary-800 to-secondary-900 font-sans">
-      <Sidebar
-        onNavigate={handleNavigation}
-        currentView={currentView}
-        collapsed={isSidebarCollapsed}
-        onToggleCollapse={() => setIsSidebarCollapsed(prev => !prev)}
-      />
+    <AppShell title="IntentFlow" subtitle="Your personal finance dashboard with fast navigation and live updates.">
+      <div className="flex min-h-[70vh] flex-col gap-6 lg:flex-row">
+        <Sidebar
+          onNavigate={handleNavigation}
+          currentView={currentView}
+          collapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
+        />
 
-      <main
-        className="flex-1 p-4 md:p-8 min-h-screen text-white transition-all duration-300"
-        style={{
-          marginLeft: isDesktop ? (isSidebarCollapsed ? 72 : 280) : 0
-        }}
-      >
-        <div className="glass rounded-2xl p-4 md:p-8 min-h-[85vh] shadow-2xl shadow-black/40 border border-white/10">
-          <ViewContainers
-            currentView={currentView}
-            accounts={accounts}
-            budgetData={{}}
-            transactions={[]}
-            onNavigate={handleNavigation}
-          />
-        </div>
-      </main>
+        <main className="flex-1">
+          <div className="glass rounded-3xl p-4 md:p-6 xl:p-8 min-h-[70vh] shadow-2xl shadow-black/30 border border-white/10">
+            <ViewContainers
+              currentView={currentView}
+              accounts={accounts}
+              budgetData={{}}
+              transactions={[]}
+              onNavigate={handleNavigation}
+            />
+          </div>
+        </main>
+      </div>
 
-      <UpdateIndicator
-        lastUpdate={lastUpdate}
-        onRefresh={refresh}
-      />
-    </div>
+      <UpdateIndicator lastUpdate={lastUpdate} onRefresh={refresh} />
+    </AppShell>
   );
 }

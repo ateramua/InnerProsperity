@@ -1,4 +1,5 @@
 // src/pages/_app.jsx
+import '../styles/globals.css';
 import { AuthProvider } from '../contexts/AuthContext';
 
 export default function MyApp({ Component, pageProps }) {
