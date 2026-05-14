@@ -8,13 +8,16 @@ class TransactionService {
     constructor(dbPath = null) {
         // If no path is provided, use a default (fallback)
         this.dbPath = dbPath || path.join(__dirname, '..', '..', 'db', 'data', 'app.db');
+        this.db = null;
     }
 
     async getDb() {
-        return open({
+        if (this.db) return this.db;
+        this.db = await open({
             filename: this.dbPath,
             driver: sqlite3.Database
         });
+        return this.db;
     }
 
     // Get all transactions across all accounts
@@ -128,6 +131,7 @@ class TransactionService {
 
     // Get transactions for a specific account
     async getAccountTransactions(accountId, userId) {
+        const db = await this.getDb();
         const query = `
     SELECT 
       t.*,
@@ -140,7 +144,7 @@ class TransactionService {
     WHERE t.account_id = ? AND t.user_id = ?
     ORDER BY t.date DESC, t.created_at DESC
   `;
-        return await this.db.all(query, [accountId, userId]);
+        return await db.all(query, [accountId, userId]);
     }
 
     // Delete a transaction

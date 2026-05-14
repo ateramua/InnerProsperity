@@ -9,6 +9,34 @@ export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const hasCheckedRef = useRef(false);
 
+  const isElectronRenderer = () => {
+    if (typeof window === 'undefined') return false;
+    if (typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')) {
+      return true;
+    }
+    return typeof window.electronAPI !== 'undefined';
+  };
+
+  const hasElectronAPI = () => {
+    if (typeof window === 'undefined' || !window.electronAPI) return false;
+    if (typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')) {
+      return !window.electronAPI.__isBrowserMock;
+    }
+    return true;
+  };
+
+  const waitForElectronAPI = async (timeoutMs = 5000) => {
+    if (!isElectronRenderer()) {
+      return false;
+    }
+
+    const start = Date.now();
+    while (!hasElectronAPI() && Date.now() - start < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return hasElectronAPI();
+  };
+
   useEffect(() => {
     // Only check auth status once on mount
     if (!hasCheckedRef.current) {
@@ -22,23 +50,32 @@ export function AuthProvider({ children }) {
       setLoading(true);
       console.log('🔍 Checking auth status...');
 
-      if (window.electronAPI) {
-        const result = await window.electronAPI.getCurrentUser();
-        console.log('📊 Auth status result:', result);
-
-        if (result && result.success && result.data) {
-          setUser(result.data);
-          setIsAuthenticated(true);
-          console.log('✅ User authenticated:', result.data.username);
-        } else {
-          setUser(null);
-          setIsAuthenticated(false);
-          console.log('❌ No user authenticated');
-        }
-      } else {
-        console.error('❌ electronAPI not available');
+      if (!isElectronRenderer()) {
+        console.log('ℹ️ Running outside Electron; skipping electronAPI auth check');
         setUser(null);
         setIsAuthenticated(false);
+        return;
+      }
+
+      const isAvailable = await waitForElectronAPI();
+      if (!isAvailable) {
+        console.error('❌ electronAPI not available after waiting');
+        setUser(null);
+        setIsAuthenticated(false);
+        return;
+      }
+
+      const result = await window.electronAPI.getCurrentUser();
+      console.log('📊 Auth status result:', result);
+
+      if (result && result.success && result.data) {
+        setUser(result.data);
+        setIsAuthenticated(true);
+        console.log('✅ User authenticated:', result.data.username);
+      } else {
+        setUser(null);
+        setIsAuthenticated(false);
+        console.log('❌ No user authenticated');
       }
     } catch (error) {
       console.error('❌ Auth check failed:', error);
@@ -54,19 +91,20 @@ export function AuthProvider({ children }) {
       setLoading(true);
       console.log('🔐 Login attempt for:', username);
 
-      if (window.electronAPI) {
-        const result = await window.electronAPI.loginUser({ username, password });
-        console.log('📊 Login result:', result);
-
-        if (result && result.success) {
-          setUser(result.data);
-          setIsAuthenticated(true);
-          return { success: true, data: result.data };
-        } else {
-          return { success: false, error: result?.error || 'Login failed' };
-        }
-      } else {
+      const isAvailable = await waitForElectronAPI();
+      if (!isAvailable) {
         return { success: false, error: 'Electron API not available' };
+      }
+
+      const result = await window.electronAPI.loginUser({ username, password });
+      console.log('📊 Login result:', result);
+
+      if (result && result.success) {
+        setUser(result.data);
+        setIsAuthenticated(true);
+        return { success: true, data: result.data };
+      } else {
+        return { success: false, error: result?.error || 'Login failed' };
       }
     } catch (error) {
       console.error('❌ Login error:', error);
@@ -80,7 +118,8 @@ export function AuthProvider({ children }) {
       setLoading(true);
       console.log('👋 Logging out...');
 
-      if (window.electronAPI) {
+      await waitForElectronAPI();
+      if (hasElectronAPI()) {
         await window.electronAPI.logoutUser();
       }
 
@@ -102,17 +141,18 @@ export function AuthProvider({ children }) {
       setLoading(true);
       console.log('📝 Registering user:', userData);
 
-      if (window.electronAPI) {
-        const result = await window.electronAPI.createUser(userData);
-        console.log('📊 Register result:', result);
-
-        if (result && result.success) {
-          return { success: true, data: result.data };
-        } else {
-          return { success: false, error: result?.error || 'Registration failed' };
-        }
-      } else {
+      const isAvailable = await waitForElectronAPI();
+      if (!isAvailable) {
         return { success: false, error: 'Electron API not available' };
+      }
+
+      const result = await window.electronAPI.createUser(userData);
+      console.log('📊 Register result:', result);
+
+      if (result && result.success) {
+        return { success: true, data: result.data };
+      } else {
+        return { success: false, error: result?.error || 'Registration failed' };
       }
     } catch (error) {
       console.error('❌ Registration error:', error);

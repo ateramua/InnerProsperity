@@ -1,5 +1,5 @@
 // src/services/payeeService.cjs
-const db = require('../db/database');
+const { getDatabase } = require('../db/database.cjs');
 
 class PayeeService {
   /**
@@ -36,7 +36,7 @@ class PayeeService {
    * Get all user accounts
    */
   async getUserAccounts(userId) {
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     const query = `
       SELECT id, name, type 
       FROM accounts 
@@ -50,7 +50,7 @@ class PayeeService {
    * Get regular payees (non-transfer) for a user
    */
   async getRegularPayees(userId, limit = 50) {
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     const query = `
       SELECT id, name, is_transfer_payee, usage_count, last_used_date
       FROM payees 
@@ -68,7 +68,7 @@ class PayeeService {
    * @returns {string} Payee ID
    */
   async createOrUpdatePayee(payeeName, userId) {
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     
     // Check if payee already exists
     const existing = await database.get(
@@ -103,7 +103,7 @@ class PayeeService {
    * (Used when creating the reverse transaction)
    */
   async getTransferPayeeByAccountId(accountId, userId) {
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     const account = await database.get(
       `SELECT id, name FROM accounts WHERE id = ? AND user_id = ?`,
       [accountId, userId]
@@ -145,7 +145,7 @@ class PayeeService {
       userId
     } = transferData;
 
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     const transferGroupId = require('crypto').randomUUID();
     
     // Get account details
@@ -230,7 +230,7 @@ class PayeeService {
    * Update a linked transfer transaction (both sides)
    */
   async updateLinkedTransfer(transactionId, userId, updates) {
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     
     // Get the original transaction
     const transaction = await database.get(
@@ -350,7 +350,7 @@ class PayeeService {
    * Delete a linked transfer transaction (both sides)
    */
   async deleteLinkedTransfer(transactionId, userId) {
-    const database = await db.getDatabase();
+    const database = await getDatabase();
     
     // Get the transaction
     const transaction = await database.get(

@@ -1,6 +1,5 @@
 // src/views/AllAccountsView.jsx
 import React, { useState, useEffect } from 'react';
-import AddCreditCardModal from './AddCreditCardModal';
 import EditAccountModal from './EditAccountModal';
 
 const AllAccountsView = () => {
@@ -8,7 +7,6 @@ const AllAccountsView = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [editingAccount, setEditingAccount] = useState(null);
-  const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedType, setSelectedType] = useState('all');
 
@@ -96,45 +94,6 @@ const AllAccountsView = () => {
       window.removeEventListener('accounts-updated', handleAccountsChanged);
     };
   }, []);
-
-  // Handle saving new account
-  const handleSaveAccount = async (accountData) => {
-    try {
-      console.log('📝 Creating account with data:', accountData);
-      
-      // Get current user
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in to create an account');
-        return;
-      }
-      
-      const userId = userResult.data.id;
-      
-      // Prepare account data
-      const newAccountData = {
-        ...accountData,
-        user_id: userId,
-        balance: parseFloat(accountData.balance) || 0,
-        account_type_category: accountData.type === 'credit' ? 'credit' : 'budget'
-      };
-      
-      const result = await window.electronAPI.createAccount(newAccountData);
-      
-      if (result.success) {
-        console.log('✅ Account created successfully:', result.data);
-        await fetchAccounts();
-        setShowAddModal(false);
-        window.dispatchEvent(new Event('accounts-changed'));
-        alert('✅ Account created successfully!');
-      } else {
-        throw new Error(result.error);
-      }
-    } catch (error) {
-      console.error('❌ Error saving account:', error);
-      alert('Failed to save account: ' + error.message);
-    }
-  };
 
   // Handle update account
   const handleUpdateAccount = async (accountId, updates) => {
@@ -286,12 +245,6 @@ const AllAccountsView = () => {
           <h1 style={styles.title}>💰 All Accounts</h1>
           <p style={styles.subtitle}>Manage all your financial accounts in one place</p>
         </div>
-        <button
-          onClick={() => setShowAddModal(true)}
-          style={styles.addButton}
-        >
-          + Add Account
-        </button>
       </div>
 
       {/* Summary Cards - FIXED: Added text overflow handling */}
@@ -416,12 +369,6 @@ const AllAccountsView = () => {
               : `No ${selectedType} accounts found. Add one to get started.`
             }
           </p>
-          <button
-            onClick={() => setShowAddModal(true)}
-            style={styles.emptyStateButton}
-          >
-            Add Your First Account
-          </button>
         </div>
       ) : (
         <div style={styles.tableContainer}>
@@ -522,13 +469,6 @@ const AllAccountsView = () => {
         </div>
       )}
 
-      {/* Add Account Modal */}
-      <AddCreditCardModal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        onSave={handleSaveAccount}
-      />
-
       {/* Edit Account Modal */}
       <EditAccountModal
         isOpen={showEditModal}
@@ -588,21 +528,6 @@ const styles = {
     fontSize: '0.875rem',
     color: '#9CA3AF',
     marginTop: '0.5rem'
-  },
-  addButton: {
-    padding: '0.75rem 1.5rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontSize: '1rem',
-    fontWeight: '600',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    ':hover': {
-      transform: 'translateY(-2px)',
-      boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
-    }
   },
   summaryGrid: {
     display: 'grid',
@@ -802,16 +727,6 @@ const styles = {
   emptyStateText: {
     color: '#9CA3AF',
     marginBottom: '1.5rem'
-  },
-  emptyStateButton: {
-    padding: '0.75rem 1.5rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    cursor: 'pointer',
-    fontSize: '0.875rem',
-    fontWeight: '500'
   },
   errorContainer: {
     textAlign: 'center',

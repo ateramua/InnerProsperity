@@ -51,7 +51,7 @@ export default function AccountsDashboard() {
     useEffect(() => {
         console.log('🔥🔥🔥 ACCOUNTS PAGE MOUNTED - CHECKING ELECTRON API');
         console.log('🔥 window.electronAPI exists:', !!window.electronAPI);
-        console.log('🔥 accounts:getSummary available:', !!window.electronAPI?.invoke);
+        console.log('🔥 getAccountsSummary available:', !!window.electronAPI?.getAccountsSummary);
         console.log('🔵 [useEffect] Component mounted, calling loadAccounts()');
         loadAccounts();
 

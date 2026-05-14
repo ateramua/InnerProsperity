@@ -4,7 +4,7 @@
  * Use this across all account-related components to ensure consistency
  */
 
-export const accountUtils = {
+const accountUtils = {
   /**
    * Load accounts for the current user
    */
@@ -97,3 +97,5 @@ export const accountUtils = {
     }).format(amount || 0);
   }
 };
+
+module.exports = { accountUtils };

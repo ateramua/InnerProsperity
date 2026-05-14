@@ -5,7 +5,7 @@ const os = require('os');
 const crypto = require('crypto');
 
 // Determine database path
-const appName = 'money-manager';
+const appName = 'com.intentflow.moneymanager';
 let userDataPath;
 
 if (process.platform === 'darwin') {

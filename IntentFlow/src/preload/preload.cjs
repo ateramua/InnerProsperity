@@ -35,8 +35,8 @@ try {
     deleteLinkedTransfer: (transactionId) => ipcRenderer.invoke('delete-linked-transfer', transactionId),
 
     // ==================== TRANSACTIONS ====================
-    getTransactions: (accountId, filters) =>
-      ipcRenderer.invoke('getTransactions', accountId, filters), // ⚠️ No handler in main process – remove if not used
+    getTransactions: (filters) =>
+      ipcRenderer.invoke('getTransactions', filters),
 
     addTransaction: (transaction) =>
       ipcRenderer.invoke('addTransaction', transaction),
@@ -44,7 +44,7 @@ try {
     setAutoSyncSetting: (enabled) => ipcRenderer.invoke('set-auto-sync-setting', enabled),
 
     createTransaction: (data) =>
-      ipcRenderer.invoke('createTransaction', data), // ⚠️ No handler in main process – remove if not used
+      ipcRenderer.invoke('createTransaction', data),
 
     // Add these to your electronAPI object
     debugTestDatabaseWrite: () => ipcRenderer.invoke('debug:test-database-write'),
@@ -108,6 +108,10 @@ try {
 
     deleteCategory: (categoryId) =>
       ipcRenderer.invoke('deleteCategory', categoryId),
+
+    // ==================== CATEGORY HISTORY ====================
+    getCategoryHistory: (categoryId, period) =>
+      ipcRenderer.invoke('getCategoryHistory', categoryId, period),
 
     // ==================== CATEGORY GROUPS ====================
     getCategoryGroups: (userId) =>
@@ -185,6 +189,9 @@ try {
     restoreDatabase: (password) =>
       ipcRenderer.invoke('restore-database', password),
 
+    openExternal: (url) =>
+      ipcRenderer.invoke('open-external', url),
+
     // ==================== DEBUG ====================
     debugDbPath: () =>
       ipcRenderer.invoke('debug-db-path'),
@@ -206,12 +213,17 @@ try {
     // ==================== EVENTS ====================
     subscribeToEvent: (eventType, callback) => {
       const listener = (_, data) => callback(data);
+      ipcRenderer.invoke('subscribe-to-event', eventType).catch((error) => {
+        console.warn(`⚠️ subscribe-to-event IPC failed for ${eventType}:`, error);
+      });
       ipcRenderer.on(`update:${eventType}`, listener);
-      return () => ipcRenderer.removeListener(`update:${eventType}`, listener);
+      return () => {
+        ipcRenderer.removeListener(`update:${eventType}`, listener);
+      };
     },
 
     publishEvent: (eventType, data) =>
-      ipcRenderer.invoke('publish-event', eventType, data), // ⚠️ No handler in main process – remove if not used
+      ipcRenderer.invoke('publish-event', eventType, data),
 
     // ==================== NETWORK ====================
     getNetworkStatus: () =>
@@ -228,6 +240,9 @@ try {
   });
 
   console.log('✅ electronAPI successfully exposed');
+  
+  // Signal that real electronAPI is ready
+  window.dispatchEvent(new Event('electronAPI-ready'));
 } catch (error) {
   console.error('❌ Failed to expose electronAPI:', error);
 }

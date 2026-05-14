@@ -1,64 +1,47 @@
-console.log('✅ USING next.config.js');
-
 /** @type {import('next').NextConfig} */
+const isDev = process.env.NODE_ENV !== 'production';
+
+// `output: 'export'` with `next dev` breaks chunk URLs on nested routes
+// (requests like `/login/_next/static/...`). Use static export only for production builds.
 const nextConfig = {
-  output: 'export',
-
-  reactStrictMode: false,
-
+  ...(isDev
+    ? { distDir: '.next' }
+    : {
+        output: 'export',
+        distDir: 'out',
+      }),
   trailingSlash: true,
-
-  productionBrowserSourceMaps: false,
-
-  images: {
-    unoptimized: true,
-  },
-
-  assetPrefix: './',
-
-  compiler: {
-    removeConsole: false,
-    styledComponents: true,
-  },
-
-  experimental: {
-    esmExternals: false,
-  },
-
-  webpack: (config, { isServer, dev }) => {
-
-    /*
-      REQUIRED FOR ELECTRON + NEXT STATIC EXPORT
-    */
-    if (!dev && !isServer) {
-      config.optimization.splitChunks = false;
-      config.optimization.runtimeChunk = false;
-    }
-
-    /*
-      Fix .mjs module resolution
-    */
-    config.module.rules.push({
-      test: /\.m?js$/,
-      type: 'javascript/auto',
-      resolve: {
-        fullySpecified: false,
-      },
-    });
-
-    /*
-      Prevent Electron/Node modules from breaking frontend build
-    */
+  images: { unoptimized: true },
+  assetPrefix: isDev ? undefined : './',
+  basePath: '',
+  swcMinify: false,
+  
+  webpack: (config, { isServer, webpack }) => {
     if (!isServer) {
+      // Remove electron-renderer target for static export
+      // config.target = 'electron-renderer';
+      
       config.resolve.fallback = {
         fs: false,
         path: false,
         os: false,
         crypto: false,
-        sqlite3: false,
+        stream: false,
+        util: false,
+        url: false,
+        buffer: false,
+        // Provide browser-safe polyfills for Node.js globals
+        __dirname: false,
+        process: require.resolve('process/browser'),
       };
+      
+      // Add ProvidePlugin for process
+      config.plugins.push(
+        new webpack.ProvidePlugin({
+          process: 'process/browser',
+        })
+      );
     }
-
     return config;
   },
 };

@@ -1924,7 +1924,11 @@ const styles = {
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
         color: 'white',
-        padding: '2rem'
+        padding: '2rem',
+        boxSizing: 'border-box',
+        width: '100%',
+        maxWidth: '1200px',
+        margin: '0 auto'
     },
     header: {
         maxWidth: '1200px',
@@ -2206,11 +2210,14 @@ const styles = {
         margin: '0 auto',
         background: '#1E3A8A',
         borderRadius: '0.75rem',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        overflowX: 'auto',
+        minWidth: 0
     },
     transactionHeaderRow: {
         display: 'flex',
-        alignItems: 'center',
+        flexWrap: 'wrap',
+        alignItems: 'flex-start',
         padding: '1rem 1.5rem',
         borderBottom: '1px solid #1E3A8A',
         gap: '1rem',
@@ -2221,7 +2228,8 @@ const styles = {
     },
     transactionRow: {
         display: 'flex',
-        alignItems: 'center',
+        flexWrap: 'wrap',
+        alignItems: 'flex-start',
         padding: '1rem 1.5rem',
         borderBottom: '1px solid #1E3A8A',
         gap: '1rem',
@@ -2232,7 +2240,8 @@ const styles = {
     },
     transactionRowEditing: {
         display: 'flex',
-        alignItems: 'center',
+        flexWrap: 'wrap',
+        alignItems: 'flex-start',
         padding: '1rem 1.5rem',
         borderBottom: '1px solid #1E3A8A',
         gap: '1rem',
@@ -2259,14 +2268,17 @@ const styles = {
     },
     transactionPayee: {
         flex: 2,
+        minWidth: 0,
         color: 'white',
         fontWeight: '500'
     },
     transactionPayeeHeader: {
-        flex: 2
+        flex: 2,
+        minWidth: 0
     },
     transactionCategory: {
         flex: 1,
+        minWidth: 0,
         color: '#9CA3AF',
         fontSize: '0.875rem'
     },
@@ -2389,8 +2401,8 @@ const styles = {
     modalContent: {
         background: '#1E3A8A',
         borderRadius: '1rem',
-        width: '90%',
-        maxWidth: '500px',
+        width: 'min(95%, 600px)',
+        maxWidth: '600px',
         maxHeight: '90vh',
         display: 'flex',
         flexDirection: 'column',

@@ -1,6 +1,8 @@
 // src/services/settingsService.cjs
 // const { getDatabase } = require('../db/database.cjs');
 
+const { getDatabase } = require('../db/database.config.js');
+
 // UUID generation with fallback
 let uuid;
 try {
@@ -125,7 +127,7 @@ class SettingsService {
 
     if (setClauses.length === 0) {
       db.close();
-      return resolve({ id: accountId, message: 'No valid fields to update' });
+      return { id: accountId, message: 'No valid fields to update' };
     }
 
     setClauses.push('updatedAt = datetime("now")');
@@ -364,37 +366,37 @@ class SettingsService {
         }
 
         function proceedWithReorder() {
+          db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
 
-        db.serialize(() => {
-          db.run('BEGIN TRANSACTION');
+            let completed = 0;
+            let hasError = false;
 
-          let completed = 0;
-          let hasError = false;
-
-          accountIds.forEach((id, index) => {
-            db.run(
-              'UPDATE accounts SET sortOrder = ?, updatedAt = datetime("now") WHERE id = ?',
-              [index, id],
-              (err) => {
-                if (err && !hasError) {
-                  hasError = true;
-                  db.run('ROLLBACK');
-                  db.close();
-                  reject(err);
-                } else {
-                  completed++;
-                  if (completed === accountIds.length && !hasError) {
-                    db.run('COMMIT', (err) => {
-                      db.close();
-                      if (err) reject(err);
-                      else resolve({ success: true });
-                    });
+            accountIds.forEach((id, index) => {
+              db.run(
+                'UPDATE accounts SET sortOrder = ?, updatedAt = datetime("now") WHERE id = ?',
+                [index, id],
+                (err) => {
+                  if (err && !hasError) {
+                    hasError = true;
+                    db.run('ROLLBACK');
+                    db.close();
+                    reject(err);
+                  } else {
+                    completed++;
+                    if (completed === accountIds.length && !hasError) {
+                      db.run('COMMIT', (err) => {
+                        db.close();
+                        if (err) reject(err);
+                        else resolve({ success: true });
+                      });
+                    }
                   }
                 }
-              }
-            );
+              );
+            });
           });
-        });
+        }
       });
     });
   }

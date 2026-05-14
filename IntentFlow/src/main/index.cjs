@@ -40,7 +40,29 @@ if (!getConfiguredDatabasePath || !ensureDatabaseDirectory) {
 }
 
 // ==================== CONSTANTS ====================
-const PRELOAD_PATH = path.join(__dirname, '../preload/preload.cjs');
+function resolvePreloadPath() {
+    const devPath = path.join(__dirname, '../preload/preload.cjs');
+    const packagedPaths = [
+        path.join(process.resourcesPath, 'app.asar', 'src', 'preload', 'preload.cjs'),
+        path.join(process.resourcesPath, 'app.asar', 'preload', 'preload.cjs'),
+        path.join(process.resourcesPath, 'app', 'src', 'preload', 'preload.cjs'),
+        path.join(process.resourcesPath, 'app', 'preload', 'preload.cjs'),
+    ];
+
+    if (!app.isPackaged) {
+        return devPath;
+    }
+
+    const foundPath = packagedPaths.find((candidate) => fs.existsSync(candidate));
+    if (foundPath) {
+        return foundPath;
+    }
+
+    console.warn('⚠️ Preload script not found in packaged paths. Falling back to dev path:', devPath);
+    return devPath;
+}
+
+const PRELOAD_PATH = resolvePreloadPath();
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 // ==================== HELPER FUNCTIONS FOR PACKAGED APP ====================
@@ -86,6 +108,23 @@ function requireModule(modulePath) {
         if (fs.existsSync(altPath)) {
             return require(altPath);
         }
+
+        // Try alternate extensions when the requested file uses .cjs or .js
+        const extensionFallbacks = ['.cjs', '.js'];
+        const basePath = modulePath.replace(/\.(cjs|js)$/, '');
+        for (const ext of extensionFallbacks) {
+            const fallbackModulePath = `${basePath}${ext}`;
+            const cleanFallbackPath = fallbackModulePath.replace(/^\.\.\//, '');
+            const devFallbackPath = path.join(__dirname, '..', cleanFallbackPath);
+            if (fs.existsSync(devFallbackPath)) {
+                return require(devFallbackPath);
+            }
+            const altFallbackPath = path.join(__dirname, '..', '..', 'src', cleanFallbackPath);
+            if (fs.existsSync(altFallbackPath)) {
+                return require(altFallbackPath);
+            }
+        }
+
         throw new Error(`Cannot find module ${modulePath}`);
     } catch (error) {
         console.error(`❌ Failed to load module ${modulePath}:`, error.message);
@@ -339,6 +378,8 @@ async function getDatabase() {
     }
 }
 
+const { setGetDatabaseProvider } = require(path.join(__dirname, '../db/database.cjs'));
+setGetDatabaseProvider(() => getDatabase());
 
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
@@ -736,8 +777,10 @@ function createWindow() {
     mainWindow = win;
 
     if (isDev) {
-        console.log('🔍 Loading dev URL: http://localhost:3000');
-        win.loadURL('http://localhost:3000');
+        const devPort = process.env.PORT || 3000;
+        const devUrl = `http://localhost:${devPort}`;
+        console.log('🛠️ Loading development frontend from:', devUrl);
+        mainWindow.loadURL(devUrl);
         win.webContents.openDevTools({ mode: 'detach' });
     } else {
         const indexPath = getProductionFilePath('index.html');
@@ -1674,24 +1717,104 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('create-account', async (event, accountData) => {
+        console.log('🔵🔵🔵 BACKEND RECEIVED:', JSON.stringify(accountData, null, 2));
         try {
             const db = await getDatabase();
             const id = uuidv4();
-            const { userId, name, type, balance = 0, creditLimit, interestRate, dueDate, minimumPayment, originalBalance, termMonths, paymentAmount, nextPaymentDate, institution } = accountData;
-            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance', 'working_balance', 'account_type_category', 'currency', 'institution', 'is_active', 'created_at'];
-            const values = [id, userId, name, type, balance, 0, 0, 'budget', 'USD', institution || null, 1, new Date().toISOString()];
-            if (creditLimit !== undefined) { columns.push('credit_limit'); values.push(type === 'credit' ? creditLimit : null); }
-            if (interestRate !== undefined) { columns.push('interest_rate'); values.push(type === 'credit' ? interestRate : null); }
-            if (dueDate !== undefined) { columns.push('due_date'); values.push(type === 'credit' ? dueDate : null); }
-            if (minimumPayment !== undefined) { columns.push('minimum_payment'); values.push(type === 'credit' ? minimumPayment : null); }
-            if (originalBalance !== undefined) { columns.push('original_balance'); values.push(type === 'loan' ? originalBalance : null); }
-            if (termMonths !== undefined) { columns.push('term_months'); values.push(type === 'loan' ? termMonths : null); }
-            if (paymentAmount !== undefined) { columns.push('payment_amount'); values.push(type === 'loan' ? paymentAmount : null); }
-            if (nextPaymentDate !== undefined) { columns.push('next_payment_date'); values.push(type === 'loan' ? nextPaymentDate : null); }
+            let userId = accountData.user_id || accountData.userId;
+            if (!userId) {
+                const currentUser = userService.getCurrentUser();
+                userId = currentUser?.id || 2;
+            }
+
+            const {
+                name, type, balance = 0,
+                institution, account_number, routing_number, debit_card_number,
+                daily_withdrawal_limit, overdraft_protection, interest_rate, notes
+            } = accountData;
+
+            // Build columns and values dynamically
+            const columns = [
+                'id', 'user_id', 'name', 'type', 'balance',
+                'cleared_balance', 'working_balance', 'account_type_category',
+                'currency', 'institution', 'is_active', 'created_at'
+            ];
+            const values = [
+                id, userId, name, type, balance,
+                0, 0, 'budget', 'USD', institution || null,
+                1, new Date().toISOString()
+            ];
+
+            // Add optional fields if they exist
+            if (account_number !== undefined && account_number !== '') {
+                columns.push('account_number');
+                values.push(account_number);
+            }
+            if (routing_number !== undefined && routing_number !== '') {
+                columns.push('routing_number');
+                values.push(routing_number);
+            }
+            if (debit_card_number !== undefined && debit_card_number !== '') {
+                columns.push('debit_card_number');
+                values.push(debit_card_number);
+            }
+            if (daily_withdrawal_limit !== undefined && daily_withdrawal_limit !== '') {
+                columns.push('daily_withdrawal_limit');
+                values.push(parseFloat(daily_withdrawal_limit));
+            }
+            if (overdraft_protection !== undefined) {
+                columns.push('overdraft_protection');
+                values.push(overdraft_protection ? 1 : 0);
+            }
+            if (interest_rate !== undefined && interest_rate !== '') {
+                columns.push('interest_rate');
+                values.push(parseFloat(interest_rate));
+            }
+            if (notes !== undefined && notes !== '') {
+                columns.push('notes');
+                values.push(notes);
+            }
+
+            // Handle credit/loan specific fields
+            if (type === 'credit') {
+                if (accountData.credit_limit !== undefined) {
+                    columns.push('credit_limit');
+                    values.push(accountData.credit_limit);
+                }
+                if (accountData.due_date !== undefined) {
+                    columns.push('due_date');
+                    values.push(accountData.due_date);
+                }
+                if (accountData.minimum_payment !== undefined) {
+                    columns.push('minimum_payment');
+                    values.push(accountData.minimum_payment);
+                }
+            }
+
+            if (type === 'loan') {
+                if (accountData.original_balance !== undefined) {
+                    columns.push('original_balance');
+                    values.push(accountData.original_balance);
+                }
+                if (accountData.term_months !== undefined) {
+                    columns.push('term_months');
+                    values.push(accountData.term_months);
+                }
+                if (accountData.payment_amount !== undefined) {
+                    columns.push('payment_amount');
+                    values.push(accountData.payment_amount);
+                }
+            }
+
             const placeholders = values.map(() => '?').join(', ');
             await db.run(`INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`, values);
-            return { success: true, id };
+
+            // Return the newly created account
+            const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
+            return { success: true, data: newAccount };
+
         } catch (error) {
+            console.error('❌ Error creating account:', error);
             return { success: false, error: error.message };
         }
     });
@@ -1699,33 +1822,68 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:create', async (event, accountData) => {
         try {
             const db = await getDatabase();
-            let userId = accountData.user_id;
+            let userId = accountData.user_id || accountData.userId;
             if (!userId) {
                 const currentUser = userService.getCurrentUser();
                 userId = currentUser?.id || 2;
             }
+
             const accountId = uuidv4();
             const now = new Date().toISOString();
+
+            // Handle balance sign based on account type
             let balance = accountData.balance || 0;
-            if (accountData.type === 'credit' || accountData.type === 'loan') balance = -Math.abs(balance);
-            else balance = Math.abs(balance);
-            const accountToInsert = { id: accountId, user_id: userId, name: accountData.name || 'New Account', type: accountData.type || 'checking', balance, cleared_balance: balance, working_balance: balance, account_type_category: accountData.account_type_category || 'budget', currency: accountData.currency || 'USD', institution: accountData.institution || null, credit_limit: accountData.credit_limit || accountData.limit || null, interest_rate: accountData.interest_rate || accountData.apr || null, due_date: accountData.due_date || accountData.dueDate || null, original_balance: accountData.original_balance || null, term_months: accountData.term_months || null, payment_amount: accountData.payment_amount || null, payment_frequency: accountData.payment_frequency || 'monthly', minimum_payment: accountData.minimum_payment || null, is_active: 1, created_at: now };
-            const tableInfo = await db.all("PRAGMA table_info(accounts)");
-            const existingColumns = tableInfo.map(col => col.name);
-            const columns = ['id', 'user_id', 'name', 'type', 'balance', 'cleared_balance', 'working_balance', 'account_type_category', 'currency', 'institution', 'credit_limit', 'interest_rate', 'due_date', 'minimum_payment', 'is_active', 'created_at'];
-            const values = [accountToInsert.id, accountToInsert.user_id, accountToInsert.name, accountToInsert.type, accountToInsert.balance, accountToInsert.cleared_balance, accountToInsert.working_balance, accountToInsert.account_type_category, accountToInsert.currency, accountToInsert.institution, accountToInsert.credit_limit, accountToInsert.interest_rate, accountToInsert.due_date, accountToInsert.minimum_payment, accountToInsert.is_active, accountToInsert.created_at];
-            if (existingColumns.includes('original_balance')) { columns.push('original_balance'); values.push(accountToInsert.original_balance); }
-            if (existingColumns.includes('term_months')) { columns.push('term_months'); values.push(accountToInsert.term_months); }
-            if (existingColumns.includes('payment_amount')) { columns.push('payment_amount'); values.push(accountToInsert.payment_amount); }
-            if (existingColumns.includes('payment_frequency')) { columns.push('payment_frequency'); values.push(accountToInsert.payment_frequency); }
+            if (accountData.type === 'credit' || accountData.type === 'loan') {
+                balance = -Math.abs(balance);
+            } else {
+                balance = Math.abs(balance);
+            }
+
+            const accountToInsert = {
+                id: accountId,
+                user_id: userId,
+                name: accountData.name || 'New Account',
+                type: accountData.type || 'checking',
+                balance: balance,
+                cleared_balance: balance,
+                working_balance: balance,
+                account_type_category: accountData.account_type_category || 'budget',
+                currency: accountData.currency || 'USD',
+                institution: accountData.institution || null,
+                // New fields
+                account_number: accountData.account_number || null,
+                routing_number: accountData.routing_number || null,
+                debit_card_number: accountData.debit_card_number || null,
+                daily_withdrawal_limit: accountData.daily_withdrawal_limit || null,
+                overdraft_protection: accountData.overdraft_protection ? 1 : 0,
+                notes: accountData.notes || null,
+                // Existing fields
+                credit_limit: accountData.credit_limit || null,
+                interest_rate: accountData.interest_rate || null,
+                due_date: accountData.due_date || null,
+                minimum_payment: accountData.minimum_payment || null,
+                original_balance: accountData.original_balance || null,
+                term_months: accountData.term_months || null,
+                payment_amount: accountData.payment_amount || null,
+                is_active: 1,
+                created_at: now
+            };
+
+            const columns = Object.keys(accountToInsert);
+            const values = Object.values(accountToInsert);
             const placeholders = values.map(() => '?').join(', ');
+
             await db.run(`INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`, values);
+
             const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
             return { success: true, data: newAccount };
+
         } catch (error) {
+            console.error('❌ Error in accounts:create:', error);
             return { success: false, error: error.message };
         }
     });
+
 
     ipcMain.handle('accounts:update', async (event, id, userId, updates) => {
         try {
@@ -1761,7 +1919,14 @@ function setupIpcHandlers() {
 
     ipcMain.handle('accounts:getSummary', async (event, userId) => {
         try {
-            const effectiveUserId = userId || 2;
+            const currentUser = userService.getCurrentUser();
+            let effectiveUserId = currentUser?.id;
+            if (effectiveUserId == null && userId != null && userId !== '') {
+                effectiveUserId = userId;
+            }
+            if (!effectiveUserId) {
+                return { success: true, data: [] };
+            }
             let result;
             try { result = await accountService.getAccountsSummary(effectiveUserId); } catch (serviceError) { result = []; }
             if (!result || result.length === 0) {
@@ -1942,6 +2107,72 @@ function setupIpcHandlers() {
             const service = new TransactionService(dbPath);
             const transactions = await service.getAccountTransactions(accountId, currentUser.id);
             return { success: true, data: transactions };
+        } catch (error) {
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('getTransactions', async (event, filters = {}) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in', data: [] };
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
+            const transactions = await service.getAllTransactions(currentUser.id, filters || {});
+            return { success: true, data: transactions };
+        } catch (error) {
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('createTransaction', async (event, transaction) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const amount = parseFloat(transaction.amount);
+            if (isNaN(amount)) return { success: false, error: 'Invalid amount' };
+
+            const transactionData = {
+                accountId: transaction.accountId,
+                userId: currentUser.id,
+                date: transaction.date || new Date().toISOString().split('T')[0],
+                description: transaction.description || transaction.payee || 'Transaction',
+                amount,
+                categoryId: transaction.categoryId || null,
+                payee: transaction.payee || null,
+                memo: transaction.memo || null,
+                isCleared: transaction.cleared ? 1 : 0,
+                isTransfer: transaction.isTransfer || 0,
+                transferGroupId: transaction.transferGroupId || null,
+                linkedTransactionId: transaction.linkedTransactionId || null,
+                counterpartyAccountId: transaction.counterpartyAccountId || null
+            };
+
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
+            const result = await service.createTransaction(transactionData);
+
+            if (transaction.payee && !transaction.isTransfer) {
+                try {
+                    await payeeService.createOrUpdatePayee(transaction.payee, currentUser.id);
+                } catch (payeeError) {
+                    console.warn('Failed to save payee:', payeeError);
+                }
+            }
+
+            if (updateService) updateService.publish('transaction:added', result);
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('Error in createTransaction:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('getCategoryHistory', async (event, categoryId, period) => {
+        try {
+            // Category history is not fully implemented yet.
+            // Return an empty list to preserve compatibility with renderer usage.
+            return { success: true, data: [] };
         } catch (error) {
             return { success: false, error: error.message, data: [] };
         }
@@ -2329,7 +2560,7 @@ function setupIpcHandlers() {
         if (!subscriptions.has(windowId)) subscriptions.set(windowId, new Set());
         subscriptions.get(windowId).add(eventType);
         console.log(`📡 Window ${windowId} subscribed to ${eventType}`);
-        return { unsubscribe: () => { const windowSubs = subscriptions.get(windowId); if (windowSubs) windowSubs.delete(eventType); } };
+        return { success: true };
     });
 
     ipcMain.handle('publish-event', async (event, eventType, data) => {

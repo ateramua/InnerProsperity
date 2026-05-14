@@ -1,0 +1,10 @@
+{
+  "name": "inner-prosperity",
+  "private": true,
+  "description": "Workspace root — app packages live in subfolders.",
+  "scripts": {
+    "dev": "npm run dev --prefix IntentFlow",
+    "build": "npm run build --prefix IntentFlow",
+    "start": "npm run start --prefix IntentFlow"
+  }
+}

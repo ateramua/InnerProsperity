@@ -723,6 +723,7 @@ const styles = {
         position: 'fixed',
         left: 0,
         top: 0,
+        zIndex: 1500,
         overflowY: 'auto',
         transition: 'width 0.25s ease'
     },

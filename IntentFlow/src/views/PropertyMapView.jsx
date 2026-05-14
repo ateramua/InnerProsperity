@@ -70,6 +70,27 @@ const PropertyMapView = () => {
   const [archivedCategories, setArchivedCategories] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState({});
 
+  const waitForElectronAPI = async (requiredMethods = [], timeout = 5000) => {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      if (window.electronAPI && requiredMethods.every(method => typeof window.electronAPI[method] === 'function')) {
+        return true;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return false;
+  };
+
+  const ensureElectronAPI = async () => {
+    return waitForElectronAPI([
+      'getCurrentUser',
+      'getAccountsSummary',
+      'getCategories',
+      'getCategoryGroups',
+      'getArchivedCategories'
+    ], 8000);
+  };
+
   const [budgetSummary, setBudgetSummary] = useState({
     totalAvailable: 0,
     totalActivity: 0,
@@ -363,6 +384,11 @@ const PropertyMapView = () => {
 
   // ==================== DATABASE OPERATIONS ====================
   const loadCategoryGroups = async () => {
+    if (!window.electronAPI?.getCategoryGroups) {
+      console.error('❌ electronAPI.getCategoryGroups is not available!');
+      return;
+    }
+
     try {
       setLoading(true);
       const result = await window.electronAPI.getCategoryGroups(userId);
@@ -433,6 +459,12 @@ const PropertyMapView = () => {
   };
 
   const loadArchivedCategories = async () => {
+    if (!window.electronAPI?.getArchivedCategories) {
+      console.error('❌ electronAPI.getArchivedCategories is not available!');
+      setArchivedCategories([]);
+      return;
+    }
+
     try {
       const result = await window.electronAPI.getArchivedCategories(userId);
       if (result && result.success) {
@@ -1243,6 +1275,12 @@ const PropertyMapView = () => {
 
       await new Promise(resolve => setTimeout(resolve, 500));
 
+      if (!(await ensureElectronAPI())) {
+        console.error('❌ Electron preload API did not become available in time.');
+        setLoading(false);
+        return;
+      }
+
       try {
         setLoading(true);
         await loadCategoryGroups();
@@ -1332,9 +1370,9 @@ const PropertyMapView = () => {
 
   // ==================== RENDER ====================
   return (
-    <div className="grid min-h-full gap-6 xl:grid-cols-[1.8fr_1fr]">
-      <div className="space-y-6">
-        <section className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+    <div className="grid min-h-full gap-6 grid-cols-1 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] max-w-full overflow-hidden">
+      <div className="space-y-6 min-w-0 overflow-hidden">
+        <section className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40 min-w-0 overflow-hidden">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.35em] text-slate-500">ProsperityMap</p>
@@ -1351,8 +1389,8 @@ const PropertyMapView = () => {
             </div>
           </div>
 
-          <div className="mt-6 grid gap-4 xl:grid-cols-[1.45fr_0.85fr]">
-            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6">
+          <div className="mt-6 grid gap-4 xl:grid-cols-[1.45fr_0.85fr] overflow-hidden">
+            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6 overflow-hidden">
               <div className="flex items-start gap-4">
                 <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-sky-500 to-cyan-500 text-2xl text-white shadow-lg shadow-cyan-500/20">
                   💰
@@ -1373,7 +1411,7 @@ const PropertyMapView = () => {
               </div>
             </div>
 
-            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6">
+            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6 overflow-hidden">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-slate-200">Quick actions</p>
@@ -1650,8 +1688,8 @@ Ready to Assign: $${totalCash - totalAssigned}`);
         </section>
       </div>
 
-      <aside className="space-y-6">
-        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+      <aside className="space-y-6 min-w-0">
+        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40 min-w-0">
           <SummaryView
             totalAvailable={budgetSummary.totalAvailable}
             totalActivity={budgetSummary.totalActivity}

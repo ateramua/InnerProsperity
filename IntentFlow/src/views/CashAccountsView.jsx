@@ -96,12 +96,17 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   // Listen for accounts-updated events
   useEffect(() => {
     const handleAccountsUpdated = () => {
-      console.log('📢 CashAccountsView: accounts-updated event received, refreshing accounts');
+      console.log('📢📢📢 [EVENT] accounts-updated event received!');
+      console.log('[EVENT] Calling loadAccounts(true)...');
       loadAccounts(true);
     };
-
+    
+    console.log('[EVENT] Registering accounts-updated event listener');
     window.addEventListener('accounts-updated', handleAccountsUpdated);
-    return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
+    return () => {
+      console.log('[EVENT] Removing accounts-updated event listener');
+      window.removeEventListener('accounts-updated', handleAccountsUpdated);
+    };
   }, []);
 
   const resetInlineForm = () => {
@@ -150,12 +155,19 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   // ✅ FIXED: loadAccounts with error reset + safer flow
   const loadAccounts = async (force = false) => {
-    console.log('💰 CashAccountsView - Loading accounts...');
+    console.log('💰💰💰 [DEBUG] loadAccounts called with force:', force);
+    console.log('[DEBUG] Current accounts.length:', accounts.length);
+    console.log('[DEBUG] propAccounts:', propAccounts ? propAccounts.length : 'null');
     setLoading(true);
     setError(null);
 
     try {
-      if (!force && propAccounts && Array.isArray(propAccounts) && propAccounts.length > 0) {
+      if (
+        !force &&
+        Array.isArray(propAccounts) &&
+        propAccounts.length > 0 &&
+        accounts.length === 0
+      ) {
         console.log('💰 Using propAccounts:', propAccounts.length);
         const cashAccounts = propAccounts.filter(a =>
           a.type === 'checking' || a.type === 'savings'
@@ -214,9 +226,22 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   const validateInlineForm = () => {
     const newErrors = {};
-    if (!inlineFormData.name?.trim()) newErrors.name = 'Account name is required';
-    if (!inlineFormData.account_number) newErrors.account_number = 'Account number is required';
-    if (!inlineFormData.routing_number) newErrors.routing_number = 'Routing number is required';
+
+    if (!inlineFormData.name?.trim()) {
+      newErrors.name = 'Account name is required';
+    }
+
+    if (inlineFormData.type === 'checking' || inlineFormData.type === 'savings') {
+      if (!inlineFormData.account_number?.trim()) {
+        newErrors.account_number = 'Account number is required';
+      }
+      if (!inlineFormData.routing_number?.trim()) {
+        newErrors.routing_number = 'Routing number is required';
+      } else if (inlineFormData.routing_number.replace(/\D/g, '').length !== 9) {
+        newErrors.routing_number = 'Routing number must be 9 digits';
+      }
+    }
+
     setInlineErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -285,6 +310,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
   // ✅ FIXED: handleCreateInlineAccount with safe parsing and unified event name
   const handleCreateInlineAccount = async () => {
+    console.log('🚀🚀🚀 [DEBUG] handleCreateInlineAccount STARTED');
+    console.log('[DEBUG] inlineFormData:', JSON.stringify(inlineFormData, null, 2));
     if (!validateInlineForm()) return;
 
     setIsSubmitting(true);
@@ -300,35 +327,47 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       const accountData = {
         name: cleanString(inlineFormData.name),
         type: inlineFormData.type,
-        accountTypeCategory: 'budget',
+        account_type: inlineFormData.type,
         balance: parseNumber(inlineFormData.balance, 0),
+        initial_balance: parseNumber(inlineFormData.balance, 0),
         currency: 'USD',
         institution: cleanString(inlineFormData.institution),
         account_number: cleanNumberString(inlineFormData.account_number),
-        routing_number: cleanString(inlineFormData.routing_number),
+        routing_number: cleanNumberString(inlineFormData.routing_number),
         debit_card_number: cleanNumberString(inlineFormData.debit_card_number),
         daily_withdrawal_limit: parseNumber(inlineFormData.daily_withdrawal_limit),
         overdraft_protection: !!inlineFormData.overdraft_protection,
         interest_rate: parseNumber(inlineFormData.interest_rate),
         notes: cleanString(inlineFormData.notes),
+        user_id: userId,
         userId: userId
       };
 
       console.log('📝 Creating account with data:', accountData);
+      console.log('🔍🔍🔍 ABOUT TO CALL API with accountData:', JSON.stringify(accountData, null, 2));
 
       const result = await window.electronAPI.createAccount(accountData);
 
-      if (result.success) {
-        console.log('✅ Account created successfully:', result.data);
-        setShowInlineModal(false);
-        resetInlineForm();
-        await loadAccounts(true);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Account created successfully!');
-      } else {
-        console.error('❌ Failed to create account:', result.error);
-        alert(`Failed to create account: ${result.error}`);
+      console.log('🔍🔍🔍 API RESULT:', result);
+
+      if (!result) {
+        throw new Error('No response received from account service');
       }
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to create account');
+      }
+
+      const createdAccount = result.data || null;
+      if (createdAccount && createdAccount.id) {
+        setAccounts(prev => [...prev, createdAccount]);
+      }
+
+      console.log('✅ Account created successfully:', createdAccount || result);
+      setShowInlineModal(false);
+      resetInlineForm();
+      await loadAccounts(true);
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      alert('✅ Account created successfully!');
     } catch (error) {
       console.error('❌ Error creating account:', error);
       alert(`Error: ${error.message}`);
@@ -465,6 +504,12 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   // Determine if showing bank fields
   const showBankFields = inlineFormData.type === 'checking' || inlineFormData.type === 'savings';
   const showEditBankFields = editingAccount?.type === 'checking' || editingAccount?.type === 'savings';
+
+  console.log('🎨🎨🎨 [RENDER] CashAccountsView rendering');
+  console.log('[RENDER] accounts.length:', accounts.length);
+  console.log('[RENDER] accounts details:', accounts.map(a => ({ id: a.id, name: a.name, type: a.type, balance: a.balance })));
+  console.log('[RENDER] checkingAccounts length:', checkingAccounts.length);
+  console.log('[RENDER] savingsAccounts length:', savingsAccounts.length);
 
   if (loading) {
     return (
@@ -614,7 +659,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
               <button onClick={() => setShowInlineModal(false)} style={styles.closeButton}>×</button>
             </div>
 
-            <form onSubmit={(e) => { e.preventDefault(); handleCreateInlineAccount(); }}>
+            <form onSubmit={(e) => { 
+  console.log('🔴🔴🔴 FORM SUBMIT EVENT TRIGGERED!');
+  e.preventDefault(); 
+  handleCreateInlineAccount(); 
+}}>
               <div style={styles.formGroup}>
                 <label style={styles.label}>Account Name <span style={styles.required}>*</span></label>
                 <input
@@ -777,7 +826,12 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
               </div>
 
               <div style={styles.modalActions}>
-                <button type="submit" style={styles.saveButton} disabled={isSubmitting}>
+                <button 
+                  type="submit" 
+                  style={styles.saveButton} 
+                  disabled={isSubmitting}
+                  onClick={() => console.log('🔴🔴🔴 CREATE ACCOUNT BUTTON CLICKED!')}
+                >
                   {isSubmitting ? 'Creating...' : 'Create Account'}
                 </button>
                 <button type="button" onClick={() => setShowInlineModal(false)} style={styles.cancelButton}>
@@ -969,7 +1023,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 <button type="submit" style={styles.saveButton} disabled={isEditing}>
                   {isEditing ? 'Saving...' : 'Save Changes'}
                 </button>
-                <button type="button" onClick={() => handleDeleteAccount(editingAccount.id, editingAccount.name)} style={styles.deleteButton}>
+                <button type="button" onClick={() => handleDeleteAccount(editingAccount.id, editingAccount.name)} style={styles.modalDeleteButton}>
                   Delete Account
                 </button>
                 <button type="button" onClick={() => setShowEditModal(false)} style={styles.cancelButton}>
@@ -980,6 +1034,15 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           </div>
         </div>
       )}
+      <button 
+        onClick={() => {
+          console.log('🔴 TEST BUTTON CLICKED - calling handleCreateInlineAccount directly');
+          handleCreateInlineAccount();
+        }}
+        style={{ position: 'fixed', bottom: 10, right: 10, zIndex: 9999, background: 'red', padding: 10, color: 'white', borderRadius: 5 }}
+      >
+        TEST CREATE ACCOUNT
+      </button>
     </div>
   );
 };
@@ -1321,7 +1384,7 @@ const styles = {
     fontWeight: '600',
     cursor: 'pointer'
   },
-  deleteButton: {
+  modalDeleteButton: {
     flex: 1,
     padding: '0.75rem',
     background: '#4B5563',

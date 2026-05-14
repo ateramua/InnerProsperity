@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const payeeService = require('../services/payeeService');
+const payeeService = require('../services/payeeService.cjs');
 
 // GET /api/payees/for-transaction-form
 router.get('/for-transaction-form', async (req, res) => {

@@ -103,7 +103,9 @@ const AddCreditCardModal = ({ isOpen, onClose, onSave }) => {
                 due_date: formData.dueDate, // Add both
                 balance: formData.balance ? parseFloat(formData.balance) : 0,
                 notes: formData.notes,
-                type: 'credit'
+                type: 'credit',
+                account_type_category: 'credit',
+                currency: 'USD'
             };
 
             console.log('📤 Sending card data from modal:', cardData); // Add debug log

@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const appName = 'money-manager';
+const appName = 'com.intentflow.moneymanager';
 let userDataPath;
 
 if (process.platform === 'darwin') {
