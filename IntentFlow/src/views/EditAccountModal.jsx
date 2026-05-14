@@ -883,7 +883,7 @@ const styles = {
   },
   editMaskedButton: {
     padding: '0.25rem 0.75rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.375rem',
@@ -931,7 +931,7 @@ const styles = {
   saveButton: {
     flex: 1,
     padding: '0.75rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

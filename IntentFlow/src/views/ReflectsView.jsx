@@ -4,7 +4,7 @@ import React from 'react';
 const ReflectsView = () => {
   // Sample data for the pie chart (will be replaced with real data later)
   const sampleData = [
-    { category: 'Housing', amount: 1500, color: '#3B82F6' },
+    { category: 'Housing', amount: 1500, color: '#0047AB' },
     { category: 'Food', amount: 800, color: '#10B981' },
     { category: 'Transport', amount: 400, color: '#F59E0B' },
     { category: 'Utilities', amount: 300, color: '#8B5CF6' },
@@ -110,7 +110,7 @@ const styles = {
     width: '250px',
     height: '250px',
     borderRadius: '50%',
-    background: 'conic-gradient(#3B82F6 0deg 216deg, #10B981 216deg 288deg, #F59E0B 288deg 324deg, #8B5CF6 324deg 360deg, #EC4899 360deg 0deg)',
+    background: 'conic-gradient(#0047AB 0deg 216deg, #10B981 216deg 288deg, #F59E0B 288deg 324deg, #8B5CF6 324deg 360deg, #EC4899 360deg 0deg)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -178,7 +178,7 @@ const styles = {
     color: 'white'
   },
   legendTotalValue: {
-    color: '#3B82F6'
+    color: '#0047AB'
   },
   summaryGrid: {
     display: 'grid',
@@ -190,7 +190,7 @@ const styles = {
     background: '#1F2937',
     padding: '1.5rem',
     borderRadius: '0.75rem',
-    borderLeft: '4px solid #3B82F6'
+    borderLeft: '4px solid #0047AB'
   },
   summaryLabel: {
     color: '#9CA3AF',

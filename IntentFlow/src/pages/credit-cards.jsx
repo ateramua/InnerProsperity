@@ -107,7 +107,7 @@ export default function CreditCardsPage() {
     return (
       <div style={{
         minHeight: '100vh',
-        background: '#3B82F6',
+        background: '#0047AB',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -121,7 +121,7 @@ export default function CreditCardsPage() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: '#3B82F6',
+      background: '#0047AB',
       color: '#0047AB',
     }}>
       <header style={{
@@ -131,7 +131,7 @@ export default function CreditCardsPage() {
         position: 'sticky',
         top: 0,
         zIndex: 10,
-        borderBottom: '2px solid #3B82F6',
+        borderBottom: '2px solid #0047AB',
       }}>
         <div style={{
           maxWidth: '1200px',

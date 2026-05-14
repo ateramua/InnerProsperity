@@ -424,7 +424,7 @@ const styles = {
     boxSizing: 'border-box',
     ':focus': {
       outline: 'none',
-      borderColor: '#3B82F6'
+      borderColor: '#0047AB'
     }
   },
   inputError: {
@@ -501,7 +501,7 @@ const styles = {
   },
   saveButton: {
     padding: '0.75rem 1.5rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

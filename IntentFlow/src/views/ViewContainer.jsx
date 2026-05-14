@@ -912,7 +912,7 @@ const styles = {
     width: '40px',
     height: '40px',
     border: '3px solid #374151',
-    borderTopColor: '#3B82F6',
+    borderTopColor: '#0047AB',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
     marginBottom: '1rem'

@@ -121,7 +121,7 @@ export default function ForecastPage() {
       metrics = [
         { label: 'Projected Growth', value: `${growth > 0 ? '+' : ''}${growth.toFixed(1)}%`, color: growth >= 0 ? '#4ADE80' : '#F87171', icon: '📈' },
         { label: 'Peak Balance', value: formatCompactCurrency(Math.max(...forecastData.forecast.map(m => m.projectedAssets))), color: '#F59E0B', icon: '🏔️' },
-        { label: 'Average Monthly', value: formatCompactCurrency(forecastData.forecast.reduce((sum, m) => sum + m.projectedAssets, 0) / forecastData.forecast.length), color: '#3B82F6', icon: '📊' }
+        { label: 'Average Monthly', value: formatCompactCurrency(forecastData.forecast.reduce((sum, m) => sum + m.projectedAssets, 0) / forecastData.forecast.length), color: '#0047AB', icon: '📊' }
       ];
     } else if (timeframe === 'yearly' && forecastData.yearly) {
       const firstYear = forecastData.yearly[0];
@@ -291,7 +291,7 @@ export default function ForecastPage() {
                       <div style={{
                         ...styles.trendFill,
                         width: `${confidence}%`,
-                        background: `linear-gradient(90deg, #3B82F6, ${confidence > 70 ? '#4ADE80' : '#F59E0B'})`
+                        background: `linear-gradient(90deg, #0047AB, ${confidence > 70 ? '#4ADE80' : '#F59E0B'})`
                       }}></div>
                     </div>
                   </div>
@@ -412,7 +412,7 @@ export default function ForecastPage() {
 const styles = {
   container: {
     minHeight: '100vh',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: '#0047AB',
     padding: '2rem',
     position: 'relative',
@@ -493,7 +493,7 @@ const styles = {
     backdropFilter: 'blur(10px)',
     padding: '0.5rem',
     borderRadius: '1rem',
-    border: '2px solid #3B82F6'
+    border: '2px solid #0047AB'
   },
   timeframeButton: {
     display: 'flex',
@@ -509,7 +509,7 @@ const styles = {
     textAlign: 'left'
   },
   activeTimeframe: {
-    background: '#3B82F6',
+    background: '#0047AB',
     color: '#0047AB',
     boxShadow: '0 4px 12px rgba(0, 71, 171, 0.25)'
   },
@@ -539,7 +539,7 @@ const styles = {
     backdropFilter: 'blur(10px)',
     padding: '1.25rem',
     borderRadius: '1rem',
-    border: '2px solid #3B82F6',
+    border: '2px solid #0047AB',
     display: 'flex',
     alignItems: 'center',
     gap: '1rem',
@@ -587,7 +587,7 @@ const styles = {
     width: '60px',
     height: '60px',
     border: '4px solid rgba(59, 130, 246, 0.2)',
-    borderTopColor: '#3B82F6',
+    borderTopColor: '#0047AB',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
     marginBottom: '1.5rem'
@@ -692,7 +692,7 @@ const styles = {
   },
   weekNumber: {
     fontWeight: '600',
-    color: '#3B82F6'
+    color: '#0047AB'
   },
   weekDate: {
     fontSize: '0.75rem',
@@ -752,7 +752,7 @@ const styles = {
   },
   confidenceBadge: {
     fontSize: '0.75rem',
-    color: '#3B82F6',
+    color: '#0047AB',
     background: 'rgba(59, 130, 246, 0.2)',
     padding: '0.25rem 0.5rem',
     borderRadius: '0.375rem'
@@ -792,7 +792,7 @@ const styles = {
     width: '12px',
     height: '12px',
     borderRadius: '50%',
-    background: '#3B82F6',
+    background: '#0047AB',
     border: '2px solid #60A5FA',
     zIndex: 1
   },
@@ -802,7 +802,7 @@ const styles = {
     top: '1.5rem',
     width: '2px',
     height: 'calc(100% + 2rem)',
-    background: 'linear-gradient(180deg, #3B82F6, #8B5CF6)',
+    background: 'linear-gradient(180deg, #0047AB, #8B5CF6)',
     zIndex: 0
   },
   yearlyCard: {
@@ -862,7 +862,7 @@ const styles = {
     marginBottom: '1.5rem'
   },
   retryButton: {
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     padding: '0.75rem 1.5rem',
@@ -906,7 +906,7 @@ const styles = {
     marginTop: '2rem'
   },
   backButton: {
-    background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
+    background: 'linear-gradient(135deg, #0047AB, #8B5CF6)',
     color: 'white',
     border: 'none',
     padding: '0.75rem 2rem',

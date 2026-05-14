@@ -18,7 +18,7 @@ class ProsperityOptimizerRenderer {
             case 1: return '#EF4444';
             case 2: return '#F59E0B';
             case 3: return '#10B981';
-            case 4: return '#3B82F6';
+            case 4: return '#0047AB';
             case 5: return '#8B5CF6';
             default: return '#6B7280';
         }

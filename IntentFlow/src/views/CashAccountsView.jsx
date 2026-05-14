@@ -1069,7 +1069,7 @@ const styles = {
     color: '#9CA3AF'
   },
   addButton: {
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     padding: '0.75rem 1.5rem',
@@ -1176,7 +1176,7 @@ const styles = {
   loadingSpinner: {
     width: '40px',
     height: '40px',
-    border: '4px solid #3B82F6',
+    border: '4px solid #0047AB',
     borderTopColor: 'transparent',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
@@ -1193,7 +1193,7 @@ const styles = {
   },
   retryButton: {
     padding: '0.5rem 1rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -1361,7 +1361,7 @@ const styles = {
   },
   editMaskedButton: {
     padding: '0.25rem 0.75rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.375rem',
@@ -1376,7 +1376,7 @@ const styles = {
   saveButton: {
     flex: 1,
     padding: '0.75rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

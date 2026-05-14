@@ -1321,7 +1321,7 @@ const styles = {
     fontSize: '2rem',
     fontWeight: 'bold',
     margin: '0 0 0.25rem 0',
-    background: 'linear-gradient(135deg, #10B981, #3B82F6)',
+    background: 'linear-gradient(135deg, #10B981, #0047AB)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent'
   },
@@ -1346,7 +1346,7 @@ const styles = {
   },
   addButton: {
     padding: '0.75rem 1.5rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -1388,8 +1388,8 @@ const styles = {
     flex: 1,
     padding: '0.5rem',
     background: 'transparent',
-    border: '1px solid #3B82F6',
-    color: '#3B82F6',
+    border: '1px solid #0047AB',
+    color: '#0047AB',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
     cursor: 'pointer'
@@ -1413,7 +1413,7 @@ const styles = {
     fontSize: '0.875rem'
   },
   activeFilter: {
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white'
   },
   loansGrid: {
@@ -1435,7 +1435,7 @@ const styles = {
     }
   },
   selectedLoan: {
-    border: '2px solid #3B82F6'
+    border: '2px solid #0047AB'
   },
   pairedBadge: {
     position: 'absolute',
@@ -1501,7 +1501,7 @@ const styles = {
   },
   progressFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #3B82F6, #8B5CF6)'
+    background: 'linear-gradient(90deg, #0047AB, #8B5CF6)'
   },
   loanDetails: {
     display: 'grid',
@@ -1636,7 +1636,7 @@ const styles = {
   },
   emptyAddButton: {
     padding: '0.75rem 1.5rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -1731,7 +1731,7 @@ const styles = {
   saveButton: {
     flex: 1,
     padding: '0.75rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

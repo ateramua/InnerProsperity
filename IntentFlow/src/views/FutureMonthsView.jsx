@@ -169,7 +169,7 @@ const styles = {
   },
   progressBarBackground: {
     height: '6px',
-    background: '#3B82F6',
+    background: '#0047AB',
     borderRadius: '3px',
     overflow: 'hidden'
   },
@@ -190,7 +190,7 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.5rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     borderRadius: '0.375rem'
   },
   breakdownMonth: {

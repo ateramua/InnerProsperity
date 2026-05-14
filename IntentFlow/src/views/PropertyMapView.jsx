@@ -1495,7 +1495,7 @@ const PropertyMapView = () => {
 
   // ==================== RENDER ====================
   return (
-    <div className="grid min-h-full gap-6 grid-cols-1 bg-[#3B82F6] xl:grid-cols-[minmax(0,1fr)_minmax(280px,24rem)] max-w-full items-start p-1 sm:p-2">
+    <div className="grid min-h-full gap-6 grid-cols-1 bg-[#0047AB] xl:grid-cols-[minmax(0,1fr)_minmax(280px,24rem)] max-w-full items-start p-1 sm:p-2">
       <div className="space-y-6 min-w-0 overflow-hidden xl:min-w-0">
         <section className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35 min-w-0 overflow-hidden">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -1515,9 +1515,9 @@ const PropertyMapView = () => {
           </div>
 
           <div className="mt-6 grid gap-4 xl:grid-cols-[1.45fr_0.85fr] overflow-hidden">
-            <div className="rounded-[1.75rem] border border-white/25 bg-[#3B82F6]/95 p-6 overflow-hidden">
+            <div className="rounded-[1.75rem] border border-white/25 bg-[#0047AB]/95 p-6 overflow-hidden">
               <div className="flex items-start gap-4">
-                <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-[#3B82F6] to-[#93C5FD] text-2xl text-[#F0F9FF] shadow-lg shadow-[#0047AB]/30">
+                <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-[#0047AB] to-[#001a40] text-2xl text-[#F0F9FF] shadow-lg shadow-[#0047AB]/30">
                   💰
                 </div>
                 <div>
@@ -1536,7 +1536,7 @@ const PropertyMapView = () => {
               </div>
             </div>
 
-            <div className="rounded-[1.75rem] border border-white/25 bg-[#3B82F6]/95 p-6 overflow-hidden">
+            <div className="rounded-[1.75rem] border border-white/25 bg-[#0047AB]/95 p-6 overflow-hidden">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-[#F0F9FF]/95">Quick actions</p>
@@ -1561,7 +1561,7 @@ const PropertyMapView = () => {
           </div>
 
           <div className="mt-6 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="inline-flex items-center gap-3 rounded-3xl border border-white/25 bg-[#3B82F6] px-4 py-3 text-sm text-[#F0F9FF]/90">
+            <div className="inline-flex items-center gap-3 rounded-3xl border border-white/25 bg-[#0047AB] px-4 py-3 text-sm text-[#F0F9FF]/90">
               <button
                 type="button"
                 onClick={() => {
@@ -1606,7 +1606,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
             </div>
           </div>
 
-          <div className="mt-6 overflow-hidden rounded-[1.75rem] border border-white/25 bg-[#3B82F6]">
+          <div className="mt-6 overflow-hidden rounded-[1.75rem] border border-white/25 bg-[#0047AB]">
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-white/25 text-left text-sm text-[#F0F9FF]/95">
                 <colgroup>
@@ -1692,7 +1692,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                               assigned: value === '' ? 0 : parseFloat(value)
                                             });
                                           }}
-                                          className="w-full rounded-3xl border border-white/25 bg-[#3B82F6] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          className="w-full rounded-3xl border border-white/25 bg-[#0047AB] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                                           step="0.01"
                                           min="0"
                                           placeholder="0.00"
@@ -1704,7 +1704,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                         <select
                                           value={editCategoryData.target_type}
                                           onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
-                                          className="w-full rounded-3xl border border-white/25 bg-[#3B82F6] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          className="w-full rounded-3xl border border-white/25 bg-[#0047AB] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                                         >
                                           <option value="monthly">Monthly</option>
                                           <option value="balance">Balance</option>
@@ -1715,7 +1715,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                           type="number"
                                           value={editCategoryData.target_amount === 0 ? '' : editCategoryData.target_amount}
                                           onChange={(e) => setEditCategoryData({ ...editCategoryData, target_amount: e.target.value === '' ? 0 : parseFloat(e.target.value) })}
-                                          className="mt-3 w-full rounded-3xl border border-white/25 bg-[#3B82F6] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          className="mt-3 w-full rounded-3xl border border-white/25 bg-[#0047AB] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                                           placeholder="Target amount"
                                           step="0.01"
                                           min="0"
@@ -1743,7 +1743,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                           <summary className="cursor-pointer list-none rounded-full border border-white/30 bg-[#0047AB] px-3 py-1.5 text-xs font-medium text-[#F0F9FF]/95 outline-none ring-white/30 hover:brightness-110 focus-visible:ring-2 [&::-webkit-details-marker]:hidden">
                                             Actions <span className="text-[#F0F9FF]/75">▾</span>
                                           </summary>
-                                          <div className="absolute left-0 z-30 mt-1 min-w-[11rem] rounded-xl border border-white/25 bg-[#3B82F6] py-1 shadow-2xl ring-1 ring-white/35">
+                                          <div className="absolute left-0 z-30 mt-1 min-w-[11rem] rounded-xl border border-white/25 bg-[#0047AB] py-1 shadow-2xl ring-1 ring-white/35">
                                             <button
                                               type="button"
                                               className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
@@ -1802,7 +1802,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                     <td className="px-4 py-4 align-top">
                                       {hasTarget ? (
                                         <div className="space-y-2">
-                                          <div className="relative h-3 overflow-hidden rounded-full bg-[#3B82F6]/70">
+                                          <div className="relative h-3 overflow-hidden rounded-full bg-[#0047AB]/70">
                                             <div className="h-full rounded-full" style={{ width: `${Math.min(100, targetInfo.progress || 0)}%`, backgroundColor: getProgressColor(targetInfo.status) }} />
                                           </div>
                                           <div className="text-xs text-[#F0F9FF]/75">{Math.min(100, Math.round(targetInfo.progress || 0))}%</div>

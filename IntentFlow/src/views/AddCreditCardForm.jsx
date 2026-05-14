@@ -391,7 +391,7 @@ const styles = {
     fontSize: '1.75rem',
     fontWeight: 'bold',
     margin: 0,
-    background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
+    background: 'linear-gradient(135deg, #0047AB, #8B5CF6)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent'
   },
@@ -431,7 +431,7 @@ const styles = {
     transition: 'all 0.2s',
     ':focus': {
       outline: 'none',
-      borderColor: '#3B82F6'
+      borderColor: '#0047AB'
     },
     ':disabled': {
       opacity: 0.5,
@@ -528,7 +528,7 @@ const styles = {
   submitButton: {
     flex: 2,
     padding: '0.75rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

@@ -200,7 +200,7 @@ const AllAccountsView = () => {
   // Get account color
   const getAccountColor = (type) => {
     const colors = {
-      checking: '#3B82F6',
+      checking: '#0047AB',
       savings: '#10B981',
       credit: '#F59E0B',
       loan: '#EF4444',
@@ -503,7 +503,7 @@ const styles = {
     width: '40px',
     height: '40px',
     border: '3px solid #374151',
-    borderTopColor: '#3B82F6',
+    borderTopColor: '#0047AB',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
     marginBottom: '1rem'
@@ -595,7 +595,7 @@ const styles = {
     transition: 'all 0.2s'
   },
   activeFilterTab: {
-    color: '#3B82F6',
+    color: '#0047AB',
     background: 'rgba(59, 130, 246, 0.1)'
   },
   tableContainer: {
@@ -673,7 +673,7 @@ const styles = {
   },
   editButton: {
     padding: '0.25rem 0.75rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.375rem',
@@ -681,7 +681,7 @@ const styles = {
     fontSize: '0.75rem',
     transition: 'all 0.2s',
     ':hover': {
-      background: '#2563EB'
+      background: '#001a40'
     }
   },
   deleteButton: {
@@ -700,7 +700,7 @@ const styles = {
   editInput: {
     padding: '0.25rem 0.5rem',
     background: '#0047AB',
-    border: '1px solid #3B82F6',
+    border: '1px solid #0047AB',
     borderRadius: '0.375rem',
     color: 'white',
     fontSize: '0.875rem',

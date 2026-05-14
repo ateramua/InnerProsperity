@@ -604,7 +604,7 @@ const styles = {
     },
     timelineFill: {
         height: '100%',
-        background: 'linear-gradient(90deg, #3B82F6, #8B5CF6)',
+        background: 'linear-gradient(90deg, #0047AB, #8B5CF6)',
         borderRadius: '4px'
     },
     forecastGrid: {

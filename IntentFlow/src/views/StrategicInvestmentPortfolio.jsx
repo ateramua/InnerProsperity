@@ -44,13 +44,13 @@ import {
   };
 
   const COLORS = {
-    conservative: ['#3B82F6', '#60A5FA', '#93C5FD'],
+    conservative: ['#0047AB', '#60A5FA', '#93C5FD'],
     moderate: ['#10B981', '#34D399', '#6EE7B7'],
     aggressive: ['#F59E0B', '#FBBF24', '#FCD34D'],
     danger: '#EF4444',
     success: '#10B981',
     warning: '#F59E0B',
-    info: '#3B82F6'
+    info: '#0047AB'
   };
 
   // ==================== ADVANCED CALCULATIONS ====================
@@ -435,7 +435,7 @@ import {
             <span style={styles.metricLabel}>Risk Level</span>
             <span style={{
               ...styles.metricValue,
-              color: metrics.riskLevel === 'conservative' ? '#3B82F6' :
+              color: metrics.riskLevel === 'conservative' ? '#0047AB' :
                      metrics.riskLevel === 'moderate' ? '#10B981' : '#F59E0B'
             }}>
               {metrics.riskLevel.toUpperCase()}
@@ -475,10 +475,10 @@ import {
                 <YAxis stroke="#9CA3AF" unit="%" />
                 <Tooltip 
                   formatter={(value) => `${value.toFixed(1)}%`}
-                  contentStyle={{ background: '#0047AB', border: '2px solid #3B82F6' }}
+                  contentStyle={{ background: '#0047AB', border: '2px solid #0047AB' }}
                 />
                 <Legend />
-                <Bar dataKey="current" fill="#3B82F6" name="Current" />
+                <Bar dataKey="current" fill="#0047AB" name="Current" />
                 <Bar dataKey="target" fill="#10B981" name="Target" />
               </BarChart>
             </ResponsiveContainer>
@@ -632,7 +632,7 @@ import {
                   insightColor = '#F59E0B';
                 } else if (inv.dividend_yield > 3) {
                   insight = '💰 High dividend';
-                  insightColor = '#3B82F6';
+                  insightColor = '#0047AB';
                 } else {
                   insight = '✅ On track';
                   insightColor = '#4ADE80';
@@ -946,7 +946,7 @@ const styles = {
   rebalanceButton: {
     width: '100%',
     padding: '0.75rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

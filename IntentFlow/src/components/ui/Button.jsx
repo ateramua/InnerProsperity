@@ -10,7 +10,7 @@ const variantClasses = {
   pmPrimary:
     'bg-[#0047AB] hover:brightness-110 text-[#F0F9FF] border border-white/25 shadow-sm',
   pmSecondary:
-    'bg-[#3B82F6] hover:brightness-105 text-[#F0F9FF] border border-white/30 shadow-sm',
+    'bg-[#0047AB] hover:brightness-105 text-[#F0F9FF] border border-white/30 shadow-sm',
   pmDanger: 'bg-rose-600 hover:bg-rose-700 text-white border border-white/20',
 };
 

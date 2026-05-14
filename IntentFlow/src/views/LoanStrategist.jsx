@@ -385,7 +385,7 @@ const styles = {
     fontSize: '1.75rem',
     fontWeight: 'bold',
     margin: 0,
-    background: 'linear-gradient(135deg, #8B5CF6, #3B82F6)',
+    background: 'linear-gradient(135deg, #8B5CF6, #0047AB)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
   },
@@ -407,7 +407,7 @@ const styles = {
     transition: 'all 0.2s',
   },
   activeStrategy: {
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
   },
   summaryGrid: {
@@ -455,7 +455,7 @@ const styles = {
     transition: 'all 0.2s',
   },
   selectedCard: {
-    border: '2px solid #3B82F6',
+    border: '2px solid #0047AB',
     transform: 'scale(1.02)',
   },
   cardHeader: {
@@ -608,8 +608,8 @@ const styles = {
   secondaryButton: {
     padding: '0.75rem 2rem',
     background: 'transparent',
-    border: '1px solid #3B82F6',
-    color: '#3B82F6',
+    border: '1px solid #0047AB',
+    color: '#0047AB',
     borderRadius: '0.5rem',
     fontSize: '1rem',
     cursor: 'pointer',
@@ -646,7 +646,7 @@ const styles = {
   },
   addButton: {
     padding: '0.75rem 1.5rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

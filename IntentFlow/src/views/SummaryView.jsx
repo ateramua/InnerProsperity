@@ -1085,7 +1085,7 @@ const SummaryView = ({
       id: 'lastMonth',
       name: '📅 Last Month\'s Budget',
       description: 'Match previous month\'s assigned amounts',
-      color: '#3B82F6',
+      color: '#0047AB',
       action: generateLastMonthAllocation
     },
     {
@@ -1258,7 +1258,7 @@ const SummaryView = ({
             style={{
               ...styles.progressBarFill,
               width: `${Math.min(assignedPercentage, 100)}%`,
-              backgroundColor: assignedPercentage > 100 ? '#F87171' : '#3B82F6'
+              backgroundColor: assignedPercentage > 100 ? '#F87171' : '#0047AB'
             }}
           />
         </div>

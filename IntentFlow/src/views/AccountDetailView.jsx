@@ -2048,7 +2048,7 @@ const styles = {
   },
   refreshButton: {
     padding: '0.5rem 1rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -2139,12 +2139,12 @@ const styles = {
   },
   progressFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #3B82F6, #8B5CF6)',
+    background: 'linear-gradient(90deg, #0047AB, #8B5CF6)',
     transition: 'width 0.3s ease',
   },
   infoBanner: {
     background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
-    border: '1px solid #3B82F6',
+    border: '1px solid #0047AB',
     borderRadius: '0.75rem',
     padding: '1rem',
     marginBottom: '2rem',
@@ -2154,7 +2154,7 @@ const styles = {
   },
   infoBannerIcon: {
     fontSize: '1.5rem',
-    color: '#3B82F6',
+    color: '#0047AB',
   },
   infoBannerContent: {
     flex: 1,
@@ -2291,7 +2291,7 @@ const styles = {
   },
   addButton: {
     padding: '0.5rem 1rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -2354,7 +2354,7 @@ const styles = {
   emptyAddButton: {
     marginTop: '1rem',
     padding: '0.5rem 1rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -2402,7 +2402,7 @@ const styles = {
   },
   editButton: {
     padding: '0.25rem 0.75rem',
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     borderRadius: '0.375rem',
@@ -2771,7 +2771,7 @@ const styles = {
   },
   paymentBadgeSmall: {
     fontSize: '0.6rem',
-    color: '#3B82F6',
+    color: '#0047AB',
     marginTop: '0.25rem',
     display: 'inline-block',
     background: 'rgba(59, 130, 246, 0.1)',

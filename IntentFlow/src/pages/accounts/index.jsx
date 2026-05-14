@@ -551,7 +551,7 @@ const styles = {
         fontSize: '2rem',
         fontWeight: 'bold',
         margin: 0,
-        color: APP_FG
+        color: APP_ON_FG
     },
     newAccountButton: {
         background: APP_FG,
@@ -603,7 +603,7 @@ const styles = {
         fontSize: '1.25rem',
         fontWeight: '600',
         marginBottom: '1rem',
-        color: APP_FG
+        color: APP_ON_FG
     },
     accountList: {
         background: APP_FG,
@@ -715,7 +715,7 @@ const styles = {
     saveButton: {
         flex: 1,
         padding: '0.75rem',
-        background: '#3B82F6',
+        background: APP_FG,
         color: 'white',
         border: 'none',
         borderRadius: '0.5rem',

@@ -740,7 +740,7 @@ const styles = {
   },
   saveButton: {
     padding: '0.6rem 1.25rem',
-    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
+    background: 'linear-gradient(135deg, #0047AB, #001a40)',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

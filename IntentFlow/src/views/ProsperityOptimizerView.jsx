@@ -56,7 +56,7 @@ const ProsperityOptimizerView = () => {
             case 1: return '#EF4444'; // Red - Essential
             case 2: return '#F59E0B'; // Orange - Debt
             case 3: return '#10B981'; // Green - Savings
-            case 4: return '#3B82F6'; // Blue - Variable
+            case 4: return '#0047AB'; // Blue - Variable
             case 5: return '#8B5CF6'; // Purple - Discretionary
             default: return '#6B7280';
         }
@@ -219,7 +219,7 @@ const styles = {
         marginBottom: '2rem'
     },
     optimizeButton: {
-        background: '#3B82F6',
+        background: '#0047AB',
         color: 'white',
         border: 'none',
         padding: '1rem 2rem',
@@ -229,7 +229,7 @@ const styles = {
         marginBottom: '2rem',
         transition: 'all 0.2s ease',
         ':hover': {
-            background: '#2563EB'
+            background: '#001a40'
         }
     },
     errorContainer: {
@@ -360,7 +360,7 @@ const styles = {
     recommendationAction: {
         margin: 0,
         fontSize: '0.875rem',
-        color: '#3B82F6'
+        color: '#0047AB'
     }
 };
 

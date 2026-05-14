@@ -229,7 +229,7 @@ const styles = {
   loadingSpinner: {
     width: '48px',
     height: '48px',
-    border: '4px solid #3B82F6',
+    border: '4px solid #0047AB',
     borderTopColor: 'transparent',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
@@ -241,7 +241,7 @@ const styles = {
     color: '#F87171'
   },
   retryButton: {
-    background: '#3B82F6',
+    background: '#0047AB',
     color: 'white',
     border: 'none',
     padding: '0.5rem 1rem',
@@ -345,7 +345,7 @@ const styles = {
   },
   targetBadge: {
     fontSize: '0.8rem',
-    color: '#3B82F6'
+    color: '#0047AB'
   },
   patternInfo: {
     fontSize: '0.8rem',
@@ -366,7 +366,7 @@ const styles = {
   },
   patternConfidence: {
     fontSize: '0.75rem',
-    color: '#3B82F6'
+    color: '#0047AB'
   },
   patternAmount: {
     color: '#4ADE80'
