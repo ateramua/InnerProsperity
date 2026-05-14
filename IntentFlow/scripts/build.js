@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-console.log('🚀 Building Money Manager Desktop...');
+console.log('🚀 Building IntentFlow Desktop...');
 
 // Step 1: Build Next.js app
 console.log('\n📦 Building Next.js app...');

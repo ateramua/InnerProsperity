@@ -1,5 +1,5 @@
 // options.js - Firefox/Manifest V2 Version
-// Money Manager Extension - Options Page
+// IntentFlow Extension - Options Page
 
 (function() {
     'use strict';

@@ -6,6 +6,12 @@ const variantClasses = {
   neutral: 'bg-slate-700 hover:bg-slate-600 text-slate-100',
   danger: 'bg-rose-600 hover:bg-rose-700 text-white',
   ghost: 'bg-transparent hover:bg-slate-800 text-slate-100',
+  /** Property Map — no black / no slate */
+  pmPrimary:
+    'bg-[#0047AB] hover:brightness-110 text-[#F0F9FF] border border-white/25 shadow-sm',
+  pmSecondary:
+    'bg-[#3B82F6] hover:brightness-105 text-[#F0F9FF] border border-white/30 shadow-sm',
+  pmDanger: 'bg-rose-600 hover:bg-rose-700 text-white border border-white/20',
 };
 
 export default function Button({ type = 'button', variant = 'primary', className = '', disabled = false, children, ...props }) {

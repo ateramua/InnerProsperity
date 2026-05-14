@@ -80,6 +80,15 @@ function useInitializeElectronAPI() {
         updateAccount: async (id, userId, updates) => ({ success: true }),
         deleteAccount: async (id, userId) => ({ success: true }),
         getCategories: async (userId) => ({ success: true, data: [] }),
+        getBudgetMonthSnapshot: async (userId, monthKey) => ({
+          success: true,
+          data: {
+            monthKey: monthKey || '1970-01-01',
+            prevMonthKey: '1970-01-01',
+            isCurrentCalendarMonth: true,
+            categories: []
+          }
+        }),
         getCategoryGroups: async (userId) => ({ success: true, data: [] }),
         createCategory: async (data) => ({ success: true, data: { id: Date.now() } }),
         updateCategory: async (id, updates) => ({ success: true }),
@@ -88,7 +97,10 @@ function useInitializeElectronAPI() {
         restoreCategory: async (id, userId) => ({ success: true }),
         getArchivedCategories: async (userId) => ({ success: true, data: [] }),
         toggleHideCategory: async (categoryId, userId) => ({ success: true }),
-        getCategoryHistory: async (categoryId, period) => ({ success: true, data: [] }),
+        getCategoryHistory: async (categoryId, period) => ({
+          success: true,
+          data: { available: 0, assigned: 0, activity: 0 }
+        }),
         createCategoryGroup: async (userId, name) => ({ success: true, data: { id: Date.now() } }),
         updateCategoryGroup: async (id, userId, updates) => ({ success: true }),
         deleteCategoryGroup: async (id, userId) => ({ success: true }),

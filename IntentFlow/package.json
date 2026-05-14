@@ -1,21 +1,23 @@
 {
   "name": "intentflow",
   "version": "1.0.0",
-  "description": "Money Manager Desktop - Zero-based budgeting app",
+  "description": "IntentFlow — personal finance and zero-based budgeting",
   "main": "src/main/index.cjs",
   "type": "commonjs",
   "scripts": {
     "clean": "rimraf .next out release dist build",
-    "build": "next build && node scripts/copy-export-assets.cjs",
+    "clean:deep": "rimraf .next out release dist build node_modules/.cache .eslintcache",
+    "build": "next build && node scripts/copy-export-assets.cjs && node scripts/verify-production-export.cjs",
     "seed:db": "node src/db/scripts/seed-database.js",
     "dist": "npm run clean && npm run build && electron-builder",
+    "dist:install-mac": "bash scripts/mac-reinstall-to-applications.sh",
     "start": "cross-env NODE_ENV=production electron .",
     "dev": "node scripts/electron-dev.cjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "build": {
     "appId": "com.intentflow.moneymanager",
-    "productName": "Money Manager",
+    "productName": "IntentFlow",
     "directories": {
       "output": "release"
     },

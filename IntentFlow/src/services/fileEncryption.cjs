@@ -117,7 +117,7 @@ class FileEncryption {
           title: 'Save Budget As',
           defaultPath: path.join(require('os').homedir(), 'Desktop', 'my-budget.mny'),
           filters: [
-            { name: 'Money Manager Files', extensions: ['mny'] },
+            { name: 'IntentFlow Files', extensions: ['mny'] },
             { name: 'All Files', extensions: ['*'] }
           ]
         });
@@ -132,7 +132,7 @@ class FileEncryption {
       const dataToSave = {
         version: '1.0',
         createdAt: new Date().toISOString(),
-        appName: 'Money Manager',
+        appName: 'IntentFlow',
         data: budgetData
       };
 
@@ -167,7 +167,7 @@ class FileEncryption {
         const result = await dialog.showOpenDialog({
           title: 'Open Budget',
           filters: [
-            { name: 'Money Manager Files', extensions: ['mny'] },
+            { name: 'IntentFlow Files', extensions: ['mny'] },
             { name: 'All Files', extensions: ['*'] }
           ],
           properties: ['openFile']

@@ -25,7 +25,9 @@ class UpdateService extends EventEmitter {
         
         BUDGET_ASSIGNED: 'budget:assigned',
         BUDGET_MOVED: 'budget:moved',
-        
+
+        CATEGORY_GROUPS_CHANGED: 'categoryGroups:changed',
+
         PROSPERITY_MAP_UPDATED: 'prosperity:updated',
         FORECAST_UPDATED: 'forecast:updated',
         MONEY_MAP_UPDATED: 'moneyMap:updated'
@@ -106,6 +108,22 @@ class UpdateService extends EventEmitter {
                 case UpdateService.EVENTS.BUDGET_MOVED:
                     this.publish(UpdateService.EVENTS.PROSPERITY_MAP_UPDATED, {
                         reason: 'budget_change',
+                        data: update.data
+                    });
+                    break;
+
+                case UpdateService.EVENTS.CATEGORY_UPDATED:
+                case UpdateService.EVENTS.CATEGORY_CREATED:
+                case UpdateService.EVENTS.CATEGORY_DELETED:
+                    this.publish(UpdateService.EVENTS.PROSPERITY_MAP_UPDATED, {
+                        reason: 'category_change',
+                        data: update.data
+                    });
+                    break;
+
+                case UpdateService.EVENTS.CATEGORY_GROUPS_CHANGED:
+                    this.publish(UpdateService.EVENTS.PROSPERITY_MAP_UPDATED, {
+                        reason: 'category_groups_change',
                         data: update.data
                     });
                     break;

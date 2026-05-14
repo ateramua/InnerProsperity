@@ -107,11 +107,11 @@ export default function CreditCardsPage() {
     return (
       <div style={{
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
+        background: '#3B82F6',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'white',
+        color: '#0047AB',
       }}>
         Loading credit cards...
       </div>
@@ -121,15 +121,17 @@ export default function CreditCardsPage() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
-      color: 'white',
+      background: '#3B82F6',
+      color: '#0047AB',
     }}>
       <header style={{
-        background: 'linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%)',
+        background: '#0047AB',
+        color: '#FFFFFF',
         padding: '1rem 1.5rem',
         position: 'sticky',
         top: 0,
         zIndex: 10,
+        borderBottom: '2px solid #3B82F6',
       }}>
         <div style={{
           maxWidth: '1200px',
@@ -138,7 +140,7 @@ export default function CreditCardsPage() {
           justifyContent: 'space-between',
           alignItems: 'center',
         }}>
-          <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Money Manager</h1>
+          <h1 style={{ fontSize: '1.5rem', margin: 0 }}>IntentFlow</h1>
           <nav style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
             <Link href="/">Budget</Link>
             <Link href="/forecast">Forecast</Link>

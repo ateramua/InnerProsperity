@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../../contexts/AuthContext';
+import { APP_BG, APP_FG, APP_ON_FG } from '../../theme/appPalette';
 
 const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse }) => {
     const [expandedSection, setExpandedSection] = useState(null);
@@ -715,11 +716,11 @@ const styles = {
     sidebar: {
         width: '280px',
         height: '100vh',
-        background: '#0047AB',
-        color: '#FFFFFF',
+        background: APP_BG,
+        color: APP_ON_FG,
         display: 'flex',
         flexDirection: 'column',
-        borderRight: '1px solid #374151',
+        borderRight: `2px solid ${APP_FG}`,
         position: 'fixed',
         left: 0,
         top: 0,
@@ -729,7 +730,7 @@ const styles = {
     },
     header: {
         padding: '24px 20px',
-        borderBottom: '1px solid #374151'
+        borderBottom: `2px solid ${APP_FG}`
     },
     title: {
         margin: 0,
@@ -740,7 +741,7 @@ const styles = {
     },
     version: {
         fontSize: '0.75rem',
-        color: '#9CA3AF'
+        color: 'rgba(255,255,255,0.75)'
     },
     nav: {
         flex: 1,
@@ -768,9 +769,10 @@ const styles = {
         }
     },
     activeNavItem: {
-        background: '#3B82F6',
+        background: APP_FG,
         ':hover': {
-            background: '#2563EB'
+            background: APP_FG,
+            filter: 'brightness(1.08)'
         }
     },
     navIcon: {
@@ -789,11 +791,11 @@ const styles = {
     },
     navChevron: {
         fontSize: '0.75rem',
-        color: '#9CA3AF',
+        color: 'rgba(255,255,255,0.7)',
         marginLeft: '8px'
     },
     subItemsContainer: {
-        background: '#0A2472',
+        background: APP_FG,
         padding: '4px 0'
     },
     subItem: {
@@ -803,21 +805,22 @@ const styles = {
         cursor: 'pointer',
         transition: 'background 0.2s',
         position: 'relative',
+        color: APP_ON_FG,
         ':hover': {
-            background: '#1E3A8A'
+            background: 'rgba(255,255,255,0.12)'
         }
     },
     addButtonSubItem: {
-        background: 'rgba(59, 130, 246, 0.2)',
-        borderBottom: '1px solid #3B82F6',
+        background: 'rgba(255,255,255,0.1)',
+        borderBottom: `1px solid ${APP_BG}`,
         fontWeight: '600',
         ':hover': {
-            background: 'rgba(59, 130, 246, 0.4)'
+            background: 'rgba(255,255,255,0.18)'
         }
     },
     activeSubItem: {
-        background: '#1E3A8A',
-        borderLeft: '3px solid #3B82F6'
+        background: 'rgba(255,255,255,0.15)',
+        borderLeft: `3px solid ${APP_BG}`
     },
     subItemIcon: {
         fontSize: '1rem',
@@ -837,9 +840,9 @@ const styles = {
     },
     subItemLender: {
         fontSize: '0.7rem',
-        color: '#9CA3AF',
+        color: 'rgba(255,255,255,0.85)',
         marginRight: '4px',
-        background: '#1F2937',
+        background: 'rgba(0,0,0,0.2)',
         padding: '2px 4px',
         borderRadius: '4px'
     },
@@ -851,7 +854,7 @@ const styles = {
     },
     divider: {
         height: '1px',
-        background: '#374151',
+        background: 'rgba(255,255,255,0.25)',
         margin: '8px 20px 8px 52px'
     },
     emptyState: {
@@ -862,22 +865,22 @@ const styles = {
     },
     footer: {
         padding: '20px',
-        borderTop: '1px solid #374151'
+        borderTop: `2px solid ${APP_FG}`
     },
     footerItem: {
         display: 'flex',
         alignItems: 'center',
         padding: '8px 0',
         cursor: 'pointer',
-        color: '#9CA3AF',
+        color: 'rgba(255,255,255,0.85)',
         ':hover': {
             color: 'white'
         }
     },
     collapseToggle: {
         background: 'transparent',
-        border: '1px solid rgba(255,255,255,0.18)',
-        color: 'white',
+        border: `2px solid ${APP_FG}`,
+        color: APP_ON_FG,
         width: '36px',
         height: '36px',
         borderRadius: '12px',
@@ -907,13 +910,14 @@ const styles = {
         zIndex: 2000
     },
     modalContent: {
-        background: '#1F2937',
+        background: APP_FG,
         padding: '2rem',
         borderRadius: '1rem',
         width: '90%',
         maxWidth: '550px',
         maxHeight: '90vh',
-        overflowY: 'auto'
+        overflowY: 'auto',
+        border: `2px solid ${APP_BG}`
     },
     modalTitle: {
         fontSize: '1.5rem',
@@ -956,19 +960,19 @@ const styles = {
     input: {
         width: '100%',
         padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
+        background: 'rgba(0,0,0,0.2)',
+        border: `1px solid ${APP_BG}`,
         borderRadius: '0.5rem',
-        color: 'white',
+        color: APP_ON_FG,
         fontSize: '1rem'
     },
     textarea: {
         width: '100%',
         padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
+        background: 'rgba(0,0,0,0.2)',
+        border: `1px solid ${APP_BG}`,
         borderRadius: '0.5rem',
-        color: 'white',
+        color: APP_ON_FG,
         fontSize: '0.875rem',
         fontFamily: 'inherit',
         resize: 'vertical'
@@ -987,10 +991,10 @@ const styles = {
     modalInput: {
         width: '100%',
         padding: '0.75rem 0.75rem 0.75rem 2rem',
-        background: '#111827',
-        border: '1px solid #374151',
+        background: 'rgba(0,0,0,0.2)',
+        border: `1px solid ${APP_BG}`,
         borderRadius: '0.5rem',
-        color: 'white',
+        color: APP_ON_FG,
         fontSize: '1rem'
     },
     modalActions: {
@@ -1001,8 +1005,8 @@ const styles = {
     saveButton: {
         flex: 1,
         padding: '0.75rem',
-        background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
-        color: 'white',
+        background: APP_FG,
+        color: APP_ON_FG,
         border: 'none',
         borderRadius: '0.5rem',
         fontSize: '1rem',
@@ -1012,8 +1016,8 @@ const styles = {
     cancelButton: {
         flex: 1,
         padding: '0.75rem',
-        background: '#4B5563',
-        color: 'white',
+        background: 'rgba(255,255,255,0.2)',
+        color: APP_ON_FG,
         border: 'none',
         borderRadius: '0.5rem',
         fontSize: '1rem',

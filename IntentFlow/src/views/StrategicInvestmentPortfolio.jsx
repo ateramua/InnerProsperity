@@ -475,7 +475,7 @@ import {
                 <YAxis stroke="#9CA3AF" unit="%" />
                 <Tooltip 
                   formatter={(value) => `${value.toFixed(1)}%`}
-                  contentStyle={{ background: '#1F2937', border: '1px solid #374151' }}
+                  contentStyle={{ background: '#0047AB', border: '2px solid #3B82F6' }}
                 />
                 <Legend />
                 <Bar dataKey="current" fill="#3B82F6" name="Current" />
@@ -772,7 +772,7 @@ const styles = {
     padding: '2rem',
     maxWidth: '1400px',
     margin: '0 auto',
-    color: 'white'
+    color: '#0047AB'
   },
   header: {
     display: 'flex',
@@ -786,9 +786,7 @@ const styles = {
     fontSize: '2rem',
     fontWeight: 'bold',
     margin: '0 0 0.25rem 0',
-    background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent'
+    color: '#0047AB'
   },
   subtitle: {
     fontSize: '0.875rem',
@@ -798,7 +796,7 @@ const styles = {
   marketTicker: {
     display: 'flex',
     gap: '1rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.75rem 1rem',
     borderRadius: '0.5rem',
     border: '1px solid #374151'
@@ -830,7 +828,7 @@ const styles = {
     alignItems: 'center',
     gap: '0.5rem',
     marginBottom: '2rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.5rem',
     borderRadius: '0.5rem',
     width: 'fit-content'
@@ -859,7 +857,7 @@ const styles = {
     marginBottom: '2rem'
   },
   metricCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -896,7 +894,7 @@ const styles = {
     color: 'white'
   },
   allocationSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -917,14 +915,14 @@ const styles = {
     color: '#9CA3AF'
   },
   rebalanceCard: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem'
   },
   recommendation: {
     marginBottom: '1rem',
     padding: '1rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.5rem'
   },
   recommendationHeader: {
@@ -961,7 +959,7 @@ const styles = {
     color: '#4ADE80'
   },
   taxSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -973,7 +971,7 @@ const styles = {
     gap: '1rem'
   },
   taxCard: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '1rem',
     borderRadius: '0.5rem'
   },
@@ -996,7 +994,7 @@ const styles = {
     fontStyle: 'italic'
   },
   holdingsSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -1011,7 +1009,7 @@ const styles = {
     fontSize: '0.875rem'
   },
   recommendationsSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -1024,7 +1022,7 @@ const styles = {
     display: 'flex',
     gap: '1rem',
     padding: '1rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     border: '1px solid #374151'
   },

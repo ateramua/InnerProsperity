@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const electronSrc = path.join(__dirname, '../electron');
-const electronDest = path.join(__dirname, '../release/mac-arm64/Money Manager.app/Contents/Resources/electron');
+const electronDest = path.join(__dirname, '../release/mac-arm64/IntentFlow.app/Contents/Resources/electron');
 
 if (!fs.existsSync(electronSrc)) {
   console.error('❌ electron source not found at:', electronSrc);

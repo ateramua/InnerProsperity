@@ -412,8 +412,8 @@ export default function ForecastPage() {
 const styles = {
   container: {
     minHeight: '100vh',
-    background: 'linear-gradient(135deg, #0F172A 0%, #1E1B4B 100%)',
-    color: 'white',
+    background: '#3B82F6',
+    color: '#0047AB',
     padding: '2rem',
     position: 'relative',
     overflowX: 'hidden'
@@ -464,9 +464,7 @@ const styles = {
     fontSize: '3rem',
     fontWeight: 'bold',
     marginBottom: '1rem',
-    background: 'linear-gradient(135deg, #60A5FA, #A78BFA, #F59E0B)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
+    color: '#0047AB',
     animation: 'pulse 2s ease-in-out infinite'
   },
   titleIcon: {
@@ -474,7 +472,7 @@ const styles = {
     display: 'inline-block'
   },
   subtitle: {
-    color: '#9CA3AF',
+    color: '#0047AB',
     fontSize: '1.125rem',
     lineHeight: 1.6
   },
@@ -491,11 +489,11 @@ const styles = {
     gap: '1rem',
     maxWidth: '800px',
     width: '100%',
-    background: 'rgba(31, 41, 55, 0.8)',
+    background: '#0047AB',
     backdropFilter: 'blur(10px)',
     padding: '0.5rem',
     borderRadius: '1rem',
-    border: '1px solid rgba(55, 65, 81, 0.5)'
+    border: '2px solid #3B82F6'
   },
   timeframeButton: {
     display: 'flex',
@@ -505,15 +503,15 @@ const styles = {
     background: 'transparent',
     border: 'none',
     borderRadius: '0.75rem',
-    color: '#9CA3AF',
+    color: 'rgba(255,255,255,0.85)',
     cursor: 'pointer',
     transition: 'all 0.3s ease',
     textAlign: 'left'
   },
   activeTimeframe: {
-    background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
-    color: 'white',
-    boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
+    background: '#3B82F6',
+    color: '#0047AB',
+    boxShadow: '0 4px 12px rgba(0, 71, 171, 0.25)'
   },
   timeframeIcon: {
     fontSize: '1.5rem'
@@ -537,11 +535,11 @@ const styles = {
     marginBottom: '2rem'
   },
   metricCard: {
-    background: 'rgba(17, 24, 39, 0.8)',
+    background: '#0047AB',
     backdropFilter: 'blur(10px)',
     padding: '1.25rem',
     borderRadius: '1rem',
-    border: '1px solid rgba(55, 65, 81, 0.5)',
+    border: '2px solid #3B82F6',
     display: 'flex',
     alignItems: 'center',
     gap: '1rem',
@@ -561,14 +559,15 @@ const styles = {
   },
   metricLabel: {
     fontSize: '0.75rem',
-    color: '#9CA3AF',
+    color: 'rgba(255,255,255,0.75)',
     textTransform: 'uppercase',
     letterSpacing: '0.05em',
     marginBottom: '0.25rem'
   },
   metricValue: {
     fontSize: '1.5rem',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    color: '#FFFFFF'
   },
   loadingContainer: {
     position: 'relative',
@@ -578,7 +577,7 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: '4rem',
-    background: 'rgba(31, 41, 55, 0.8)',
+    background: '#0047AB',
     backdropFilter: 'blur(10px)',
     borderRadius: '1rem',
     border: '1px solid rgba(55, 65, 81, 0.5)',
@@ -609,7 +608,7 @@ const styles = {
   forecastContainer: {
     position: 'relative',
     zIndex: 1,
-    background: 'rgba(31, 41, 55, 0.8)',
+    background: '#0047AB',
     backdropFilter: 'blur(10px)',
     borderRadius: '1rem',
     padding: '2rem',
@@ -681,7 +680,7 @@ const styles = {
     gap: '1rem'
   },
   weeklyCard: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '1rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -725,7 +724,7 @@ const styles = {
     gap: '1rem'
   },
   monthlyCard: {
-    background: 'linear-gradient(135deg, #1F2937, #111827)',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -807,7 +806,7 @@ const styles = {
     zIndex: 0
   },
   yearlyCard: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '1rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -881,7 +880,7 @@ const styles = {
     zIndex: 1,
     textAlign: 'center',
     padding: '3rem',
-    background: 'rgba(31, 41, 55, 0.8)',
+    background: '#0047AB',
     backdropFilter: 'blur(10px)',
     borderRadius: '1rem',
     border: '1px solid rgba(55, 65, 81, 0.5)'

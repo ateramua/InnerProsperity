@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"
+
+echo "🧹 Thorough clean (clean:deep)…"
+npm run clean:deep
+
+echo "📦 Full distribution build (includes clean + build + electron-builder)…"
+npm run dist
+
+APP="$(find release -maxdepth 4 -name '*.app' 2>/dev/null | head -1)"
+if [[ -z "${APP}" || ! -d "${APP}" ]]; then
+  echo "❌ No .app bundle found under release/. Build may have failed."
+  exit 1
+fi
+
+echo "📲 Installing to /Applications/IntentFlow.app (from: $APP)"
+rm -rf "/Applications/IntentFlow.app"
+ditto "$APP" "/Applications/IntentFlow.app"
+
+echo "🚀 Opening IntentFlow…"
+open "/Applications/IntentFlow.app"

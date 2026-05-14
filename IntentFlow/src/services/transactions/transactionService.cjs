@@ -53,6 +53,7 @@ class TransactionService {
 
     // Create a transaction - UPDATED to support linkedTransactionId
     async createTransaction(transactionData) {
+        const db = await this.getDb();
         const {
             accountId, userId, date, description, amount, categoryId,
             payee, memo, isCleared,
@@ -80,7 +81,8 @@ class TransactionService {
             counterpartyAccountId || null
         ];
 
-        const result = await this.db.run(query, params);
+        const result = await db.run(query, params);
+        await this.updateAccountBalances(accountId);
         return { id: result.lastID };
     }
 
@@ -188,27 +190,32 @@ class TransactionService {
     async updateAccountBalances(accountId) {
         const db = await this.getDb();
         try {
-            // Calculate working balance (sum of all transactions)
-            await db.run(`
-                UPDATE accounts 
-                SET working_balance = (
-                    SELECT COALESCE(SUM(amount), 0) 
-                    FROM transactions 
+            // Ledger is source of truth: working + display balance match sum of rows.
+            // Cleared/reconciled rows (is_cleared 1 or 2) feed cleared_balance.
+            await db.run(
+                `
+                UPDATE accounts
+                SET
+                  working_balance = (
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM transactions
                     WHERE account_id = ?
-                )
+                  ),
+                  cleared_balance = (
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM transactions
+                    WHERE account_id = ? AND IFNULL(is_cleared, 0) IN (1, 2)
+                  ),
+                  balance = (
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM transactions
+                    WHERE account_id = ?
+                  ),
+                  updated_at = datetime('now')
                 WHERE id = ?
-            `, [accountId, accountId]);
-
-            // Calculate cleared balance (sum of cleared transactions)
-            await db.run(`
-                UPDATE accounts 
-                SET cleared_balance = (
-                    SELECT COALESCE(SUM(amount), 0) 
-                    FROM transactions 
-                    WHERE account_id = ? AND is_cleared IN (1, 2)
-                )
-                WHERE id = ?
-            `, [accountId, accountId]);
+            `,
+                [accountId, accountId, accountId, accountId]
+            );
 
             console.log(`✅ Updated balances for account ${accountId}`);
         } finally {

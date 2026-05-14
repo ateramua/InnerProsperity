@@ -3,7 +3,7 @@ const path = require('path');
 
 // Create a proper icon using a simple Node.js script
 function createProperIcon() {
-  console.log('🎨 Creating proper icon for Money Manager...');
+  console.log('🎨 Creating proper icon for IntentFlow...');
   
   const assetsDir = path.join(__dirname, 'assets');
   if (!fs.existsSync(assetsDir)) {
@@ -43,7 +43,7 @@ function createProperIcon() {
   </style>
 </head>
 <body>
-  <h1>💰 Money Manager Icon Generator</h1>
+  <h1>💰 IntentFlow Icon Generator</h1>
   <p>This tool will generate proper icon files for your app.</p>
   
   <div id="icons"></div>

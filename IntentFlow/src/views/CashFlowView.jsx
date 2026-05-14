@@ -571,7 +571,7 @@ const styles = {
     padding: '2rem',
     maxWidth: '1200px',
     margin: '0 auto',
-    color: 'white'
+    color: '#0047AB'
   },
   loadingContainer: {
     display: 'flex',
@@ -602,15 +602,13 @@ const styles = {
     fontSize: '2rem',
     fontWeight: 'bold',
     margin: 0,
-    background: 'linear-gradient(135deg, #F59E0B, #10B981)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent'
+    color: '#0047AB'
   },
   monthSelector: {
     display: 'flex',
     alignItems: 'center',
     gap: '1rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.5rem',
     borderRadius: '0.5rem',
     border: '1px solid #374151'
@@ -641,7 +639,7 @@ const styles = {
     marginBottom: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -667,7 +665,7 @@ const styles = {
     fontWeight: 'bold'
   },
   section: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -688,7 +686,7 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '2fr 1fr 1fr 1fr',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     fontWeight: '600',
     color: '#9CA3AF',
@@ -780,7 +778,7 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '2fr 1fr 1fr 1fr',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     fontWeight: 'bold'
   },
@@ -806,7 +804,7 @@ const styles = {
   },
   equationText: {
     fontSize: '1.25rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.75rem 1.5rem',
     borderRadius: '0.5rem'
   },
@@ -817,12 +815,12 @@ const styles = {
   equationResult: {
     fontSize: '1.5rem',
     fontWeight: 'bold',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.75rem 1.5rem',
     borderRadius: '0.5rem'
   },
   accountSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -838,7 +836,7 @@ const styles = {
   accountCard: {
     flex: 1,
     minWidth: '250px',
-    background: '#111827',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem'
   },
@@ -871,7 +869,7 @@ const styles = {
     textAlign: 'center',
     marginTop: '1rem',
     padding: '1rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     fontSize: '1.125rem'
   },
@@ -882,7 +880,7 @@ const styles = {
     marginBottom: '2rem'
   },
   debtSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -906,13 +904,13 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     padding: '0.75rem 0',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     marginTop: '1rem',
     padding: '1rem'
   },
   netWorthSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -933,7 +931,7 @@ const styles = {
     fontSize: '1.125rem'
   },
   insightsSection: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -946,7 +944,7 @@ const styles = {
     display: 'flex',
     gap: '1rem',
     padding: '1rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     border: '1px solid #374151'
   },

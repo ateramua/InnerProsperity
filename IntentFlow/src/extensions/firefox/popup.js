@@ -1,5 +1,5 @@
 // popup.js - Firefox/Manifest V2 Version
-// Money Manager Extension - Popup Script
+// IntentFlow Extension - Popup Script
 
 (function() {
     'use strict';

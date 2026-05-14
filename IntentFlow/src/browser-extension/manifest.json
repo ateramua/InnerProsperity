@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Money Manager Quick View",
+  "name": "IntentFlow Quick View",
   "version": "1.0.0",
   "description": "Quickly view your budget and from any website",
   "permissions": [

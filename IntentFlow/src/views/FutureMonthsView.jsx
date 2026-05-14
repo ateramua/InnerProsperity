@@ -86,9 +86,9 @@ const FutureMonthsView = ({
 const styles = {
   card: {
     width: '100%',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
-    border: '1px solid #374151',
+    border: '1px solid rgba(255,255,255,0.28)',
     overflow: 'hidden'
   },
   cardRollup: {
@@ -97,21 +97,18 @@ const styles = {
     gap: '0.5rem',
     width: '100%',
     padding: '1rem',
-    background: '#111827',
+    background: '#0047AB',
     border: 'none',
-    borderBottom: '1px solid #374151',
-    color: 'white',
+    borderBottom: '1px solid rgba(255,255,255,0.28)',
+    color: '#F0F9FF',
     fontSize: '0.95rem',
     fontWeight: '500',
     cursor: 'pointer',
     textAlign: 'left',
-    ':hover': {
-      background: '#1F2937'
-    }
   },
   rollupIcon: {
     fontSize: '0.75rem',
-    color: '#9CA3AF'
+    color: 'rgba(240,249,255,0.75)'
   },
   rollupText: {
     flex: 1
@@ -131,7 +128,7 @@ const styles = {
   },
   totalLabel: {
     fontSize: '0.875rem',
-    color: '#9CA3AF'
+    color: 'rgba(240,249,255,0.78)'
   },
   totalValue: {
     fontSize: '1.25rem',
@@ -146,12 +143,12 @@ const styles = {
   },
   monthsAheadLabel: {
     fontSize: '0.875rem',
-    color: '#9CA3AF'
+    color: 'rgba(240,249,255,0.78)'
   },
   monthsAheadValue: {
     fontSize: '1rem',
     fontWeight: '600',
-    color: '#3B82F6'
+    color: '#F0F9FF'
   },
   progressSection: {
     marginBottom: '0.5rem'
@@ -163,22 +160,22 @@ const styles = {
   },
   progressLabel: {
     fontSize: '0.875rem',
-    color: '#9CA3AF'
+    color: 'rgba(240,249,255,0.78)'
   },
   progressPercentage: {
     fontSize: '0.875rem',
     fontWeight: '600',
-    color: 'white'
+    color: '#F0F9FF'
   },
   progressBarBackground: {
     height: '6px',
-    background: '#374151',
+    background: '#3B82F6',
     borderRadius: '3px',
     overflow: 'hidden'
   },
   progressBarFill: {
     height: '100%',
-    background: '#3B82F6',
+    background: '#0047AB',
     borderRadius: '3px',
     transition: 'width 0.3s ease'
   },
@@ -193,12 +190,12 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.5rem',
-    background: '#111827',
+    background: '#3B82F6',
     borderRadius: '0.375rem'
   },
   breakdownMonth: {
     fontSize: '0.875rem',
-    color: '#F3F4F6'
+    color: '#0047AB'
   },
   breakdownAmount: {
     fontSize: '0.875rem',
@@ -208,17 +205,14 @@ const styles = {
   assignButton: {
     width: '100%',
     padding: '0.75rem',
-    background: '#3B82F6',
-    color: 'white',
-    border: 'none',
+    background: '#0047AB',
+    color: '#F0F9FF',
+    border: '1px solid rgba(255,255,255,0.28)',
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     fontWeight: '500',
     cursor: 'pointer',
     marginTop: '0.5rem',
-    ':hover': {
-      background: '#2563EB'
-    }
   }
 };
 

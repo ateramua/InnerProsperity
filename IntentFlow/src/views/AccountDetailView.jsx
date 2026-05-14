@@ -113,6 +113,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }).format(amount || 0);
   };
 
+  const isCategoryArchived = (cat) => {
+    if (!cat) return true;
+    const a = cat.archived;
+    return a === true || a === 1 || a === '1' || a === 'true';
+  };
+
   // Get filtered categories based on transaction type
   const getFilteredCategories = () => {
     if (newTransaction.transactionType === 'inflow') {
@@ -121,12 +127,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     if (!categories || categories.length === 0) {
       return [];
     }
-    return categories.filter(cat => cat && !cat.archived);
+    return categories.filter((cat) => cat && !isCategoryArchived(cat));
   };
 
   // Get all categories for editing
   const getAllCategories = () => {
-    return categories.filter(cat => cat && !cat.archived);
+    return categories.filter((cat) => cat && !isCategoryArchived(cat));
   };
 
   // ===================== PAYEE DROPDOWN FUNCTIONS =====================
@@ -588,27 +594,18 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         newAmount = isExpense ? -amountValue : amountValue;
       }
 
-      const oldAmount = originalTransaction.amount;
-      const amountDifference = newAmount - oldAmount;
-
-      const updateData = {
-        date: editFormData.date,
-        payee: editFormData.payee,
-        amount: newAmount,
-        categoryId: editFormData.categoryId === 'inflow_ready_to_assign' ? null : editFormData.categoryId,
-        memo: editFormData.memo
-      };
-
       const updateResult = await window.electronAPI.updateTransaction(transactionId, updateData);
       if (!updateResult.success) {
         throw new Error(updateResult.error || 'Failed to update transaction');
       }
 
-      const currentBalance = account.balance || 0;
-      const newBalance = currentBalance + amountDifference;
-      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
       await loadAccountData(account.id);
+
+      const summary = await window.electronAPI.getAccountsSummary(userId);
+      const refreshed = summary?.success && summary.data
+        ? summary.data.find(a => a.id === account.id)
+        : null;
+      const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
       cancelEditing();
 
@@ -628,12 +625,40 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const loadCategories = async () => {
     try {
       const userResult = await window.electronAPI.getCurrentUser();
-      if (userResult?.success && userResult?.data) {
-        const categoriesResult = await window.electronAPI.getCategories(userResult.data.id);
-        if (categoriesResult?.success) {
-          setCategories(categoriesResult.data);
-          console.log('✅ Categories loaded:', categoriesResult.data.length);
+      if (!userResult?.success || !userResult?.data) {
+        return;
+      }
+      const userId = userResult.data.id;
+
+      if (window.electronAPI?.getGroupsWithCategories) {
+        const grouped = await window.electronAPI.getGroupsWithCategories(userId);
+        if (grouped?.success && Array.isArray(grouped.data)) {
+          const seen = new Set();
+          const flat = [];
+          for (const group of grouped.data) {
+            const gName = group?.name || '';
+            for (const c of group.categories || []) {
+              if (!c?.id || seen.has(c.id)) continue;
+              if (isCategoryArchived(c)) continue;
+              seen.add(c.id);
+              flat.push({ ...c, group_name: c.group_name || gName });
+            }
+          }
+          flat.sort((a, b) => {
+            const ga = (a.group_name || '').localeCompare(b.group_name || '');
+            if (ga !== 0) return ga;
+            return (a.name || '').localeCompare(b.name || '');
+          });
+          setCategories(flat);
+          console.log('✅ Categories loaded (grouped flatten):', flat.length);
+          return;
         }
+      }
+
+      const categoriesResult = await window.electronAPI.getCategories(userId);
+      if (categoriesResult?.success) {
+        setCategories(categoriesResult.data || []);
+        console.log('✅ Categories loaded:', (categoriesResult.data || []).length);
       }
     } catch (error) {
       console.error('Error loading categories:', error);
@@ -669,7 +694,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const amountValue = Math.abs(parseFloat(scheduledTx.amount));
 
       let transactionAmount = isExpense ? -amountValue : amountValue;
-      let balanceChange = isExpense ? -amountValue : amountValue;
 
       const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
         scheduledTx.categoryId === 'inflow_ready_to_assign';
@@ -692,10 +716,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         return;
       }
 
-      const currentBalance = account.balance || 0;
-      const newBalance = currentBalance + balanceChange;
-      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
       if (window.electronAPI.deleteScheduledTransaction) {
         await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
       }
@@ -703,6 +723,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       await loadTransactions(account.id);
       await loadScheduledTransactions();
       await loadAccountData(account.id);
+
+      const summary = await window.electronAPI.getAccountsSummary(userId);
+      const refreshed = summary?.success && summary.data
+        ? summary.data.find(a => a.id === account.id)
+        : null;
+      const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
@@ -799,11 +825,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       const userId = userResult.data.id;
       const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
 
-      let totalBalanceChange = 0;
-      for (const transaction of selectedTransactionsList) {
-        totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
-      }
-
       // Delete transactions - handle transfers differently
       for (const transaction of selectedTransactionsList) {
         let deleteResult;
@@ -823,11 +844,13 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         }
       }
 
-      const currentBalance = account.balance || 0;
-      const newBalance = currentBalance + totalBalanceChange;
-      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
       await loadAccountData(account.id);
+
+      const summary = await window.electronAPI.getAccountsSummary(userId);
+      const refreshed = summary?.success && summary.data
+        ? summary.data.find(a => a.id === account.id)
+        : null;
+      const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
       setSelectedTransactions(new Set());
       setShowDeleteModal(false);
@@ -934,7 +957,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     const isExpense = newTransaction.transactionType === 'outflow';
 
     let transactionAmount = 0;
-    let balanceChange = 0;
 
     // ==================== HANDLE CREDIT CARD TRANSFER ====================
     if (newTransaction.isTransfer && newTransaction.transferAccountId) {
@@ -948,7 +970,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         // This is a loan payment - use existing loan payment logic
         console.log('🏦 Processing loan payment');
         const result = await createLoanPaymentTransaction(amountValue, userId);
-        return result.newBalance;
+        return result;
       } else {
         // Regular transfer between accounts
         const transferResult = await window.electronAPI.createLinkedTransfer({
@@ -995,18 +1017,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     if (isCreditOrLoan) {
       if (isExpense) {
         transactionAmount = -amountValue;
-        balanceChange = -amountValue;
       } else {
         transactionAmount = amountValue;
-        balanceChange = amountValue;
       }
     } else {
       if (isExpense) {
         transactionAmount = -amountValue;
-        balanceChange = -amountValue;
       } else {
         transactionAmount = amountValue;
-        balanceChange = amountValue;
       }
     }
 
@@ -1037,11 +1055,13 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       throw new Error(result.error || 'Failed to add transaction');
     }
 
-    const currentBalance = account.balance || 0;
-    const newBalance = currentBalance + balanceChange;
-    await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+    const summary = await window.electronAPI.getAccountsSummary(userId);
+    const refreshed = summary?.success && summary.data
+      ? summary.data.find(a => a.id === account.id)
+      : null;
+    const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
-    console.log(`✅ Regular transaction added. Balance: ${currentBalance} → ${newBalance}`);
+    console.log(`✅ Regular transaction added. Ledger balance: ${newBalance}`);
 
     return newBalance;
   };
@@ -1166,19 +1186,11 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
     }
 
-    // ========== STEP 5: Update account balances ==========
-    const balanceChange = -amountValue;
-    const currentBalance = account.balance || 0;
-    const newBalance = currentBalance + balanceChange;
-    
-    await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-    console.log('✅ Checking balance updated:', newBalance);
-
-    const currentLoanBalance = selectedLoanAccount.balance || 0;
-    const newLoanBalance = currentLoanBalance + breakdown.principalPortion;
-    
-    await window.electronAPI.updateAccount(selectedLoanAccount.id, userId, { balance: newLoanBalance });
-    console.log('✅ Loan balance updated:', newLoanBalance);
+    const summary = await window.electronAPI.getAccountsSummary(userId);
+    const checkingRefreshed = summary?.success && summary.data
+      ? summary.data.find(a => a.id === account.id)
+      : null;
+    const newBalance = checkingRefreshed != null ? checkingRefreshed.balance : account.balance;
 
     console.log('🔷 LOAN PAYMENT: Complete!');
     
@@ -1813,9 +1825,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                     style={styles.select}
                   >
                     <option value="">Select a category</option>
-                    {filteredCategories.map(category => (
+                    {filteredCategories.map((category) => (
                       <option key={category.id} value={category.id}>
-                        {category.name}
+                        {(category.group_name ? `${category.group_name} › ` : '')}{category.name}
                       </option>
                     ))}
                   </select>

@@ -1,5 +1,5 @@
 // pairing.js - Firefox/Manifest V2 Version
-// Money Manager Extension - Pairing Screen
+// IntentFlow Extension - Pairing Screen
 
 (function() {
     'use strict';
@@ -142,7 +142,7 @@
                 <div class="status-icon">❌</div>
                 <div class="status-title">Connection Failed</div>
                 <div class="status-message">${message}</div>
-                <div class="status-details">Make sure Money Manager desktop app is running</div>
+                <div class="status-details">Make sure IntentFlow desktop app is running</div>
             `;
             statusDiv.style.background = '#fef2f2';
         }

@@ -23,7 +23,7 @@ export default function Header() {
       <div style={styles.headerLeft}>
         <div style={styles.logo} onClick={() => router.push('/')}>
           <i className="fas fa-wallet" style={styles.logoIcon}></i>
-          <span style={styles.logoText}>Money Manager</span>
+          <span style={styles.logoText}>IntentFlow</span>
         </div>
 
         <nav style={styles.nav}>

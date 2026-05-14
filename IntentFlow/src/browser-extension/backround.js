@@ -139,7 +139,7 @@ connectToDesktop();
 
 // Listen for installation
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('Money Manager extension installed');
+  console.log('IntentFlow extension installed');
   
   // Set default settings
   chrome.storage.sync.set({

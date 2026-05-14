@@ -632,7 +632,7 @@ const styles = {
   strategyToggle: {
     display: 'flex',
     gap: '0.5rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.25rem',
     borderRadius: '0.5rem'
   },
@@ -657,7 +657,7 @@ const styles = {
     marginBottom: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -684,7 +684,7 @@ const styles = {
   targetSliderContainer: {
     marginBottom: '1rem',
     padding: '1rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem'
   },
   sliderLabel: {
@@ -704,7 +704,7 @@ const styles = {
     gap: '1rem'
   },
   cardItem: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -796,7 +796,7 @@ const styles = {
     marginTop: '0.5rem'
   },
   planContainer: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '2rem',
     borderRadius: '1rem',
     border: '1px solid #374151',
@@ -957,7 +957,7 @@ const styles = {
   emptyState: {
     textAlign: 'center',
     padding: '4rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem'
   },
   emptyIcon: {

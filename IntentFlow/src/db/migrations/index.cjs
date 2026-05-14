@@ -109,7 +109,8 @@ async function runMigrations(existingDb) {
             '008_create_triggers_and_views.sql',
             '009_fix_account_summary_view.sql',
             '010_add_check_number.sql',
-            '011_add_user_password_columns.sql'
+            '011_add_user_password_columns.sql',
+            '012_add_account_profile_columns.cjs'
         ];
 
         for (const migration of migrations) {

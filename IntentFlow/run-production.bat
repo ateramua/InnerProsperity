@@ -1,5 +1,5 @@
 @echo off
-echo 🚀 Starting Money Manager in production mode...
+echo 🚀 Starting IntentFlow in production mode...
 
 REM Build if out directory doesn't exist
 if not exist out (

@@ -7,6 +7,10 @@ import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import BudgetEngine from "../shared/budgetEngine.mjs";
 import Button from '../components/ui/Button';
 import CategoryTargetModal from '../components/CategoryTargetModal';
+import PM from '../constants/pmTheme.js';
+import budgetMonthUtils from '../utils/budgetMonthUtils.js';
+
+const { formatBudgetMonthKey, roundMoney, monthKeyToLocalDate } = budgetMonthUtils;
 
 const PropertyMapView = () => {
   // ==================== STATE DECLARATIONS ====================
@@ -24,6 +28,10 @@ const PropertyMapView = () => {
   const [newGroupName, setNewGroupName] = useState('');
   const [editGroupName, setEditGroupName] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(new Date());
+  const selectedMonthRef = useRef(selectedMonth);
+  useEffect(() => {
+    selectedMonthRef.current = selectedMonth;
+  }, [selectedMonth]);
   const [newCategoryData, setNewCategoryData] = useState({
     name: '',
     assigned: 0,
@@ -105,7 +113,7 @@ const PropertyMapView = () => {
   // ==================== CREDIT CARD PAYMENT HELPER ====================
   
   // Move money from spending category to credit card payment category
-  const moveMoneyForCreditCardTransaction = async (amount, spendingCategoryId, creditCardAccountName) => {
+  const moveMoneyForCreditCardTransaction = async (amount, spendingCategoryId, creditCardAccountName, budgetMonthKeyOpt) => {
     try {
       console.log(`🔄 Moving $${amount} from category ${spendingCategoryId} to credit card payment category for ${creditCardAccountName}`);
       
@@ -149,22 +157,26 @@ const PropertyMapView = () => {
       const newSpendingAssigned = (spendingCategory.assigned || 0) - amount;
       const newSpendingAvailable = (spendingCategory.available || 0) - amount;
       
+      const ccMonth = budgetMonthKeyOpt || formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+
       await window.electronAPI.updateCategory(spendingCategoryId, {
         assigned: newSpendingAssigned,
-        available: newSpendingAvailable
+        available: newSpendingAvailable,
+        budget_month: ccMonth
       });
-      
+
       const newPaymentAssigned = (paymentCategory.assigned || 0) + amount;
       const newPaymentAvailable = (paymentCategory.available || 0) + amount;
-      
+
       await window.electronAPI.updateCategory(paymentCategory.id, {
         assigned: newPaymentAssigned,
-        available: newPaymentAvailable
+        available: newPaymentAvailable,
+        budget_month: ccMonth
       });
       
       console.log(`✅ Successfully moved $${amount} from "${spendingCategory.name}" to "${paymentCategory.name}"`);
       
-      await loadCategoriesFromDB();
+      await loadCategoriesFromDB(0, { monthDate: monthKeyToLocalDate(ccMonth) });
       calculateReadyToAssign();
       
       return true;
@@ -304,8 +316,18 @@ const PropertyMapView = () => {
         )
       }));
 
+      if (typeof window !== 'undefined' && window.electronAPI?.getBudgetMonthSnapshot) {
+        return newAvailable;
+      }
+
       try {
-        await window.electronAPI.updateCategory(category.id, { available: newAvailable });
+        const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+        const assignedVal = Number(category.assigned) || 0;
+        await window.electronAPI.updateCategory(category.id, {
+          assigned: assignedVal,
+          available: newAvailable,
+          budget_month: monthKey
+        });
         console.log(`✅ Updated available for ${category.name}: ${formatCurrency(newAvailable)}`);
       } catch (error) {
         console.error(`❌ Failed to update available for ${category.id}:`, error);
@@ -330,7 +352,8 @@ const PropertyMapView = () => {
   const getPreviousMonthAvailable = async (categoryId, previousMonth) => {
     try {
       const result = await window.electronAPI.getCategoryHistory(categoryId, previousMonth);
-      return result?.available || 0;
+      const payload = result?.data ?? result;
+      return payload?.available || 0;
     } catch (error) {
       console.error('Error getting previous month available:', error);
       return 0;
@@ -340,22 +363,25 @@ const PropertyMapView = () => {
   // ==================== READY TO ASSIGN CALCULATION ====================
   const calculateReadyToAssign = () => {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('💰 CALCULATING READY TO ASSIGN');
+    console.log('💰 CALCULATING READY TO ASSIGN (cash − Σ category available)');
 
     const activeCategories = budgetData.categories.filter(cat => !cat.archived);
 
-    let totalAssigned = activeCategories.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0);
-    let totalCarryover = activeCategories.reduce((sum, cat) => sum + (cat.previous_available || 0), 0);
-    let totalActivity = activeCategories.reduce((sum, cat) => sum + (Number(cat.activity) || 0), 0);
+    const sumCategoryAvailable = activeCategories.reduce(
+      (sum, cat) => sum + (Number(cat.available) || 0),
+      0
+    );
     const cashInAccounts = totalCashInAccounts;
-    const totalBudgeted = totalAssigned - totalActivity + totalCarryover;
-    const readyToAssign = cashInAccounts - totalBudgeted;
+    // YNAB-style: every dollar in on-budget cash accounts is either Ready to Assign or in a category envelope.
+    const readyToAssign = roundMoney(cashInAccounts - sumCategoryAvailable);
 
-    console.log(`Total Cash: ${cashInAccounts}`);
-    console.log(`Total Assigned: ${totalAssigned}`);
-    console.log(`Total Activity: ${totalActivity}`);
-    console.log(`Total Carryover: ${totalCarryover}`);
+    const totalAssigned = activeCategories.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0);
+    const totalActivity = activeCategories.reduce((sum, cat) => sum + (Number(cat.activity) || 0), 0);
+
+    console.log(`Total Cash (budget cash accounts): ${cashInAccounts}`);
+    console.log(`Σ Category Available: ${sumCategoryAvailable}`);
     console.log(`Ready to Assign: ${readyToAssign}`);
+    console.log(`(reference) Total Assigned: ${totalAssigned}, Total Activity: ${totalActivity}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     setBudgetSummary({
@@ -377,9 +403,11 @@ const PropertyMapView = () => {
   };
   
   useEffect(() => {
-    if (budgetData.categories.length > 0) {
-      updateAllAvailable();
+    if (budgetData.categories.length === 0) return;
+    if (typeof window !== 'undefined' && window.electronAPI?.getBudgetMonthSnapshot) {
+      return;
     }
+    updateAllAvailable();
   }, [budgetData.categories.map(cat => `${cat.id}:${cat.assigned}:${cat.activity}`).join(',')]);
 
   // ==================== DATABASE OPERATIONS ====================
@@ -405,7 +433,7 @@ const PropertyMapView = () => {
     }
   };
 
-  const loadCategoriesFromDB = async (retryCount = 0) => {
+  const loadCategoriesFromDB = async (retryCount = 0, opts = {}) => {
     if (!window.electronAPI?.getCategories) {
       console.error('❌ electronAPI.getCategories is not available!');
       return;
@@ -415,31 +443,55 @@ const PropertyMapView = () => {
       return;
     }
 
+    const monthDate = opts.monthDate ?? selectedMonthRef.current ?? selectedMonth;
+    const monthKey = formatBudgetMonthKey(monthDate);
+
+    const mapCategoryRow = (cat) => ({
+      id: cat.id,
+      name: cat.name,
+      assigned: Number(cat.assigned) || 0,
+      activity: Number(cat.activity) || 0,
+      available: Number(cat.available) || 0,
+      previous_available: Number(cat.previous_available) || 0,
+      groupId: Number(cat.group_id),
+      user_id: cat.user_id,
+      priority: cat.priority || 2,
+      target_amount: cat.target_amount,
+      target_type: cat.target_type || 'monthly',
+      target_date: cat.target_date,
+      progress: 0,
+      last_month_assigned: cat.last_month_assigned || 0,
+      average_spending: cat.average_spending || 0,
+      archived: cat.archived === 1,
+      is_hidden: cat.is_hidden === 1 || cat.hidden === 1,
+      original_group_id: cat.original_group_id || cat.group_id,
+      is_loan_payment_category: cat.is_loan_payment_category === 1
+    });
+
     try {
       setLoading(true);
+
+      if (window.electronAPI.getBudgetMonthSnapshot) {
+        const snap = await window.electronAPI.getBudgetMonthSnapshot(userId, monthKey);
+        if (snap && snap.success && snap.data && Array.isArray(snap.data.categories)) {
+          const dbCategories = snap.data.categories.map(mapCategoryRow);
+          setBudgetData(prev => ({
+            ...prev,
+            categories: dbCategories
+          }));
+          setCategories(dbCategories);
+          setTimeout(() => {
+            loadCategoryGroups();
+          }, 100);
+          return;
+        }
+        console.warn('⚠️ getBudgetMonthSnapshot failed or empty; falling back to getCategories', snap?.error);
+      }
+
       const result = await window.electronAPI.getCategories(userId);
 
       if (result && result.success && result.data) {
-        const dbCategories = result.data.map(cat => ({
-          id: cat.id,
-          name: cat.name,
-          assigned: Number(cat.assigned) || 0,
-          activity: Number(cat.activity) || 0,
-          available: Number(cat.available) || 0,
-          groupId: Number(cat.group_id),
-          user_id: cat.user_id,
-          priority: cat.priority || 2,
-          target_amount: cat.target_amount,
-          target_type: cat.target_type || 'monthly',
-          target_date: cat.target_date,
-          progress: 0,
-          last_month_assigned: cat.last_month_assigned || 0,
-          average_spending: cat.average_spending || 0,
-          archived: cat.archived === 1,
-          is_hidden: cat.is_hidden === 1 || cat.hidden === 1,
-          original_group_id: cat.original_group_id || cat.group_id,
-          is_loan_payment_category: cat.is_loan_payment_category === 1
-        }));
+        const dbCategories = result.data.map(mapCategoryRow);
 
         setBudgetData(prev => ({
           ...prev,
@@ -475,17 +527,6 @@ const PropertyMapView = () => {
     } catch (error) {
       console.error('Error loading archived categories:', error);
       setArchivedCategories([]);
-    }
-  };
-
-  const updateCategoryAssigned = async (categoryId, newAssigned) => {
-    try {
-      const result = await window.electronAPI.updateCategory(categoryId, { assigned: newAssigned });
-      if (!result.success) {
-        console.error('Failed to update category assigned amount:', result.error);
-      }
-    } catch (error) {
-      console.error('❌ Error updating category:', error);
     }
   };
 
@@ -572,7 +613,7 @@ const PropertyMapView = () => {
       case 'not-started':
         return '#EF4444';
       default:
-        return '#3B82F6';
+        return '#93C5FD';
     }
   };
 
@@ -587,7 +628,8 @@ const PropertyMapView = () => {
         name: editCategoryData.name.trim(),
         assigned: Number(editCategoryData.assigned) || 0,
         target_amount: Number(editCategoryData.target_amount) || 0,
-        target_type: editCategoryData.target_type
+        target_type: editCategoryData.target_type,
+        budget_month: formatBudgetMonthKey(selectedMonthRef.current || selectedMonth)
       };
 
       const result = await window.electronAPI.updateCategory(categoryId, updates);
@@ -679,7 +721,7 @@ const PropertyMapView = () => {
       }
       const categoryData = {
         name: newCategoryData.name.trim(),
-        assigned: newCategoryData.assigned || 0,
+        assigned: 0,
         group_id: newCategoryData.groupId,
         user_id: userId,
         target_amount: newCategoryData.assigned || 0,
@@ -690,19 +732,30 @@ const PropertyMapView = () => {
       };
       const result = await window.electronAPI.createCategory(categoryData);
       if (result.success && result.data) {
+        const initialAssigned = newCategoryData.assigned || 0;
+        const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+        if (initialAssigned > 0) {
+          const assignResult = await window.electronAPI.updateCategory(result.data.id, {
+            assigned: initialAssigned,
+            budget_month: monthKey
+          });
+          if (!assignResult?.success) {
+            alert('⚠️ Category created but initial assign failed: ' + (assignResult?.error || 'Unknown error'));
+          }
+        }
         const newCategory = {
           id: result.data.id,
           name: categoryData.name,
-          assigned: categoryData.assigned || 0,
+          assigned: initialAssigned,
           activity: 0,
-          available: categoryData.assigned || 0,
+          available: initialAssigned,
           groupId: newCategoryData.groupId,
           user_id: userId,
           priority: 2,
-          target_amount: categoryData.assigned || 0,
+          target_amount: categoryData.target_amount || 0,
           target_type: 'monthly',
           target_date: null,
-          progress: (categoryData.assigned || 0) > 0 ? 100 : 0,
+          progress: (initialAssigned || 0) > 0 ? 100 : 0,
           last_month_assigned: 0,
           average_spending: 0,
           archived: false
@@ -716,6 +769,7 @@ const PropertyMapView = () => {
         setNewCategoryData({ name: '', assigned: 0, groupId: null });
         setSelectedGroupForCategory(null);
         alert('✅ Category created successfully!');
+        await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
       } else {
         alert('❌ Failed to create category: ' + (result.error || 'Unknown error'));
       }
@@ -883,19 +937,27 @@ const PropertyMapView = () => {
         payee: incomeData.memo || 'Income',
         description: incomeData.memo || 'Income',
         amount: amount,
-        categoryId: 'inflow_ready_to_assign',
+        categoryId: null,
         memo: incomeData.memo,
         cleared: 1
       };
       const result = await window.electronAPI.addTransaction(transactionData);
       if (result.success) {
-        setTotalCashInAccounts(prev => prev + amount);
+        const userIdForAccounts = userResult.data.id;
+        const accountsResult = await window.electronAPI.getAccountsSummary(userIdForAccounts);
+        if (accountsResult?.success && accountsResult.data) {
+          const totalCashValue = accountsResult.data
+            .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+            .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+          setTotalCashInAccounts(totalCashValue);
+        }
         setIncomeData({
           amount: '',
           date: new Date().toISOString().split('T')[0],
           memo: ''
         });
         setShowAddIncomeModal(false);
+        await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
         calculateReadyToAssign();
         alert(`✅ $${amount.toFixed(2)} added to Ready to Assign`);
       } else {
@@ -907,7 +969,7 @@ const PropertyMapView = () => {
     }
   };
 
-  const handleQuickAssign = (method) => {
+  const handleQuickAssign = async (method) => {
     if (budgetSummary.unassigned <= 0) {
       alert('No funds available to assign');
       return;
@@ -1018,28 +1080,49 @@ const PropertyMapView = () => {
 
     if (allocations.length > 0) {
       const previewMessage = allocations.map(a => `${a.reason}: ${formatCurrency(a.amount)}`).join('\n');
-      if (confirm(`Ready to assign ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${allocations.length} categories:\n\n${previewMessage}\n\nProceed?`)) {
-        setBudgetData(prev => ({
-          ...prev,
-          categories: prev.categories.map(cat => {
-            const allocation = allocations.find(a => a.categoryId === cat.id);
-            if (allocation) {
-              return {
-                ...cat,
-                assigned: (cat.assigned || 0) + allocation.amount,
-                available: (cat.available || 0) + allocation.amount
-              };
-            }
-            return cat;
-          })
-        }));
-        allocations.forEach(allocation => {
-          const category = budgetData.categories.find(c => c.id === allocation.categoryId);
-          if (category) {
-            updateCategoryAssigned(allocation.categoryId, (category.assigned || 0) + allocation.amount);
+      if (!confirm(`Ready to assign ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${allocations.length} categories:\n\n${previewMessage}\n\nProceed?`)) {
+        return;
+      }
+
+      const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+      const deltas = {};
+      for (const a of allocations) {
+        deltas[a.categoryId] = (deltas[a.categoryId] || 0) + a.amount;
+      }
+
+      setBudgetData(prev => ({
+        ...prev,
+        categories: prev.categories.map(cat => {
+          const d = deltas[cat.id];
+          if (d) {
+            return {
+              ...cat,
+              assigned: (cat.assigned || 0) + d,
+              available: (cat.available || 0) + d
+            };
           }
-        });
-        alert(`✅ Assigned ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${allocations.length} categories`);
+          return cat;
+        })
+      }));
+
+      try {
+        for (const [categoryId, delta] of Object.entries(deltas)) {
+          const cat = budgetData.categories.find(c => c.id === categoryId);
+          const newAssigned = (cat?.assigned || 0) + delta;
+          const res = await window.electronAPI.updateCategory(categoryId, {
+            assigned: newAssigned,
+            budget_month: monthKey
+          });
+          if (!res?.success) {
+            console.error('Quick assign failed for category', categoryId, res?.error);
+          }
+        }
+        await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
+        calculateReadyToAssign();
+        alert(`✅ Assigned ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${Object.keys(deltas).length} categories`);
+      } catch (err) {
+        console.error('Quick assign error:', err);
+        alert(`❌ Error while saving assignments: ${err.message}`);
       }
     } else {
       alert('No categories need funding based on current criteria');
@@ -1109,6 +1192,7 @@ const PropertyMapView = () => {
           memo: ''
         });
         setShowRecordPaymentModal(false);
+        await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
         calculateReadyToAssign();
         alert(`✅ Payment of $${amount.toFixed(2)} recorded to ${selectedCategory.name}`);
       } else {
@@ -1120,7 +1204,7 @@ const PropertyMapView = () => {
     }
   };
 
-  const handleMoveMoney = () => {
+  const handleMoveMoney = async () => {
     const amount = parseFloat(moveMoneyData.amount);
     if (isNaN(amount) || amount <= 0) {
       alert('Please enter a valid amount');
@@ -1141,34 +1225,40 @@ const PropertyMapView = () => {
       alert(`Source category only has ${formatCurrency(fromCategory.available)} available`);
       return;
     }
-    setBudgetData(prev => ({
-      ...prev,
-      categories: prev.categories.map(cat => {
-        if (cat.id === moveMoneyData.fromCategoryId) {
-          return {
-            ...cat,
-            assigned: (cat.assigned || 0) - amount,
-            available: (cat.available || 0) - amount
-          };
-        }
-        if (cat.id === moveMoneyData.toCategoryId) {
-          return {
-            ...cat,
-            assigned: (cat.assigned || 0) + amount,
-            available: (cat.available || 0) + amount
-          };
-        }
-        return cat;
-      })
-    }));
-    setMoveMoneyData({
-      amount: '',
-      fromCategoryId: '',
-      toCategoryId: ''
-    });
-    setShowMoveMoneyModal(false);
-    calculateReadyToAssign();
-    alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
+    const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+    const fromAssigned = (fromCategory.assigned || 0) - amount;
+    const fromAvailable = (fromCategory.available || 0) - amount;
+    const toAssigned = (toCategory.assigned || 0) + amount;
+    const toAvailable = (toCategory.available || 0) + amount;
+
+    try {
+      const r1 = await window.electronAPI.updateCategory(moveMoneyData.fromCategoryId, {
+        assigned: fromAssigned,
+        available: fromAvailable,
+        budget_month: monthKey
+      });
+      const r2 = await window.electronAPI.updateCategory(moveMoneyData.toCategoryId, {
+        assigned: toAssigned,
+        available: toAvailable,
+        budget_month: monthKey
+      });
+      if (!r1.success || !r2.success) {
+        alert(`❌ Could not move money: ${r1.error || r2.error || 'Unknown error'}`);
+        return;
+      }
+      setMoveMoneyData({
+        amount: '',
+        fromCategoryId: '',
+        toCategoryId: ''
+      });
+      setShowMoveMoneyModal(false);
+      await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
+      calculateReadyToAssign();
+      alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
+    } catch (error) {
+      console.error('Error moving money:', error);
+      alert(`❌ Error moving money: ${error.message}`);
+    }
   };
   
   const handleSetGoal = (category) => {
@@ -1233,12 +1323,15 @@ const PropertyMapView = () => {
 
   // ==================== UI HELPER FUNCTIONS ====================
   const getCategoriesByGroup = (groupId) => {
-    const targetId = Number(groupId);
-    const filtered = budgetData.categories.filter(c => {
-      const catGroupId = Number(c.groupId);
-      return catGroupId === targetId && !c.archived;
+    const gid = String(groupId);
+    return budgetData.categories.filter((c) => {
+      if (!c) return false;
+      const a = c.archived;
+      const archived = a === true || a === 1 || a === '1' || a === 'true';
+      if (archived) return false;
+      const catGid = c.groupId ?? c.group_id;
+      return String(catGid ?? '') === gid;
     });
-    return filtered;
   };
 
   const getGroupTotals = (groupId) => {
@@ -1338,18 +1431,50 @@ const PropertyMapView = () => {
   }, []);
 
   const { lastUpdate } = useRealtimeUpdates(['prosperity:updated'], () => {
-    loadCategoryGroups();
-    loadCategoriesFromDB();
-    loadArchivedCategories();
-    calculateReadyToAssign();
+    void (async () => {
+      try {
+        await loadCategoryGroups();
+        await loadCategoriesFromDB();
+        await loadArchivedCategories();
+        const userResult = await window.electronAPI.getCurrentUser();
+        if (userResult?.success && userResult?.data) {
+          const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+          if (accountsResult?.success && accountsResult.data) {
+            const totalCashValue = accountsResult.data
+              .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+              .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+            setTotalCashInAccounts(totalCashValue);
+          }
+        }
+      } catch (e) {
+        console.warn('prosperity:updated refresh:', e);
+      }
+      calculateReadyToAssign();
+    })();
   });
 
   useEffect(() => {
     const handleRefresh = () => {
-      loadCategoryGroups();
-      loadCategoriesFromDB();
-      loadArchivedCategories();
-      calculateReadyToAssign();
+      void (async () => {
+        try {
+          await loadCategoryGroups();
+          await loadCategoriesFromDB();
+          await loadArchivedCategories();
+          const userResult = await window.electronAPI.getCurrentUser();
+          if (userResult?.success && userResult?.data) {
+            const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+            if (accountsResult?.success && accountsResult.data) {
+              const totalCashValue = accountsResult.data
+                .filter(acc => acc.type === 'checking' || acc.type === 'savings')
+                .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+              setTotalCashInAccounts(totalCashValue);
+            }
+          }
+        } catch (e) {
+          console.warn('refresh-prosperity-map:', e);
+        }
+        calculateReadyToAssign();
+      })();
     };
     window.addEventListener('refresh-prosperity-map', handleRefresh);
     return () => {
@@ -1370,37 +1495,37 @@ const PropertyMapView = () => {
 
   // ==================== RENDER ====================
   return (
-    <div className="grid min-h-full gap-6 grid-cols-1 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] max-w-full overflow-hidden">
-      <div className="space-y-6 min-w-0 overflow-hidden">
-        <section className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40 min-w-0 overflow-hidden">
+    <div className="grid min-h-full gap-6 grid-cols-1 bg-[#3B82F6] xl:grid-cols-[minmax(0,1fr)_minmax(280px,24rem)] max-w-full items-start p-1 sm:p-2">
+      <div className="space-y-6 min-w-0 overflow-hidden xl:min-w-0">
+        <section className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35 min-w-0 overflow-hidden">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-slate-500">ProsperityMap</p>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Budget allocation</h1>
-              <p className="mt-2 text-sm text-slate-400">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })} budget snapshot</p>
+              <p className="text-xs uppercase tracking-[0.35em] text-[#F0F9FF]/65">ProsperityMap</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[#F0F9FF]">Budget allocation</h1>
+              <p className="mt-2 text-sm text-[#F0F9FF]/75">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })} budget snapshot</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <Button variant="secondary" onClick={() => { loadArchivedCategories(); setShowArchivedModal(true); }}>
+              <Button variant="pmSecondary" onClick={() => { loadArchivedCategories(); setShowArchivedModal(true); }}>
                 Archived ({archivedCategories.length})
               </Button>
-              <Button variant="secondary" onClick={() => setShowAddGroupModal(true)}>
+              <Button variant="pmSecondary" onClick={() => setShowAddGroupModal(true)}>
                 + Add Group
               </Button>
             </div>
           </div>
 
           <div className="mt-6 grid gap-4 xl:grid-cols-[1.45fr_0.85fr] overflow-hidden">
-            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6 overflow-hidden">
+            <div className="rounded-[1.75rem] border border-white/25 bg-[#3B82F6]/95 p-6 overflow-hidden">
               <div className="flex items-start gap-4">
-                <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-sky-500 to-cyan-500 text-2xl text-white shadow-lg shadow-cyan-500/20">
+                <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-[#3B82F6] to-[#93C5FD] text-2xl text-[#F0F9FF] shadow-lg shadow-[#0047AB]/30">
                   💰
                 </div>
                 <div>
-                  <p className="text-sm font-semibold uppercase tracking-[0.3em] text-slate-500">Ready to Assign</p>
-                  <p className={`mt-3 text-4xl font-semibold ${budgetSummary.unassigned < 0 ? 'text-rose-400' : 'text-white'}`}>
+                  <p className="text-sm font-semibold uppercase tracking-[0.3em] text-[#F0F9FF]/65">Ready to Assign</p>
+                  <p className={`mt-3 text-4xl font-semibold ${budgetSummary.unassigned < 0 ? 'text-rose-400' : 'text-[#F0F9FF]'}`}>
                     {formatCurrency(budgetSummary.unassigned)}
                   </p>
-                  <p className="mt-2 text-sm text-slate-400">
+                  <p className="mt-2 text-sm text-[#F0F9FF]/75">
                     {budgetSummary.unassigned === 0
                       ? 'Every dollar has a job! 🎯'
                       : budgetSummary.unassigned < 0
@@ -1411,24 +1536,24 @@ const PropertyMapView = () => {
               </div>
             </div>
 
-            <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/95 p-6 overflow-hidden">
+            <div className="rounded-[1.75rem] border border-white/25 bg-[#3B82F6]/95 p-6 overflow-hidden">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold text-slate-200">Quick actions</p>
-                  <p className="mt-2 text-sm text-slate-400">Allocate funds faster with recommended workflows.</p>
+                  <p className="text-sm font-semibold text-[#F0F9FF]/95">Quick actions</p>
+                  <p className="mt-2 text-sm text-[#F0F9FF]/75">Allocate funds faster with recommended workflows.</p>
                 </div>
               </div>
               <div className="mt-5 grid gap-3">
-                <Button variant="secondary" onClick={() => handleQuickAssign('smart')}>
+                <Button variant="pmSecondary" onClick={() => handleQuickAssign('smart')}>
                   🧠 Smart Assign
                 </Button>
-                <Button variant="secondary" onClick={() => handleQuickAssign('underfunded')}>
+                <Button variant="pmSecondary" onClick={() => handleQuickAssign('underfunded')}>
                   🎯 Fund Underfunded ({formatCurrency(getTotalUnderfunded())})
                 </Button>
-                <Button variant="secondary" onClick={() => handleQuickAssign('last-month')}>
+                <Button variant="pmSecondary" onClick={() => handleQuickAssign('last-month')}>
                   📅 Last Month
                 </Button>
-                <Button variant="secondary" onClick={() => handleQuickAssign('average')}>
+                <Button variant="pmSecondary" onClick={() => handleQuickAssign('average')}>
                   📊 Average Spending
                 </Button>
               </div>
@@ -1436,33 +1561,35 @@ const PropertyMapView = () => {
           </div>
 
           <div className="mt-6 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="inline-flex items-center gap-3 rounded-3xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
+            <div className="inline-flex items-center gap-3 rounded-3xl border border-white/25 bg-[#3B82F6] px-4 py-3 text-sm text-[#F0F9FF]/90">
               <button
                 type="button"
                 onClick={() => {
                   const newDate = new Date(selectedMonth);
                   newDate.setMonth(selectedMonth.getMonth() - 1);
                   setSelectedMonth(newDate);
+                  void loadCategoriesFromDB(0, { monthDate: newDate });
                 }}
-                className="rounded-full border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 transition hover:bg-slate-700"
+                className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
               >◀</button>
-              <span className="font-medium text-slate-100">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
+              <span className="font-medium text-[#F0F9FF]">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
               <button
                 type="button"
                 onClick={() => {
                   const newDate = new Date(selectedMonth);
                   newDate.setMonth(selectedMonth.getMonth() + 1);
                   setSelectedMonth(newDate);
+                  void loadCategoriesFromDB(0, { monthDate: newDate });
                 }}
-                className="rounded-full border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 transition hover:bg-slate-700"
+                className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
               >▶</button>
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <Button variant="secondary" onClick={async () => { await loadCategoriesFromDB(); await loadCategoryGroups(); }}>
+              <Button variant="pmSecondary" onClick={async () => { await loadCategoriesFromDB(); await loadCategoryGroups(); }}>
                 🔄 Refresh categories
               </Button>
-              <Button variant="secondary" onClick={async () => {
+              <Button variant="pmSecondary" onClick={async () => {
                 const userResult = await window.electronAPI.getCurrentUser();
                 const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
                 const totalCash = accountsResult.data
@@ -1479,9 +1606,9 @@ Ready to Assign: $${totalCash - totalAssigned}`);
             </div>
           </div>
 
-          <div className="mt-6 overflow-hidden rounded-[1.75rem] border border-slate-800 bg-slate-900">
+          <div className="mt-6 overflow-hidden rounded-[1.75rem] border border-white/25 bg-[#3B82F6]">
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-700 text-left text-sm text-slate-200">
+              <table className="min-w-full divide-y divide-white/25 text-left text-sm text-[#F0F9FF]/95">
                 <colgroup>
                   <col style={{ width: '30%' }} />
                   <col style={{ width: '12%' }} />
@@ -1490,14 +1617,14 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                   <col style={{ width: '18%' }} />
                   <col style={{ width: '16%' }} />
                 </colgroup>
-                <thead className="bg-slate-950/80">
+                <thead className="bg-[#0047AB]/95">
                   <tr>
-                    <th className="px-4 py-3 font-semibold text-slate-400">Category</th>
-                    <th className="px-4 py-3 font-semibold text-slate-400">Assigned</th>
-                    <th className="px-4 py-3 font-semibold text-slate-400">Activity</th>
-                    <th className="px-4 py-3 font-semibold text-slate-400">Available</th>
-                    <th className="px-4 py-3 font-semibold text-slate-400">Progress</th>
-                    <th className="px-4 py-3 font-semibold text-slate-400">Goal Target</th>
+                    <th className="px-4 py-3 font-semibold text-[#F0F9FF]/75">Category</th>
+                    <th className="px-4 py-3 font-semibold text-[#F0F9FF]/75">Assigned</th>
+                    <th className="px-4 py-3 font-semibold text-[#F0F9FF]/75">Activity</th>
+                    <th className="px-4 py-3 font-semibold text-[#F0F9FF]/75">Available</th>
+                    <th className="px-4 py-3 font-semibold text-[#F0F9FF]/75">Progress</th>
+                    <th className="px-4 py-3 font-semibold text-[#F0F9FF]/75">Goal Target</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1507,23 +1634,24 @@ Ready to Assign: $${totalCash - totalAssigned}`);
 
                     return (
                       <React.Fragment key={uniqueGroupKey}>
-                        <tr className="bg-slate-950/70">
-                          <td colSpan="6" className="px-4 py-4 text-slate-100">
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                              <div className="flex items-center gap-3">
+                        <tr className="bg-[#0047AB]/90">
+                          <td colSpan="6" className="px-4 py-4 text-[#F0F9FF]">
+                            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                                 <button
+                                  type="button"
                                   onClick={() => toggleGroupCollapse(group.id)}
-                                  className="rounded-full border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 transition hover:bg-slate-700"
+                                  className="shrink-0 rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
                                 >
                                   ▼
                                 </button>
-                                <span className="text-base font-semibold text-white">{group.name}</span>
-                                <span className="rounded-full bg-slate-800 px-3 py-1 text-xs uppercase tracking-[0.2em] text-slate-400">{groupCategories.length} categories</span>
+                                <span className="min-w-0 text-base font-semibold text-[#F0F9FF]">{group.name}</span>
+                                <span className="shrink-0 rounded-full bg-[#0047AB] px-3 py-1 text-xs uppercase tracking-[0.2em] text-[#F0F9FF]/75">{groupCategories.length} categories</span>
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                                <Button variant="secondary" onClick={() => handleAddCategory(group)}>+ Category</Button>
-                                <Button variant="secondary" onClick={() => handleEditGroup(group)}>Edit</Button>
-                                <Button variant="danger" onClick={() => handleDeleteGroup(group.id)}>Delete</Button>
+                              <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+                                <Button variant="pmSecondary" onClick={() => handleAddCategory(group)}>+ Category</Button>
+                                <Button variant="pmSecondary" onClick={() => handleEditGroup(group)}>Edit</Button>
+                                <Button variant="pmDanger" onClick={() => handleDeleteGroup(group.id)}>Delete</Button>
                               </div>
                             </div>
                           </td>
@@ -1540,16 +1668,16 @@ Ready to Assign: $${totalCash - totalAssigned}`);
 
                                 if (isEditing) {
                                   return (
-                                    <tr key={`${categoryKey}-edit`} className="bg-slate-950/90">
+                                    <tr key={`${categoryKey}-edit`} className="bg-[#0047AB]">
                                       <td className="px-4 py-4">
                                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                           <div className="min-w-0">
-                                            <div className="text-white">{cat.name}</div>
-                                            <div className="mt-1 text-xs text-slate-400">Edit details and goal for this category.</div>
+                                            <div className="text-[#F0F9FF]">{cat.name}</div>
+                                            <div className="mt-1 text-xs text-[#F0F9FF]/75">Edit details and goal for this category.</div>
                                           </div>
                                           <div className="flex gap-2">
-                                            <Button variant="secondary" onClick={() => handleArchiveCategory(cat)}>Archive</Button>
-                                            <Button variant="danger" onClick={() => handleDeleteCategory(cat.id)}>Delete</Button>
+                                            <Button variant="pmSecondary" onClick={() => handleArchiveCategory(cat)}>Archive</Button>
+                                            <Button variant="pmDanger" onClick={() => handleDeleteCategory(cat.id)}>Delete</Button>
                                           </div>
                                         </div>
                                       </td>
@@ -1564,7 +1692,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                               assigned: value === '' ? 0 : parseFloat(value)
                                             });
                                           }}
-                                          className="w-full rounded-3xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          className="w-full rounded-3xl border border-white/25 bg-[#3B82F6] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                                           step="0.01"
                                           min="0"
                                           placeholder="0.00"
@@ -1576,7 +1704,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                         <select
                                           value={editCategoryData.target_type}
                                           onChange={(e) => setEditCategoryData({ ...editCategoryData, target_type: e.target.value })}
-                                          className="w-full rounded-3xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          className="w-full rounded-3xl border border-white/25 bg-[#3B82F6] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                                         >
                                           <option value="monthly">Monthly</option>
                                           <option value="balance">Balance</option>
@@ -1587,7 +1715,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                           type="number"
                                           value={editCategoryData.target_amount === 0 ? '' : editCategoryData.target_amount}
                                           onChange={(e) => setEditCategoryData({ ...editCategoryData, target_amount: e.target.value === '' ? 0 : parseFloat(e.target.value) })}
-                                          className="mt-3 w-full rounded-3xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                                          className="mt-3 w-full rounded-3xl border border-white/25 bg-[#3B82F6] px-3 py-2 text-sm text-[#F0F9FF] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
                                           placeholder="Target amount"
                                           step="0.01"
                                           min="0"
@@ -1595,8 +1723,8 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                       </td>
                                       <td className="px-4 py-4">
                                         <div className="flex flex-wrap gap-2">
-                                          <Button variant="primary" onClick={() => handleSaveCategoryEdit(cat.id)}>Save</Button>
-                                          <Button variant="secondary" onClick={handleCancelEdit}>Cancel</Button>
+                                          <Button variant="pmPrimary" onClick={() => handleSaveCategoryEdit(cat.id)}>Save</Button>
+                                          <Button variant="pmSecondary" onClick={handleCancelEdit}>Cancel</Button>
                                         </div>
                                       </td>
                                     </tr>
@@ -1604,23 +1732,68 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                 }
 
                                 return (
-                                  <tr key={categoryKey} className="border-t border-slate-800">
+                                  <tr key={categoryKey} className="border-t border-white/25">
                                     <td className="px-4 py-4 align-top">
-                                      <div className="flex flex-col gap-3">
+                                      <div className="flex max-w-md flex-col gap-3">
                                         <div className="flex flex-wrap items-center gap-2">
-                                          <span className="text-sm font-semibold text-white">{cat.name}</span>
-                                          {hasTarget && <span className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-400">{targetInfo.status}</span>}
+                                          <span className="text-sm font-semibold text-[#F0F9FF]">{cat.name}</span>
+                                          {hasTarget && <span className="rounded-full bg-[#0047AB] px-2 py-1 text-xs text-[#F0F9FF]/75">{targetInfo.status}</span>}
                                         </div>
-                                        <div className="flex flex-wrap gap-2 text-xs text-slate-400">
-                                          <Button variant="secondary" onClick={() => handleEditCategory(cat)}>Edit</Button>
-                                          <Button variant="secondary" onClick={() => handleSetGoal(cat)}>Goal</Button>
-                                          <Button variant="secondary" onClick={() => handleArchiveCategory(cat)}>Archive</Button>
-                                          <Button variant="danger" onClick={() => handleDeleteCategory(cat.id)}>Delete</Button>
-                                        </div>
+                                        <details className="group/actions relative w-fit">
+                                          <summary className="cursor-pointer list-none rounded-full border border-white/30 bg-[#0047AB] px-3 py-1.5 text-xs font-medium text-[#F0F9FF]/95 outline-none ring-white/30 hover:brightness-110 focus-visible:ring-2 [&::-webkit-details-marker]:hidden">
+                                            Actions <span className="text-[#F0F9FF]/75">▾</span>
+                                          </summary>
+                                          <div className="absolute left-0 z-30 mt-1 min-w-[11rem] rounded-xl border border-white/25 bg-[#3B82F6] py-1 shadow-2xl ring-1 ring-white/35">
+                                            <button
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
+                                                handleEditCategory(cat);
+                                              }}
+                                            >
+                                              Edit
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
+                                                handleSetGoal(cat);
+                                              }}
+                                            >
+                                              Goal
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
+                                                handleArchiveCategory(cat);
+                                              }}
+                                            >
+                                              Archive
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-left text-sm text-rose-300 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
+                                                handleDeleteCategory(cat.id);
+                                              }}
+                                            >
+                                              Delete
+                                            </button>
+                                          </div>
+                                        </details>
                                       </div>
                                     </td>
-                                    <td className="px-4 py-4 align-top">{formatCurrency(cat.assigned || 0)}</td>
-                                    <td className="px-4 py-4 align-top">{formatCurrency(cat.activity || 0)}</td>
+                                    <td className="px-4 py-4 align-top whitespace-nowrap">{formatCurrency(cat.assigned || 0)}</td>
+                                    <td className="px-4 py-4 align-top whitespace-nowrap">{formatCurrency(cat.activity || 0)}</td>
                                     <td className="px-4 py-4 align-top">
                                       <div className={`${(cat.available || 0) < 0 ? 'text-rose-400' : (cat.available || 0) === 0 ? 'text-amber-300' : 'text-emerald-400'} font-semibold`}>{formatCurrency(cat.available || 0)}</div>
                                       {(cat.available || 0) < 0 && <div className="mt-1 text-xs text-rose-300">Overspent</div>}
@@ -1629,42 +1802,42 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                     <td className="px-4 py-4 align-top">
                                       {hasTarget ? (
                                         <div className="space-y-2">
-                                          <div className="relative h-3 overflow-hidden rounded-full bg-slate-800">
+                                          <div className="relative h-3 overflow-hidden rounded-full bg-[#3B82F6]/70">
                                             <div className="h-full rounded-full" style={{ width: `${Math.min(100, targetInfo.progress || 0)}%`, backgroundColor: getProgressColor(targetInfo.status) }} />
                                           </div>
-                                          <div className="text-xs text-slate-400">{Math.min(100, Math.round(targetInfo.progress || 0))}%</div>
+                                          <div className="text-xs text-[#F0F9FF]/75">{Math.min(100, Math.round(targetInfo.progress || 0))}%</div>
                                         </div>
                                       ) : (
-                                        <div className="text-slate-500">—</div>
+                                        <div className="text-[#F0F9FF]/65">—</div>
                                       )}
                                     </td>
                                     <td className="px-4 py-4 align-top">
                                       {cat.target_amount && cat.target_amount > 0 ? (
                                         <div className="space-y-1">
-                                          <div className="font-semibold text-white">{formatCurrency(cat.target_amount)}</div>
-                                          <div className="text-xs text-slate-400">{cat.target_type === 'monthly' ? 'Monthly' : cat.target_type === 'balance' ? 'Balance' : cat.target_type === 'by_date' ? 'By Date' : 'Other'}</div>
+                                          <div className="font-semibold text-[#F0F9FF]">{formatCurrency(cat.target_amount)}</div>
+                                          <div className="text-xs text-[#F0F9FF]/75">{cat.target_type === 'monthly' ? 'Monthly' : cat.target_type === 'balance' ? 'Balance' : cat.target_type === 'by_date' ? 'By Date' : 'Other'}</div>
                                         </div>
                                       ) : (
-                                        <Button variant="secondary" onClick={() => handleSetGoal(cat)}>+ Set Goal</Button>
+                                        <Button variant="pmSecondary" onClick={() => handleSetGoal(cat)}>+ Set Goal</Button>
                                       )}
                                     </td>
                                   </tr>
                                 );
                               })
                             ) : (
-                              <tr className="border-t border-slate-800">
-                                <td colSpan="6" className="px-4 py-6 text-center text-sm text-slate-400">No categories found in this group.</td>
+                              <tr className="border-t border-white/25">
+                                <td colSpan="6" className="px-4 py-6 text-center text-sm text-[#F0F9FF]/75">No categories found in this group.</td>
                               </tr>
                             )}
 
                             {groupCategories.length > 0 && (
-                              <tr className="border-t border-slate-800 bg-slate-950/80">
-                                <td className="px-4 py-4 text-sm font-semibold text-slate-100">{group.name} Total</td>
-                                <td className="px-4 py-4 font-semibold text-slate-100">{formatCurrency(getGroupTotals(group.id).assigned)}</td>
-                                <td className="px-4 py-4 font-semibold text-slate-100">{formatCurrency(getGroupTotals(group.id).activity)}</td>
-                                <td className="px-4 py-4 font-semibold text-slate-100">{formatCurrency(getGroupTotals(group.id).available)}</td>
-                                <td className="px-4 py-4 text-sm text-slate-400">{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</td>
-                                <td className="px-4 py-4 text-slate-400">—</td>
+                              <tr className="border-t border-white/25 bg-[#0047AB]/95">
+                                <td className="px-4 py-4 text-sm font-semibold text-[#F0F9FF]">{group.name} Total</td>
+                                <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(getGroupTotals(group.id).assigned)}</td>
+                                <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(getGroupTotals(group.id).activity)}</td>
+                                <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(getGroupTotals(group.id).available)}</td>
+                                <td className="px-4 py-4 text-sm text-[#F0F9FF]/75">{formatCurrency(getGroupTotals(group.id).underfunded)} underfunded</td>
+                                <td className="px-4 py-4 text-[#F0F9FF]/75">—</td>
                               </tr>
                             )}
                           </React.Fragment>
@@ -1673,13 +1846,13 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                     );
                   })}
 
-                  <tr className="border-t border-slate-800 bg-slate-950/90">
-                    <td className="px-4 py-4 font-semibold text-white">Total</td>
-                    <td className="px-4 py-4 font-semibold text-white">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.assigned || 0), 0))}</td>
-                    <td className="px-4 py-4 font-semibold text-white">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.activity || 0), 0))}</td>
-                    <td className="px-4 py-4 font-semibold text-white">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.available || 0), 0))}</td>
-                    <td className="px-4 py-4 text-slate-400">—</td>
-                    <td className="px-4 py-4 text-slate-400">—</td>
+                  <tr className="border-t border-white/25 bg-[#0047AB]">
+                    <td className="px-4 py-4 font-semibold text-[#F0F9FF]">Total</td>
+                    <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.assigned || 0), 0))}</td>
+                    <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.activity || 0), 0))}</td>
+                    <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(budgetData.categories.filter(c => !c.archived).reduce((sum, cat) => sum + (cat.available || 0), 0))}</td>
+                    <td className="px-4 py-4 text-[#F0F9FF]/75">—</td>
+                    <td className="px-4 py-4 text-[#F0F9FF]/75">—</td>
                   </tr>
                 </tbody>
               </table>
@@ -1688,8 +1861,8 @@ Ready to Assign: $${totalCash - totalAssigned}`);
         </section>
       </div>
 
-      <aside className="space-y-6 min-w-0">
-        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40 min-w-0">
+      <aside className="space-y-6 min-w-0 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto xl:self-start xl:min-w-[18rem]">
+        <div className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35 min-w-0">
           <SummaryView
             totalAvailable={budgetSummary.totalAvailable}
             totalActivity={budgetSummary.totalActivity}
@@ -1702,11 +1875,11 @@ Ready to Assign: $${totalCash - totalAssigned}`);
           <div className="mt-3 text-sm text-rose-400">Underfunded: {formatCurrency(getTotalUnderfunded())}</div>
         </div>
 
-        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+        <div className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35">
           <AutoAssignView readyToAssign={budgetSummary.unassigned} underfundedTotal={getTotalUnderfunded()} underfundedCategories={calculateUnderfundedCategories()} />
         </div>
 
-        <div className="rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/40">
+        <div className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35">
           <FutureMonthsView futureAssignments={2340.50} nextMonthTarget={5000} monthsAhead={1.5} />
         </div>
       </aside>
@@ -1715,16 +1888,16 @@ Ready to Assign: $${totalCash - totalAssigned}`);
         <div style={styles.modalOverlay} onClick={() => setShowArchivedModal(false)}>
           <div style={{ ...styles.modalContent, maxWidth: '600px' }} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Archived Categories</h3>
-            <p style={{ color: '#9CA3AF', marginBottom: '1rem' }}>Archived categories are hidden from your budget but can be restored at any time.</p>
+            <p style={{ color: PM.textMuted, marginBottom: '1rem' }}>Archived categories are hidden from your budget but can be restored at any time.</p>
             {archivedCategories.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '2rem', color: '#6B7280' }}>No archived categories</div>
+              <div style={{ textAlign: 'center', padding: '2rem', color: PM.textMuted }}>No archived categories</div>
             ) : (
               <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
                 {archivedCategories.map(cat => (
-                  <div key={cat.id} style={{ padding: '1rem', borderBottom: '1px solid #374151', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div key={cat.id} style={{ padding: '1rem', borderBottom: `1px solid ${PM.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <div style={{ fontWeight: 'bold', color: 'white' }}>{cat.name}</div>
-                      <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
+                      <div style={{ fontWeight: 'bold', color: PM.text }}>{cat.name}</div>
+                      <div style={{ fontSize: '12px', color: PM.textMuted }}>
                         Original group: {categoryGroups.find(g => g.id === cat.original_group_id)?.name || 'Unknown'} | Archived: {new Date(cat.archived_at || Date.now()).toLocaleDateString()}
                       </div>
                     </div>
@@ -1826,490 +1999,40 @@ Ready to Assign: $${totalCash - totalAssigned}`);
     </div>
   );
 }
-// ==================== STYLES ====================
+// ==================== STYLES (modals — PM theme, no black)
 const styles = {
-  container: {
-    display: 'flex',
-    minHeight: '100%',
-    width: '100%',
-    backgroundColor: '#2563EB',
-    fontFamily: 'system-ui, -apple-system, sans-serif',
-    overflow: 'auto'
-  },
-  budgetTableContainer: {
-    flex: 3,
-    overflowY: 'auto',
-    padding: '24px',
-    borderRight: '1px solid #334155',
-    backgroundColor: '#2563EB',
-    minWidth: '0'
-  },
-  rightColumn: {
-    flex: 1.2,
-    padding: '24px',
-    overflowY: 'auto',
-    backgroundColor: '#1E3A8A',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px'
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: '24px',
-    flexWrap: 'wrap',
-    gap: '16px'
-  },
-  titleSection: {
-    flex: 1
-  },
-  title: {
-    fontSize: '28px',
-    fontWeight: '700',
-    background: 'linear-gradient(135deg, #60A5FA, #A78BFA)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-    margin: 0
-  },
-  description: {
-    color: '#CBD5E1',
-    fontSize: '14px',
-    marginTop: '4px'
-  },
-  controlsRow: {
-    display: 'flex',
-    gap: '12px',
-    alignItems: 'center',
-    flexWrap: 'wrap'
-  },
-  monthSelector: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    backgroundColor: '#1E3A8A',
-    padding: '6px 12px',
-    borderRadius: '12px'
-  },
-  monthNavButton: {
-    backgroundColor: '#334155',
-    border: 'none',
-    color: '#FFFFFF',
-    fontSize: '16px',
-    cursor: 'pointer',
-    padding: '4px 10px',
-    borderRadius: '8px',
-    transition: 'all 0.2s'
-  },
-  currentMonth: {
-    color: '#FFFFFF',
-    fontWeight: '500',
-    minWidth: '140px',
-    textAlign: 'center'
-  },
-  addGroupButton: {
-    backgroundColor: '#1E3A8A',
-    color: 'white',
-    border: 'none',
-    padding: '8px 16px',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    fontWeight: '500',
-    fontSize: '14px',
-    transition: 'background 0.2s'
-  },
-  archiveButton: {
-    padding: '0.5rem 1rem',
-    background: '#8B5CF6',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.5rem',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    fontSize: '14px',
-    fontWeight: '500'
-  },
-  quickBudgetTools: {
-    display: 'flex',
-    gap: '8px',
-    marginLeft: 'auto'
-  },
-  quickBudgetButton: {
-    padding: '6px 12px',
-    borderRadius: '6px',
-    fontSize: '12px',
-    fontWeight: '500',
-    border: 'none',
-    cursor: 'pointer',
-    transition: 'opacity 0.2s'
-  },
-  unassignedCard: {
-    backgroundColor: '#1E3A8A',
-    borderRadius: '16px',
-    padding: '20px',
-    marginBottom: '24px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '16px',
-    border: '1px solid #334155'
-  },
-  unassignedIcon: {
-    fontSize: '32px'
-  },
-  unassignedContent: {
-    flex: 1
-  },
-  unassignedLabel: {
-    color: '#94A3B8',
-    fontSize: '14px',
-    marginBottom: '4px'
-  },
-  unassignedValue: {
-    fontSize: '28px',
-    fontWeight: '700',
-    color: 'white'
-  },
-  unassignedSubtext: {
-    color: '#64748B',
-    fontSize: '12px',
-    marginTop: '4px'
-  },
-  tableContainer: {
-    overflowX: 'auto',
-    maxWidth: '100%',
-    borderRadius: '12px',
-    border: '1px solid #334155',
-    backgroundColor: '#2563EB'
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    backgroundColor: '#2563EB'
-  },
-  tableHead: {
-    backgroundColor: '#2563EB'
-  },
-  warningBanner: {
-    backgroundColor: '#7F1D1D',
-    borderRadius: '12px',
-    padding: '16px',
-    marginBottom: '20px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    border: '1px solid #F87171'
-  },
-  warningIcon: {
-    fontSize: '24px'
-  },
-  warningContent: {
-    flex: 1
-  },
-  warningText: {
-    fontSize: '12px',
-    color: '#FCA5A5',
-    marginTop: '4px'
-  },
-  warningButton: {
-    padding: '6px 12px',
-    backgroundColor: '#EF4444',
-    color: 'white',
-    border: 'none',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: '500'
-  },
-  tableHeader: {
-    padding: '12px 16px',
-    textAlign: 'left',
-    color: '#94A3B8',
-    fontSize: '12px',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-    borderBottom: '1px solid #1E3A8A'
-  },
-  categoryGroupRow: {
-    backgroundColor: '#1E3A8A'
-  },
-  categoryGroupCell: {
-    padding: '12px 16px',
-    borderBottom: '1px solid #1E3A8A'
-  },
-  groupHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  categoryGroupName: {
-    fontWeight: '600',
-    color: '#FFFFFF',
-    fontSize: '16px'
-  },
-  groupActions: {
-    display: 'flex',
-    gap: '8px'
-  },
-  addCategoryButton: {
-    backgroundColor: '#10B981',
-    border: 'none',
-    color: 'white',
-    width: '24px',
-    height: '24px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '14px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  editGroupButton: {
-    backgroundColor: '#1E3A8A',
-    border: 'none',
-    color: 'white',
-    width: '24px',
-    height: '24px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  deleteGroupButton: {
-    backgroundColor: '#EF4444',
-    border: 'none',
-    color: 'white',
-    width: '24px',
-    height: '24px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  categoryRow: {
-    borderBottom: '1px solid #334155',
-    transition: 'background 0.2s'
-  },
-  categoryCell: {
-    padding: '12px 16px'
-  },
-  categoryName: {
-    color: '#FFFFFF',
-    fontSize: '14px',
-    fontWeight: '500'
-  },
-  categoryActions: {
-    display: 'inline-flex',
-    gap: '6px',
-    marginLeft: '12px'
-  },
-  editCategoryButton: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '14px',
-    padding: '2px 4px',
-    borderRadius: '4px'
-  },
-  goalButton: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '14px',
-    padding: '2px 4px',
-    borderRadius: '4px'
-  },
-  deleteCategoryButton: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '14px',
-    padding: '2px 4px',
-    borderRadius: '4px'
-  },
-  archiveCategoryButton: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '14px',
-    padding: '2px 4px',
-    borderRadius: '4px'
-  },
-  targetIndicator: {
-    fontSize: '12px',
-    marginLeft: '8px'
-  },
-  amountCell: {
-    padding: '12px 16px',
-    textAlign: 'right',
-    color: '#FFFFFF',
-    fontSize: '14px'
-  },
-  progressCell: {
-    padding: '12px 16px',
-    width: '140px',
-    minWidth: '140px',
-    maxWidth: '140px',
-    verticalAlign: 'middle',
-  },
-  progressWrapper: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-    width: '100%',
-  },
-  progressBarContainer: {
-    backgroundColor: '#1E3A8A',
-    borderRadius: '10px',
-    height: '20px',
-    position: 'relative',
-    overflow: 'hidden',
-    width: '100%',
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: '10px',
-    transition: 'width 0.3s ease'
-  },
-  progressText: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
-    fontSize: '10px',
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    whiteSpace: 'nowrap',
-  },
-  progressStatus: {
-    fontSize: '10px',
-    color: '#F59E0B',
-    textAlign: 'center',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  groupTotalRow: {
-    backgroundColor: '#1E3A8A',
-    borderTop: '1px solid #334155'
-  },
-  groupTotalCell: {
-    padding: '10px 16px',
-    color: '#94A3B8',
-    fontSize: '13px'
-  },
-  groupTotalAmount: {
-    padding: '10px 16px',
-    textAlign: 'right',
-    color: '#FFFFFF',
-    fontSize: '13px'
-  },
-  emptyGroupRow: {
-    backgroundColor: '#1E3A8A'
-  },
-  emptyGroupCell: {
-    padding: '24px',
-    textAlign: 'center',
-    color: '#64748B',
-    fontStyle: 'italic'
-  },
-  totalRow: {
-    backgroundColor: '#1E3A8A',
-    borderTop: '2px solid #334155'
-  },
-  totalCell: {
-    padding: '14px 16px',
-    fontWeight: '700',
-    color: '#FFFFFF',
-    fontSize: '14px'
-  },
-  totalAmount: {
-    padding: '14px 16px',
-    textAlign: 'right',
-    fontWeight: '700',
-    color: '#60A5FA',
-    fontSize: '14px'
-  },
-  editInput: {
-    backgroundColor: '#1E3A8A',
-    border: '1px solid #4B5563',
-    color: '#FFFFFF',
-    padding: '6px 8px',
-    borderRadius: '6px',
-    fontSize: '13px',
-    width: '100px',
-    textAlign: 'right'
-  },
-  editSelect: {
-    backgroundColor: '#1E3A8A',
-    border: '1px solid #4B5563',
-    color: '#FFFFFF',
-    padding: '6px 8px',
-    borderRadius: '6px',
-    fontSize: '12px',
-    width: '100%',
-    marginBottom: '4px'
-  },
-  editActions: {
-    display: 'flex',
-    gap: '8px',
-    justifyContent: 'center'
-  },
-  saveEditButton: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '16px'
-  },
-  cancelEditButton: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '16px'
-  },
-  loading: {
-    textAlign: 'center',
-    padding: '48px',
-    color: '#94A3B8'
-  },
   modalOverlay: {
     position: 'fixed',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: PM.overlay,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000
   },
   modalContent: {
-    backgroundColor: '#1E3A8A',
+    backgroundColor: PM.fg,
     borderRadius: '16px',
     padding: '24px',
     width: '90%',
     maxWidth: '500px',
-    border: '1px solid #334155'
+    border: '1px solid ' + PM.border,
+    boxShadow: PM.shadow,
+    color: PM.text
   },
   modalTitle: {
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '20px',
     fontWeight: '600',
     marginBottom: '20px'
   },
-  formGroup: {
-    marginBottom: '16px'
-  },
+  formGroup: { marginBottom: '16px' },
   label: {
     display: 'block',
-    color: '#94A3B8',
+    color: PM.textMuted,
     fontSize: '13px',
     marginBottom: '6px',
     fontWeight: '500'
@@ -2317,20 +2040,20 @@ const styles = {
   input: {
     width: '100%',
     padding: '10px 12px',
-    backgroundColor: '#1E3A8A',
-    border: '1px solid #334155',
+    backgroundColor: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '8px',
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '14px',
     boxSizing: 'border-box'
   },
   select: {
     width: '100%',
     padding: '10px 12px',
-    backgroundColor: '#1E3A8A',
-    border: '1px solid #334155',
+    backgroundColor: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '8px',
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '14px',
     boxSizing: 'border-box'
   },
@@ -2341,168 +2064,31 @@ const styles = {
     marginTop: '24px'
   },
   saveButton: {
-    backgroundColor: '#10B981',
-    color: 'white',
-    border: 'none',
+    backgroundColor: PM.bg,
+    color: PM.text,
+    border: '1px solid ' + PM.border,
     padding: '8px 20px',
     borderRadius: '8px',
     cursor: 'pointer',
-    fontWeight: '500'
+    fontWeight: '600'
   },
   cancelButton: {
-    backgroundColor: '#EF4444',
-    color: 'white',
-    border: 'none',
+    backgroundColor: 'rgba(220, 38, 38, 0.9)',
+    color: PM.text,
+    border: '1px solid ' + PM.border,
     padding: '8px 20px',
     borderRadius: '8px',
     cursor: 'pointer',
-    fontWeight: '500'
+    fontWeight: '600'
   },
   restoreButton: {
     padding: '6px 12px',
-    background: '#10B981',
-    color: 'white',
-    border: 'none',
+    backgroundColor: PM.bg,
+    color: PM.text,
+    border: '1px solid ' + PM.border,
     borderRadius: '4px',
     cursor: 'pointer',
-    fontWeight: '500'
-  },
-  goalCell: {
-    padding: '12px 16px',
-    width: '120px',
-    minWidth: '120px',
-    maxWidth: '120px',
-    verticalAlign: 'middle',
-  },
-  goalTargetWrapper: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '4px',
-    width: '100%',
-  },
-  goalTargetAmount: {
-    fontSize: '14px',
-    fontWeight: '600',
-    color: '#60A5FA',
-    textAlign: 'center',
-    whiteSpace: 'nowrap',
-  },
-  goalTypeIndicator: {
-    fontSize: '10px',
-    color: '#94A3B8',
-    textAlign: 'center',
-    whiteSpace: 'nowrap',
-  },
-  goalDateSmall: {
-    fontSize: '9px',
-    color: '#F59E0B',
-    marginLeft: '4px',
-  },
-  goalInfo: {
-    fontSize: '12px',
-    color: '#94A3B8'
-  },
-  goalTarget: {
-    fontWeight: '500',
-    color: '#60A5FA',
-    marginBottom: '4px'
-  },
-  goalDate: {
-    fontSize: '11px',
-    color: '#F59E0B'
-  },
-  goalBalance: {
-    fontSize: '11px',
-    color: '#4ADE80'
-  },
-  goalShortfall: {
-    fontSize: '11px',
-    color: '#EF4444'
-  },
-  monthlyNeeded: {
-    fontSize: '10px',
-    color: '#F59E0B',
-    marginTop: '2px'
-  },
-  goalDetailText: {
-    fontSize: '11px',
-    marginTop: '4px',
-    color: '#94A3B8'
-  },
-  noGoalIndicator: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '4px'
-  },
-  quickSetGoalButton: {
-    background: 'none',
-    border: '1px dashed #4B5563',
-    color: '#60A5FA',
-    fontSize: '10px',
-    padding: '2px 8px',
-    borderRadius: '12px',
-    cursor: 'pointer',
-    transition: 'all 0.2s'
-  },
-  noGoalCell: {
-    color: '#64748B',
-    textAlign: 'center',
-    fontSize: '14px'
-  },
-  goalSummaryCard: {
-    backgroundColor: '#1E3A8A',
-    borderRadius: '12px',
-    padding: '16px',
-    border: '1px solid #334155',
-    marginBottom: '20px'
-  },
-  goalSummaryTitle: {
-    color: '#FFFFFF',
-    fontSize: '16px',
-    fontWeight: '600',
-    marginBottom: '12px'
-  },
-  goalSummaryStats: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px'
-  },
-  goalSummaryProgress: {
-    marginBottom: '8px'
-  },
-  goalSummaryLabel: {
-    color: '#94A3B8',
-    fontSize: '12px',
-    marginBottom: '4px'
-  },
-  goalSummaryPercentage: {
-    color: '#8B5CF6',
-    fontSize: '24px',
-    fontWeight: '700',
-    marginBottom: '8px'
-  },
-  goalSummaryBreakdown: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    padding: '12px 0',
-    borderTop: '1px solid #334155',
-    borderBottom: '1px solid #334155'
-  },
-  goalStat: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '4px',
-    fontSize: '12px',
-    color: '#94A3B8'
-  },
-  goalSummaryTotal: {
-    fontSize: '12px',
-    color: '#60A5FA',
-    textAlign: 'center',
-    paddingTop: '8px'
+    fontWeight: '600'
   }
 };
 

@@ -208,7 +208,7 @@ const MoneyMapView = () => {
 const styles = {
   container: {
     padding: '2rem',
-    color: 'white'
+    color: '#0047AB'
   },
   title: {
     fontSize: '2rem',
@@ -256,7 +256,7 @@ const styles = {
     marginBottom: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
@@ -264,7 +264,7 @@ const styles = {
   summaryLabel: {
     display: 'block',
     fontSize: '0.875rem',
-    color: '#9CA3AF',
+    color: 'rgba(255,255,255,0.75)',
     marginBottom: '0.5rem'
   },
   summaryValue: {
@@ -273,7 +273,7 @@ const styles = {
     color: 'white'
   },
   section: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     padding: '1.5rem',
     marginBottom: '2rem',
@@ -295,7 +295,7 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem'
   },
   accountName: {
@@ -356,7 +356,7 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     borderRadius: '0.5rem',
     marginBottom: '0.5rem'
   },

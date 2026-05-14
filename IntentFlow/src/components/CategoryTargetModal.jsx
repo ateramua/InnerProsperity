@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import PM from '../constants/pmTheme.js';
 
 const CategoryTargetModal = ({ 
   isOpen, 
@@ -187,21 +188,23 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: PM.overlay,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000
   },
   modalContent: {
-    backgroundColor: '#1E3A8A',
+    backgroundColor: PM.fg,
     borderRadius: '16px',
     padding: '24px',
     width: '90%',
     maxWidth: '500px',
-    border: '1px solid #334155',
+    border: '1px solid ' + PM.border,
     maxHeight: '90vh',
-    overflowY: 'auto'
+    overflowY: 'auto',
+    boxShadow: PM.shadow,
+    color: PM.text
   },
   modalHeader: {
     display: 'flex',
@@ -210,7 +213,7 @@ const styles = {
     marginBottom: '20px'
   },
   modalTitle: {
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '20px',
     fontWeight: '600',
     margin: 0
@@ -218,7 +221,7 @@ const styles = {
   closeButton: {
     background: 'none',
     border: 'none',
-    color: '#94A3B8',
+    color: PM.textMuted,
     fontSize: '20px',
     cursor: 'pointer',
     padding: '4px 8px'
@@ -228,7 +231,7 @@ const styles = {
   },
   label: {
     display: 'block',
-    color: '#94A3B8',
+    color: PM.textMuted,
     fontSize: '13px',
     marginBottom: '8px',
     fontWeight: '500'
@@ -236,15 +239,15 @@ const styles = {
   select: {
     width: '100%',
     padding: '10px 12px',
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
+    backgroundColor: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '8px',
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '14px',
     boxSizing: 'border-box'
   },
   helperText: {
-    color: '#64748B',
+    color: PM.textMuted,
     fontSize: '12px',
     marginTop: '6px',
     lineHeight: '1.4'
@@ -257,53 +260,54 @@ const styles = {
   currencySymbol: {
     position: 'absolute',
     left: '12px',
-    color: '#94A3B8',
+    color: PM.textMuted,
     fontSize: '14px'
   },
   amountInput: {
     width: '100%',
     padding: '10px 12px 10px 28px',
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
+    backgroundColor: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '8px',
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '14px',
     boxSizing: 'border-box'
   },
   input: {
     width: '100%',
     padding: '10px 12px',
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
+    backgroundColor: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '8px',
-    color: '#FFFFFF',
+    color: PM.text,
     fontSize: '14px',
     boxSizing: 'border-box'
   },
   calculationHint: {
     marginTop: '8px',
     padding: '8px',
-    backgroundColor: '#0F172A',
+    backgroundColor: PM.bg,
     borderRadius: '6px',
-    color: '#60A5FA',
+    color: '#0047AB',
     fontSize: '12px'
   },
   currentBalanceHint: {
     marginTop: '-10px',
     marginBottom: '16px',
     padding: '8px',
-    backgroundColor: '#0F172A',
+    backgroundColor: PM.bg,
     borderRadius: '6px',
-    color: '#94A3B8',
+    color: '#0047AB',
     fontSize: '12px'
   },
   errorMessage: {
     padding: '10px',
-    backgroundColor: '#7F1D1D',
+    backgroundColor: 'rgba(220, 38, 38, 0.15)',
     borderRadius: '8px',
-    color: '#FCA5A5',
+    color: '#FECACA',
     fontSize: '13px',
-    marginBottom: '16px'
+    marginBottom: '16px',
+    border: '1px solid rgba(252, 165, 165, 0.5)'
   },
   modalActions: {
     display: 'flex',
@@ -312,33 +316,33 @@ const styles = {
     marginTop: '24px'
   },
   saveButton: {
-    backgroundColor: '#10B981',
-    color: 'white',
-    border: 'none',
+    backgroundColor: PM.bg,
+    color: PM.text,
+    border: '1px solid ' + PM.border,
     padding: '8px 20px',
     borderRadius: '8px',
     cursor: 'pointer',
-    fontWeight: '500'
+    fontWeight: '600'
   },
   cancelButton: {
-    backgroundColor: '#374151',
-    color: 'white',
-    border: 'none',
+    backgroundColor: 'rgba(220, 38, 38, 0.88)',
+    color: PM.text,
+    border: '1px solid ' + PM.border,
     padding: '8px 20px',
     borderRadius: '8px',
     cursor: 'pointer',
-    fontWeight: '500'
+    fontWeight: '600'
   },
   removeTargetSection: {
     marginTop: '20px',
     paddingTop: '20px',
-    borderTop: '1px solid #334155',
+    borderTop: '1px solid ' + PM.border,
     textAlign: 'center'
   },
   removeButton: {
     backgroundColor: 'transparent',
-    color: '#EF4444',
-    border: '1px solid #EF4444',
+    color: '#FECACA',
+    border: '1px solid rgba(252, 165, 165, 0.6)',
     padding: '6px 16px',
     borderRadius: '6px',
     cursor: 'pointer',

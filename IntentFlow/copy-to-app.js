@@ -4,7 +4,7 @@ const path = require('path');
 
 // Source and destination paths
 const outDir = path.join(__dirname, '../out');
-const releaseAppPath = path.join(__dirname, '../release/mac-arm64/Money Manager.app/Contents/Resources/out');
+const releaseAppPath = path.join(__dirname, '../release/mac-arm64/IntentFlow.app/Contents/Resources/out');
 
 console.log('📁 Copying out directory to app bundle...');
 
@@ -34,7 +34,7 @@ function copyDir(src, dest) {
 }
 
 // Check if release app exists
-const releaseAppDir = path.join(__dirname, '../release/mac-arm64/Money Manager.app');
+const releaseAppDir = path.join(__dirname, '../release/mac-arm64/IntentFlow.app');
 if (!fs.existsSync(releaseAppDir)) {
   console.log('⚠️ Release app not found. Run electron-builder first.');
   process.exit(0);

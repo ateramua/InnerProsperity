@@ -33,30 +33,8 @@ const AutoAssignView = ({ readyToAssign = 1250.57 }) => {
     // You would call a parent callback here
   };
 
-  // Debug: confirm rendering
-  console.log('🔥🔥🔥 AutoAssignView is DEFINITELY rendering!');
-
   return (
-    <div
-      style={{
-        border: '5px solid red',
-        padding: '20px',
-        margin: '20px 0',
-        background: 'rgba(255,0,0,0.2)',
-      }}
-    >
-      <div
-        style={{
-          color: 'white',
-          fontSize: '20px',
-          fontWeight: 'bold',
-          marginBottom: '10px',
-        }}
-      >
-        🔥 AUTO-ASSIGN VIEW SHOULD BE HERE 🔥
-      </div>
-
-      <section style={styles.card}>
+    <section style={styles.card}>
         {/* Card Header */}
         <button style={styles.cardRollup} onClick={() => setIsExpanded(!isExpanded)}>
           <span style={styles.rollupIcon}>{isExpanded ? '▼' : '►'}</span>
@@ -148,16 +126,15 @@ const AutoAssignView = ({ readyToAssign = 1250.57 }) => {
           </div>
         )}
       </section>
-    </div>
   );
 };
 
 const styles = {
   card: {
     width: '100%',
-    background: '#0A2472',
+    background: '#0047AB',
     borderRadius: '0.75rem',
-    border: '1px solid #374151',
+    border: '1px solid rgba(255,255,255,0.28)',
     overflow: 'hidden',
   },
   cardRollup: {
@@ -166,10 +143,10 @@ const styles = {
     gap: '0.5rem',
     width: '100%',
     padding: '1rem',
-    background: '#0A2472',
+    background: '#0047AB',
     border: 'none',
-    borderBottom: '1px solid #374151',
-    color: 'white',
+    borderBottom: '1px solid rgba(255,255,255,0.28)',
+    color: '#F0F9FF',
     fontSize: '0.95rem',
     fontWeight: '500',
     cursor: 'pointer',
@@ -177,7 +154,7 @@ const styles = {
   },
   rollupIcon: {
     fontSize: '0.75rem',
-    color: '#9CA3AF',
+    color: 'rgba(240,249,255,0.75)',
   },
   rollupText: {
     flex: 1,
@@ -194,8 +171,8 @@ const styles = {
     width: '36px',
     height: '36px',
     borderRadius: '50%',
-    background: '#0A2472',
-    border: '2px solid #374151',
+    background: '#3B82F6',
+    border: '2px solid rgba(255,255,255,0.35)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
@@ -204,14 +181,14 @@ const styles = {
     transition: 'all 0.2s ease',
   },
   strategyIconActive: {
-    borderColor: '#3B82F6',
-    background: 'rgba(59, 130, 246, 0.2)',
+    borderColor: '#F0F9FF',
+    background: 'rgba(59, 130, 246, 0.45)',
   },
   strategyEmoji: {
     fontSize: '1.2rem',
   },
   previewContainer: {
-    background: '#0A2472',
+    background: '#3B82F6',
     borderRadius: '0.5rem',
     padding: '1rem',
     marginBottom: '1rem',
@@ -225,13 +202,13 @@ const styles = {
   previewTitle: {
     fontSize: '0.9rem',
     fontWeight: '500',
-    color: '#9CA3AF',
+    color: '#0047AB',
   },
   applyButton: {
     padding: '0.25rem 0.75rem',
-    background: '#3B82F6',
-    color: 'white',
-    border: 'none',
+    background: '#0047AB',
+    color: '#F0F9FF',
+    border: '1px solid rgba(255,255,255,0.28)',
     borderRadius: '0.25rem',
     fontSize: '0.75rem',
     cursor: 'pointer',
@@ -242,7 +219,7 @@ const styles = {
   },
   categoryHeaderText: {
     fontSize: '0.85rem',
-    color: '#9CA3AF',
+    color: 'rgba(240,249,255,0.8)',
   },
   categoryList: {
     listStyle: 'none',
@@ -254,11 +231,11 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.5rem 0',
-    borderBottom: '1px solid #374151',
+    borderBottom: '1px solid rgba(255,255,255,0.22)',
   },
   categoryName: {
     fontSize: '0.9rem',
-    color: '#F3F4F6',
+    color: '#F0F9FF',
   },
   categoryAmount: {
     fontSize: '0.9rem',
@@ -270,13 +247,13 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.75rem',
-    background: '#0A2472',
+    background: '#3B82F6',
     borderRadius: '0.5rem',
     marginTop: '0.5rem',
   },
   readyLabel: {
     fontSize: '0.875rem',
-    color: '#9CA3AF',
+    color: '#0047AB',
   },
   readyAmount: {
     fontSize: '1rem',

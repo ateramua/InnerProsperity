@@ -94,7 +94,7 @@ const styles = {
     marginBottom: '2rem'
   },
   placeholder: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     padding: '3rem',
     textAlign: 'center',
@@ -111,7 +111,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     padding: '1.5rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     gap: '1rem',
     border: '1px solid #374151'
@@ -152,7 +152,7 @@ const styles = {
     marginTop: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.5rem',
     borderRadius: '0.75rem',
     borderLeft: '4px solid #F59E0B'

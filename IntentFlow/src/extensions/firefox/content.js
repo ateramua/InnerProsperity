@@ -1,10 +1,10 @@
 // content.js - Firefox/Manifest V2 Version
-// Money Manager Extension - Content Script
+// IntentFlow Extension - Content Script
 
 (function() {
     'use strict';
     
-    console.log('💰 Money Manager extension (Firefox) loaded on:', window.location.hostname);
+    console.log('💰 IntentFlow extension (Firefox) loaded on:', window.location.hostname);
     
     // ==================== CONFIGURATION ====================
     const CONFIG = {
@@ -198,7 +198,7 @@
                     }
                 }));
                 console.log('📤 Sent via WebSocket:', data);
-                showNotification('Transaction detected!', 'Click to add to Money Manager');
+                showNotification('Transaction detected!', 'Click to add to IntentFlow');
                 return true;
             }
             
@@ -379,7 +379,7 @@
             const ws = new WebSocket(`ws://${CONFIG.desktopAppHost}:${CONFIG.desktopAppPort}`);
             
             ws.onopen = () => {
-                console.log('🔌 Connected to Money Manager desktop app');
+                console.log('🔌 Connected to IntentFlow desktop app');
                 window.moneyManagerWS = ws;
                 
                 // Send any queued offline data
@@ -483,7 +483,7 @@
         
         const btn = document.createElement('div');
         btn.className = 'mm-quick-add-btn';
-        btn.innerHTML = '💰 Add to Money Manager';
+        btn.innerHTML = '💰 Add to IntentFlow';
         btn.style.cssText = `
             position: fixed;
             left: ${x + 10}px;
@@ -532,7 +532,7 @@
      * Initialize extension
      */
     function init() {
-        console.log('🚀 Initializing Money Manager content script (Firefox)...');
+        console.log('🚀 Initializing IntentFlow content script (Firefox)...');
         
         // Initial detection
         setTimeout(() => {
@@ -569,7 +569,7 @@
             }
         });
         
-        console.log('✅ Money Manager content script (Firefox) ready');
+        console.log('✅ IntentFlow content script (Firefox) ready');
     }
     
     // Start the extension when DOM is ready

@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "name": "Money Manager Companion",
+  "name": "IntentFlow Companion",
   "version": "1.0.0",
   "description": "Quick capture transactions and manage your money from any webpage",
   "permissions": [
@@ -18,7 +18,7 @@
   },
   "browser_action": {
     "default_popup": "popup.html",
-    "default_title": "Money Manager",
+    "default_title": "IntentFlow",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -44,7 +44,7 @@
         "default": "Ctrl+Shift+M",
         "mac": "Command+Shift+M"
       },
-      "description": "Open Money Manager popup"
+      "description": "Open IntentFlow popup"
     }
   }
 }

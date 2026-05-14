@@ -1,5 +1,7 @@
 // src/services/payeeService.cjs
 const { getDatabase } = require('../db/database.cjs');
+const { getDatabasePath } = require('../db/database.config.js');
+const TransactionService = require('./transactions/transactionService.cjs');
 
 class PayeeService {
   /**
@@ -201,14 +203,23 @@ class PayeeService {
         UPDATE transactions SET linked_transaction_id = ? WHERE id = ?
       `, [sourceResult.lastID, destinationResult.lastID]);
 
-      // 4. Update account balances
-      const sourceNewBalance = (sourceAccount.balance || 0) + sourceBalanceChange;
-      const destinationNewBalance = (destinationAccount.balance || 0) + destinationBalanceChange;
-
-      await database.run('UPDATE accounts SET balance = ?, updated_at = unixepoch() WHERE id = ?', [sourceNewBalance, sourceAccountId]);
-      await database.run('UPDATE accounts SET balance = ?, updated_at = unixepoch() WHERE id = ?', [destinationNewBalance, destinationAccountId]);
-
       await database.run('COMMIT');
+
+      const txSvc = new TransactionService(getDatabasePath());
+      await txSvc.updateAccountBalances(sourceAccountId);
+      await txSvc.updateAccountBalances(destinationAccountId);
+
+      const dbAfter = await getDatabase();
+      const srcRow = await dbAfter.get(
+        'SELECT balance, working_balance FROM accounts WHERE id = ?',
+        [sourceAccountId]
+      );
+      const dstRow = await dbAfter.get(
+        'SELECT balance, working_balance FROM accounts WHERE id = ?',
+        [destinationAccountId]
+      );
+      const sourceNewBalance = Number(srcRow?.balance) || 0;
+      const destinationNewBalance = Number(dstRow?.balance) || 0;
 
       return {
         success: true,
@@ -260,7 +271,6 @@ class PayeeService {
     try {
       const oldAmount = transaction.amount;
       const newAmount = updates.amount !== undefined ? updates.amount : oldAmount;
-      const amountDifference = newAmount - oldAmount;
       
       // Update source transaction
       const sourceUpdateFields = [];
@@ -321,23 +331,11 @@ class PayeeService {
         );
       }
       
-      // Update account balances if amount changed
-      if (updates.amount !== undefined && amountDifference !== 0) {
-        const sourceAccount = await database.get('SELECT * FROM accounts WHERE id = ?', [transaction.account_id]);
-        const destinationAccount = await database.get('SELECT * FROM accounts WHERE id = ?', [linkedTransaction.account_id]);
-        
-        if (sourceAccount) {
-          const newSourceBalance = (sourceAccount.balance || 0) + amountDifference;
-          await database.run('UPDATE accounts SET balance = ?, updated_at = unixepoch() WHERE id = ?', [newSourceBalance, sourceAccount.id]);
-        }
-        
-        if (destinationAccount) {
-          const newDestBalance = (destinationAccount.balance || 0) - amountDifference;
-          await database.run('UPDATE accounts SET balance = ?, updated_at = unixepoch() WHERE id = ?', [newDestBalance, destinationAccount.id]);
-        }
-      }
-      
       await database.run('COMMIT');
+
+      const txSvc = new TransactionService(getDatabasePath());
+      await txSvc.updateAccountBalances(transaction.account_id);
+      await txSvc.updateAccountBalances(linkedTransaction.account_id);
       
       return { success: true, data: { id: transactionId, linkedId: linkedTransaction.id } };
     } catch (error) {
@@ -361,17 +359,22 @@ class PayeeService {
     if (!transaction) {
       throw new Error('Transaction not found');
     }
-    
+
+    const sourceAccountId = transaction.account_id;
     let linkedId = transaction.linked_transaction_id;
-    
-    // If this transaction doesn't have a linked ID, check if it's the destination
-    if (!linkedId) {
+    let peerAccountId = null;
+
+    if (linkedId) {
+      const peer = await database.get('SELECT account_id FROM transactions WHERE id = ?', [linkedId]);
+      if (peer) peerAccountId = peer.account_id;
+    } else {
       const linked = await database.get(
-        'SELECT id FROM transactions WHERE linked_transaction_id = ? AND user_id = ?',
+        'SELECT id, account_id FROM transactions WHERE linked_transaction_id = ? AND user_id = ?',
         [transactionId, userId]
       );
       if (linked) {
         linkedId = linked.id;
+        peerAccountId = linked.account_id;
       }
     }
     
@@ -385,6 +388,10 @@ class PayeeService {
       await database.run('DELETE FROM transactions WHERE id = ?', [transactionId]);
       
       await database.run('COMMIT');
+
+      const txSvc = new TransactionService(getDatabasePath());
+      await txSvc.updateAccountBalances(sourceAccountId);
+      if (peerAccountId) await txSvc.updateAccountBalances(peerAccountId);
       
       return { success: true, data: { deletedIds: [transactionId, linkedId].filter(Boolean) } };
     } catch (error) {

@@ -62,8 +62,9 @@ function resolvePreloadPath() {
     return devPath;
 }
 
-const PRELOAD_PATH = resolvePreloadPath();
-const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+// Packaged apps must always load the static export from disk (never localhost), even if
+// NODE_ENV was left as "development" when launching the .app from a terminal.
+const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 
 // ==================== HELPER FUNCTIONS FOR PACKAGED APP ====================
 function getAppPath() {
@@ -73,11 +74,127 @@ function getAppPath() {
     return path.resolve(__dirname, '../..');
 }
 
-function getProductionFilePath(relativePath) {
+function getOutRootDir() {
     if (app.isPackaged) {
-        return path.join(process.resourcesPath, 'out', relativePath);
+        return path.join(process.resourcesPath, 'out');
     }
-    return path.join(__dirname, '../../out', relativePath);
+    return path.join(__dirname, '../../out');
+}
+
+function getProductionFilePath(relativePath) {
+    return path.join(getOutRootDir(), relativePath);
+}
+
+function fileUrlToFilesystemPath(urlString) {
+    try {
+        const u = new URL(urlString);
+        let p = decodeURIComponent(u.pathname.replace(/\+/g, ' '));
+        if (process.platform === 'win32') {
+            if (/^\/[A-Za-z]:/.test(p)) {
+                p = p.substring(1);
+            }
+            p = p.replace(/\//g, path.sep);
+        }
+        return path.normalize(p);
+    } catch {
+        return null;
+    }
+}
+
+function isPathInsideDir(dir, candidate) {
+    const base = path.normalize(dir);
+    const abs = path.normalize(candidate);
+    const rel = path.relative(base, abs);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * Map a file:// navigation target to an existing Next static-export HTML file under out/.
+ */
+function resolveStaticHtmlFromFileUrl(urlString) {
+    const fsPath = fileUrlToFilesystemPath(urlString);
+    if (!fsPath) {
+        return getProductionFilePath('index.html');
+    }
+    const outRoot = getOutRootDir();
+    if (!isPathInsideDir(outRoot, fsPath)) {
+        return getProductionFilePath('index.html');
+    }
+    const rel = path.relative(outRoot, fsPath);
+    const segs = rel.split(path.sep).filter(Boolean);
+
+    if (segs[0] === 'accounts') {
+        if (segs.length === 1 || (segs.length === 2 && segs[1] === 'index.html')) {
+            return getProductionFilePath(path.join('accounts', 'index.html'));
+        }
+        const second = segs[1];
+        if (second === '[id]') {
+            const deep = path.join(outRoot, 'accounts', '[id]', ...segs.slice(2));
+            if (fs.existsSync(deep) && deep.endsWith('.html')) {
+                return deep;
+            }
+            const idx = path.join(outRoot, 'accounts', '[id]', ...segs.slice(2, -1), 'index.html');
+            if (fs.existsSync(idx)) {
+                return idx;
+            }
+            return path.join(outRoot, 'accounts', '[id]', 'index.html');
+        }
+        if (second !== 'index.html') {
+            if (segs[2] === 'edit') {
+                return path.join(outRoot, 'accounts', '[id]', 'edit', 'index.html');
+            }
+            if (segs[2] === 'reconcile') {
+                return path.join(outRoot, 'accounts', '[id]', 'reconcile', 'index.html');
+            }
+            return path.join(outRoot, 'accounts', '[id]', 'index.html');
+        }
+    }
+
+    if (fs.existsSync(fsPath) && fsPath.endsWith('.html')) {
+        return fsPath;
+    }
+    if (fs.existsSync(path.join(fsPath, 'index.html'))) {
+        return path.join(fsPath, 'index.html');
+    }
+    if (segs.length && !fsPath.endsWith('.html')) {
+        const idx = path.join(outRoot, rel, 'index.html');
+        if (fs.existsSync(idx)) {
+            return idx;
+        }
+    }
+    return getProductionFilePath('index.html');
+}
+
+/**
+ * Map an in-app route (e.g. /accounts/uuid) to a static export HTML file for file:// mode.
+ */
+function routePathToStaticHtml(routePath) {
+    const raw = String(routePath || '').split('?')[0];
+    const trimmed = raw.replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!trimmed) {
+        return getProductionFilePath('index.html');
+    }
+    const parts = trimmed.split('/').filter(Boolean);
+    if (parts[0] === 'accounts') {
+        if (parts.length === 1) {
+            return getProductionFilePath(path.join('accounts', 'index.html'));
+        }
+        if (parts[1] === 'edit' || parts[1] === 'reconcile') {
+            return getProductionFilePath('index.html');
+        }
+        if (parts.length >= 3 && parts[2] === 'edit') {
+            return path.join(getOutRootDir(), 'accounts', '[id]', 'edit', 'index.html');
+        }
+        if (parts.length >= 3 && parts[2] === 'reconcile') {
+            return path.join(getOutRootDir(), 'accounts', '[id]', 'reconcile', 'index.html');
+        }
+        return path.join(getOutRootDir(), 'accounts', '[id]', 'index.html');
+    }
+    const candidate = path.join(getOutRootDir(), ...parts, 'index.html');
+    if (fs.existsSync(candidate)) {
+        return candidate;
+    }
+    return getProductionFilePath('index.html');
 }
 
 function requireModule(modulePath) {
@@ -165,7 +282,53 @@ const ValidationService = requireModule('../services/forecast/validationService.
     async calculateConfidenceScore(userId, categoryId) { return 0; }
 };
 
-const updateService = requireModule('../services/realtime/updateService.cjs') || { publish: () => { } };
+const updateService = requireModule('../services/realtime/updateService.cjs') || { publish: () => { }, subscribe: () => () => {} };
+
+/** Forward updateService events to renderer windows (preload listens on `update:${eventType}`). */
+(function bridgeUpdateServiceEventsToRenderer() {
+    if (!updateService || typeof updateService.subscribe !== 'function') {
+        console.warn('⚠️ updateService.subscribe missing; real-time budget refresh bridge disabled');
+        return;
+    }
+    const forward = (eventType) => (data) => {
+        try {
+            for (const win of BrowserWindow.getAllWindows()) {
+                if (win.isDestroyed()) continue;
+                const wc = win.webContents;
+                if (wc && !wc.isDestroyed()) {
+                    wc.send(`update:${eventType}`, data);
+                }
+            }
+        } catch (e) {
+            console.warn(`bridgeUpdateServiceEventsToRenderer(${eventType}):`, e?.message || e);
+        }
+    };
+    [
+        'prosperity:updated',
+        'forecast:updated',
+        'transaction:added',
+        'transaction:updated',
+        'transaction:deleted',
+        'budget:assigned',
+        'budget:moved',
+        'category:updated',
+        'category:created',
+        'category:deleted',
+        'categoryGroups:changed'
+    ].forEach((evt) => {
+        updateService.subscribe(evt, forward(evt), `main-ipc-bridge:${evt}`);
+    });
+})();
+/** Publish domain events so updateService + renderer bridge refresh budget UI. */
+function notifyBudgetStateChanged(eventName, data) {
+    try {
+        if (updateService && typeof updateService.publish === 'function') {
+            updateService.publish(eventName, data);
+        }
+    } catch (e) {
+        console.warn('notifyBudgetStateChanged:', e?.message || e);
+    }
+}
 const fileEncryption = requireModule('../services/fileEncryption.cjs') || require(path.join(__dirname, '../services/fileEncryption.cjs'));
 
 const splashModule = requireModule('./splash.cjs') || {
@@ -210,6 +373,22 @@ const settingsService = requireModule('../services/settingsService.cjs') || {
     getGroupsWithCategories: async (budgetId) => []
 };
 
+const monthlyBudgetService = requireModule('../services/budget/monthlyBudgetService.cjs') || {
+    toLocalMonthKey: (d) => {
+        const x = d instanceof Date ? d : new Date();
+        return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-01`;
+    },
+    getBudgetMonthSnapshot: async () => ({
+        monthKey: '',
+        prevMonthKey: '',
+        isCurrentCalendarMonth: false,
+        categories: []
+    }),
+    refreshBudgetMonthsForward: async () => {},
+    applyMonthBudgetedAmount: async () => ({}),
+    applyMonthAssignedAndAvailable: async () => ({})
+};
+
 const TransactionService = requireModule('../services/transactions/transactionService.cjs') || class TransactionService {
     constructor(dbPath) {
         this.dbPath = dbPath;
@@ -220,6 +399,10 @@ const TransactionService = requireModule('../services/transactions/transactionSe
     async deleteTransaction(id, userId) { return {}; }
     async getAccountTransactions(accountId, userId) { return []; }
     async reconcileAccount(accountId, userId, statementBalance, transactionsToClear) { return {}; }
+};
+
+const transactionLifecycle = requireModule('../services/transactions/transactionLifecycle.cjs') || {
+    runPostTransactionEffects: async () => {}
 };
 
 console.log('   - accountService loaded:', !!accountService, '📦📦📦 SERVICE LOADING STATUS 📦📦📦');
@@ -302,9 +485,11 @@ async function initializeProductionDatabase() {
     console.log('🆕 No existing database found. Looking for seed...');
 
     const possibleSeedPaths = [
-        path.join(process.resourcesPath, 'db', 'production-seed.db'),
+        path.join(process.resourcesPath, 'db', 'data', 'app.db'),
         path.join(process.resourcesPath, 'db', 'data', 'production-seed.db'),
+        path.join(process.resourcesPath, 'db', 'production-seed.db'),
         path.join(__dirname, '../../src/db/data/production-seed.db'),
+        path.join(__dirname, '../../src/db/data/app.db'),
         path.join(process.resourcesPath, 'app.asar', 'src', 'db', 'data', 'production-seed.db')
     ];
 
@@ -424,18 +609,10 @@ async function getCategoryMappings(userId) {
 }
 
 async function updateAccountBalances(accountId) {
-    const db = await getDatabase();
+    const dbPath = getConfiguredDatabasePath();
+    const ts = new TransactionService(dbPath);
     try {
-        await db.run(`
-            UPDATE accounts
-            SET working_balance = (
-                SELECT COALESCE(SUM(amount), 0)
-                FROM transactions
-                WHERE account_id = ?
-            )
-            WHERE id = ?
-        `, [accountId, accountId]);
-        console.log(`✅ Updated balance for account ${accountId}`);
+        await ts.updateAccountBalances(accountId);
     } catch (error) {
         console.error(`❌ Failed to update balance for account ${accountId}:`, error);
     }
@@ -689,24 +866,40 @@ async function getLinkedItems() {
 
 // ==================== APP INITIALIZATION ====================
 app.whenReady().then(async () => {
-    console.log('🚀 Starting Money Manager...');
+    console.log('🚀 Starting IntentFlow...');
     console.log('🔍 app.isPackaged:', app.isPackaged);
     console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
     console.log('🔍 isDev:', isDev);
     console.log('🔍 Current directory:', __dirname);
-    console.log('🔍 Preload path:', PRELOAD_PATH);
-    console.log('🔍 Preload exists:', fs.existsSync(PRELOAD_PATH));
+    const preloadResolved = resolvePreloadPath();
+    console.log('🔍 Preload path:', preloadResolved);
+    console.log('🔍 Preload exists:', fs.existsSync(preloadResolved));
 
     if (createSplashWindow) {
         splashWindow = createSplashWindow();
     }
 
     try {
+        if (app.isPackaged) {
+            await initializeProductionDatabase();
+        }
         db = await initDatabase();
         console.log('✅ Database initialized successfully');
 
         setupIpcHandlers();
         console.log('✅ All IPC handlers registered');
+
+        ipcMain.removeAllListeners('navigate-to');
+        ipcMain.on('navigate-to', (_event, routePath) => {
+            if (isDev || !mainWindow || mainWindow.isDestroyed()) return;
+            try {
+                const target = routePathToStaticHtml(routePath);
+                console.log('🔀 navigate-to IPC:', routePath, '→', target);
+                mainWindow.loadFile(target).catch((err) => console.error('navigate-to load failed:', err));
+            } catch (err) {
+                console.error('navigate-to error:', err);
+            }
+        });
 
         await createWindow();
 
@@ -758,11 +951,12 @@ function createWindow() {
     console.log('🔍 isDev:', isDev);
 
     const win = new BrowserWindow({
+        title: 'IntentFlow',
         width: 1200,
         height: 800,
         show: false,
         webPreferences: {
-            preload: PRELOAD_PATH,
+            preload: resolvePreloadPath(),
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
@@ -812,40 +1006,25 @@ function createWindow() {
 
         if (!isDev && url.startsWith('file://')) {
             event.preventDefault();
-
-            const parsedUrl = new URL(url);
-            let filePath = parsedUrl.pathname;
-
-            if (filePath.startsWith('/')) {
-                filePath = filePath.substring(1);
-            }
-
-            if (filePath.startsWith('accounts/')) {
-                const accountPagePath = getProductionFilePath('accounts/[id].html');
-
-                if (fs.existsSync(accountPagePath)) {
-                    console.log('📄 Loading account page:', accountPagePath);
-                    win.loadFile(accountPagePath).catch(err => {
-                        console.error('❌ Failed to load account page:', err);
-                        win.loadFile(getProductionFilePath('index.html'));
-                    });
-                } else {
-                    console.log('📄 Account page not found, loading index');
-                    win.loadFile(getProductionFilePath('index.html'));
-                }
-            } else {
-                const routePath = getProductionFilePath(path.join(filePath, 'index.html'));
-                if (fs.existsSync(routePath)) {
-                    win.loadFile(routePath);
-                } else {
-                    win.loadFile(getProductionFilePath('index.html'));
-                }
-            }
+            const target = resolveStaticHtmlFromFileUrl(url);
+            console.log('📄 Resolved static HTML:', target);
+            win.loadFile(target).catch((err) => {
+                console.error('❌ Failed to load resolved page:', err);
+                win.loadFile(getProductionFilePath('index.html')).catch(() => {});
+            });
         }
     });
 
     win.webContents.on('did-finish-load', () => {
         console.log('✅ Page loaded successfully');
+
+        if (!isDev) {
+            win.webContents
+                .executeJavaScript(
+                    `window.dispatchEvent(new CustomEvent('electronAPI-ready')); true;`
+                )
+                .catch((err) => console.warn('⚠️ electronAPI-ready dispatch:', err.message));
+        }
 
         if (splashWindow && closeSplashWindow) {
             closeSplashWindow(splashWindow);
@@ -866,15 +1045,13 @@ function createWindow() {
             
             document.addEventListener('click', (e) => {
                 const link = e.target.closest('a');
-                if (link && link.href && link.href.startsWith(window.location.origin)) {
-                    e.preventDefault();
-                    const path = link.href.replace(window.location.origin, '');
-                    
-                    if (path.startsWith('/accounts/')) {
-                        window.electronAPI.send('navigate-to', path);
-                    } else {
-                        window.location.href = link.href;
-                    }
+                if (!link) return;
+                const raw = link.getAttribute('href');
+                if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return;
+                e.preventDefault();
+                const path = raw.split('#')[0];
+                if (window.electronAPI && window.electronAPI.send) {
+                    window.electronAPI.send('navigate-to', path);
                 }
             });
             
@@ -891,6 +1068,97 @@ function createWindow() {
     });
 
     return win;
+}
+
+/**
+ * Normalize UI / IPC account payloads into a single row shape for INSERT.
+ * Aligns checking/savings/credit/loan modals with the `accounts` table.
+ */
+function _emptyToNull(v) {
+    if (v === undefined || v === null) return null;
+    if (typeof v === 'string' && v.trim() === '') return null;
+    return v;
+}
+
+function _parseOptNumber(v) {
+    if (v === '' || v === undefined || v === null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function _parseOptInt(v) {
+    if (v === '' || v === undefined || v === null) return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+function buildAccountInsertFromPayload(accountData, accountId, userId) {
+    const type = accountData.type || 'checking';
+    let balance = Number(accountData.balance);
+    if (!Number.isFinite(balance)) balance = 0;
+    if (type === 'credit' || type === 'loan') {
+        balance = -Math.abs(balance);
+    } else {
+        balance = Math.abs(balance);
+    }
+
+    const paymentRaw =
+        accountData.payment_amount ??
+        accountData.monthly_payment ??
+        accountData.monthlyPayment ??
+        accountData.paymentAmount;
+    const payment_amount = _parseOptNumber(paymentRaw);
+
+    const interestRaw = accountData.interest_rate ?? accountData.apr ?? null;
+    const interest_rate = _parseOptNumber(interestRaw);
+
+    const cleared =
+        accountData.cleared_balance !== undefined && Number.isFinite(Number(accountData.cleared_balance))
+            ? Number(accountData.cleared_balance)
+            : balance;
+    const working =
+        accountData.working_balance !== undefined && Number.isFinite(Number(accountData.working_balance))
+            ? Number(accountData.working_balance)
+            : balance;
+
+    const now = new Date().toISOString();
+
+    return {
+        id: accountId,
+        user_id: userId,
+        name: (accountData.name || 'New Account').toString().trim() || 'New Account',
+        type,
+        balance,
+        cleared_balance: cleared,
+        working_balance: working,
+        account_type_category: accountData.account_type_category || (type === 'loan' ? 'loan' : type === 'credit' ? 'credit' : 'budget'),
+        currency: accountData.currency || 'USD',
+        institution: _emptyToNull(accountData.institution),
+        credit_limit: _parseOptNumber(accountData.credit_limit ?? accountData.limit),
+        interest_rate,
+        due_date: _emptyToNull(accountData.due_date || accountData.dueDate),
+        minimum_payment: _parseOptNumber(accountData.minimum_payment ?? accountData.minimumPayment),
+        original_balance: _parseOptNumber(accountData.original_balance),
+        term_months: _parseOptInt(accountData.term_months ?? accountData.term),
+        payment_amount,
+        payment_frequency: _emptyToNull(accountData.payment_frequency) || 'monthly',
+        next_payment_date: _emptyToNull(accountData.next_payment_date || accountData.nextPaymentDate),
+        is_active: 1,
+        created_at: now,
+        updated_at: now,
+        account_number: _emptyToNull(accountData.account_number),
+        routing_number: _emptyToNull(accountData.routing_number),
+        debit_card_number: _emptyToNull(accountData.debit_card_number),
+        daily_withdrawal_limit: _parseOptNumber(accountData.daily_withdrawal_limit),
+        overdraft_protection: accountData.overdraft_protection ? 1 : 0,
+        notes: _emptyToNull(accountData.notes),
+        account_holder_name: _emptyToNull(accountData.account_holder_name),
+        loan_type: _emptyToNull(accountData.loan_type),
+        paired_category_id: _emptyToNull(accountData.paired_category_id),
+        rewards_program: _emptyToNull(accountData.rewards_program),
+        transfer_limit: _parseOptNumber(accountData.transfer_limit),
+        linked_savings_account: _emptyToNull(accountData.linked_savings_account)
+    };
 }
 
 // ==================== IPC HANDLERS ====================
@@ -917,7 +1185,7 @@ function setupIpcHandlers() {
         'get-account', 'update-account', 'delete-account', 'get-account-transactions',
         'get-accounts-dashboard', 'get-account-details', 'create-account', 'getCategories',
         'get-categories', 'create-category', 'delete-category', 'update-category',
-        'updateCategory', 'get-groups', 'create-group', 'update-group', 'delete-group',
+        'updateCategory', 'budget:getMonthSnapshot', 'get-groups', 'create-group', 'update-group', 'delete-group',
         'get-groups-with-categories', 'save-settings', 'get-network-status',
         'subscribe-to-event', 'publish-event', 'validation:trackAccuracy', 'validation:getTrends',
         'validation:getCategoryAccuracy', 'validation:getConfidence', 'debug-db-path',
@@ -1323,6 +1591,20 @@ function setupIpcHandlers() {
                 userId: currentUser.id
             });
 
+            if (result?.success && transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    const txDate = transferData.date || new Date().toISOString().split('T')[0];
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: [transferData.sourceAccountId, transferData.destinationAccountId],
+                        dates: [txDate],
+                        skipLedgerSync: true
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (create-linked-transfer):', e?.message || e);
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:added' });
+
             if (updateService) {
                 updateService.publish('transaction:added', result.data);
             }
@@ -1342,7 +1624,40 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
+            const database = await getDatabase();
+            const pre = await database.get(
+                `SELECT id, account_id, date, linked_transaction_id
+                 FROM transactions WHERE id = ? AND user_id = ?`,
+                [transactionId, currentUser.id]
+            );
+            if (!pre) return { success: false, error: 'Transaction not found' };
+
             const result = await payeeService.updateLinkedTransfer(transactionId, currentUser.id, updates);
+
+            const dates = [pre.date];
+            if (updates.date !== undefined && updates.date !== pre.date) {
+                dates.push(updates.date);
+            }
+            const accountIds = [pre.account_id];
+            if (pre.linked_transaction_id) {
+                const peer = await database.get(
+                    'SELECT account_id FROM transactions WHERE id = ?',
+                    [pre.linked_transaction_id]
+                );
+                if (peer?.account_id) accountIds.push(peer.account_id);
+            }
+            if (transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds,
+                        dates,
+                        skipLedgerSync: true
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (update-linked-transfer):', e?.message || e);
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:updated' });
 
             if (updateService) {
                 updateService.publish('transaction:updated', result.data);
@@ -1363,7 +1678,37 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No user logged in' };
             }
 
+            const database = await getDatabase();
+            const pre = await database.get(
+                `SELECT account_id, date, linked_transaction_id
+                 FROM transactions WHERE id = ? AND user_id = ?`,
+                [transactionId, currentUser.id]
+            );
+            if (!pre) return { success: false, error: 'Transaction not found' };
+
+            let peerAccountId = null;
+            if (pre.linked_transaction_id) {
+                const peer = await database.get(
+                    'SELECT account_id FROM transactions WHERE id = ?',
+                    [pre.linked_transaction_id]
+                );
+                if (peer) peerAccountId = peer.account_id;
+            }
+
             const result = await payeeService.deleteLinkedTransfer(transactionId, currentUser.id);
+
+            if (transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: [pre.account_id, peerAccountId].filter(Boolean),
+                        dates: [pre.date],
+                        skipLedgerSync: true
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (delete-linked-transfer):', e?.message || e);
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:deleted' });
 
             if (updateService) {
                 updateService.publish('transaction:deleted', { id: transactionId });
@@ -1390,51 +1735,118 @@ function setupIpcHandlers() {
         console.log('📝 updateCategory IPC called:', { categoryId, updates });
         try {
             const db = await getDatabase();
+            const currentUser = userService.getCurrentUser();
+            const ownerId = currentUser?.id;
+            if (!ownerId) {
+                return { success: false, error: 'No user logged in' };
+            }
 
-            // Build the SET clause dynamically
+            const owns = await db.get('SELECT id FROM categories WHERE id = ? AND user_id = ?', [categoryId, ownerId]);
+            if (!owns) {
+                return { success: false, error: 'Category not found' };
+            }
+
+            const patch = { ...updates };
+            let budgetMonth = patch.budget_month;
+            delete patch.budget_month;
+
+            const moneyPatchTouchesMonthRows =
+                patch.assigned !== undefined ||
+                patch.available !== undefined;
+            if (
+                moneyPatchTouchesMonthRows &&
+                (budgetMonth === undefined || budgetMonth === null || String(budgetMonth).trim() === '')
+            ) {
+                budgetMonth = monthlyBudgetService.toLocalMonthKey(new Date());
+                console.warn('updateCategory: budget_month missing for assigned/available; defaulting to', budgetMonth);
+            }
+
+            let didMonthMutation = false;
+            if (budgetMonth !== undefined && budgetMonth !== null && String(budgetMonth).trim() !== '') {
+                const mKey = monthlyBudgetService.toLocalMonthKey(budgetMonth);
+                if (patch.assigned !== undefined && patch.available !== undefined) {
+                    await monthlyBudgetService.applyMonthAssignedAndAvailable(
+                        db,
+                        ownerId,
+                        categoryId,
+                        mKey,
+                        patch.assigned,
+                        patch.available
+                    );
+                    delete patch.assigned;
+                    delete patch.available;
+                    didMonthMutation = true;
+                } else if (patch.assigned !== undefined) {
+                    await monthlyBudgetService.applyMonthBudgetedAmount(
+                        db,
+                        ownerId,
+                        categoryId,
+                        mKey,
+                        patch.assigned
+                    );
+                    delete patch.assigned;
+                    didMonthMutation = true;
+                }
+            }
+
             const setClauses = [];
             const values = [];
 
-            if (updates.name !== undefined) {
+            if (patch.name !== undefined) {
                 setClauses.push('name = ?');
-                values.push(updates.name);
+                values.push(patch.name);
             }
-            if (updates.assigned !== undefined) {
+            if (patch.assigned !== undefined) {
                 setClauses.push('assigned = ?');
-                values.push(updates.assigned);
+                values.push(patch.assigned);
             }
-            if (updates.target_amount !== undefined) {
+            if (patch.available !== undefined) {
+                setClauses.push('available = ?');
+                values.push(patch.available);
+            }
+            if (patch.activity !== undefined) {
+                setClauses.push('activity = ?');
+                values.push(patch.activity);
+            }
+            if (patch.target_amount !== undefined) {
                 setClauses.push('target_amount = ?');
-                values.push(updates.target_amount);
+                values.push(patch.target_amount);
             }
-            if (updates.target_type !== undefined) {
+            if (patch.target_type !== undefined) {
                 setClauses.push('target_type = ?');
-                values.push(updates.target_type);
+                values.push(patch.target_type);
+            }
+            if (patch.target_date !== undefined) {
+                setClauses.push('target_date = ?');
+                values.push(patch.target_date);
             }
 
-            if (setClauses.length === 0) {
+            if (setClauses.length > 0) {
+                setClauses.push('updated_at = datetime("now")');
+                values.push(categoryId);
+                const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`;
+                values.push(ownerId);
+                const result = await db.run(query, values);
+                if (result.changes === 0) {
+                    return { success: false, error: 'Category not found or no changes made' };
+                }
+            } else if (!didMonthMutation && Object.keys(patch).length === 0) {
                 return { success: false, error: 'No updates provided' };
+            } else if (!didMonthMutation) {
+                return { success: false, error: 'No valid fields to update' };
             }
 
-            // Add updated_at timestamp
-            setClauses.push('updated_at = datetime("now")');
-
-            values.push(categoryId);
-
-            const query = `UPDATE categories SET ${setClauses.join(', ')} WHERE id = ?`;
-            console.log('Executing query:', query, values);
-
-            const result = await db.run(query, values);
-            console.log('Query result:', result);
-
-            if (result.changes === 0) {
-                return { success: false, error: 'Category not found or no changes made' };
+            const updatedCategory = await db.get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [categoryId, ownerId]);
+            const moneyRelated =
+                didMonthMutation ||
+                updates.assigned !== undefined ||
+                updates.available !== undefined ||
+                updates.activity !== undefined;
+            if (moneyRelated) {
+                notifyBudgetStateChanged('budget:assigned', { categoryId, userId: ownerId });
+            } else {
+                notifyBudgetStateChanged('category:updated', { categoryId, userId: ownerId });
             }
-
-            // Get the updated category
-            const updatedCategory = await db.get('SELECT * FROM categories WHERE id = ?', [categoryId]);
-            console.log('Updated category:', updatedCategory);
-
             return { success: true, data: updatedCategory };
 
         } catch (error) {
@@ -1636,9 +2048,47 @@ function setupIpcHandlers() {
 
     ipcMain.handle('categoryGroups:getWithCategories', async (event, userId) => {
         try {
-            const service = new CategoryGroupService();
-            const result = await service.getGroupsWithCategories(userId);
-            return { success: true, data: result };
+            const db = await getDatabase();
+            let targetUserId = userId;
+            if (!targetUserId) targetUserId = userService.getCurrentUser()?.id;
+            if (!targetUserId) return { success: true, data: [] };
+
+            const groups = await db.all(
+                `SELECT * FROM category_groups WHERE user_id = ? ORDER BY sort_order ASC, name ASC`,
+                [targetUserId]
+            );
+
+            const groupsWithCategories = await Promise.all((groups || []).map(async (group) => {
+                const categories = await db.all(
+                    `SELECT * FROM categories 
+                     WHERE user_id = ? 
+                       AND (archived IS NULL OR archived = 0) 
+                       AND CAST(COALESCE(group_id, '') AS TEXT) = CAST(? AS TEXT)
+                     ORDER BY name ASC`,
+                    [targetUserId, group.id]
+                );
+                return { ...group, categories: categories || [] };
+            }));
+
+            const uncategorized = await db.all(
+                `SELECT * FROM categories 
+                 WHERE user_id = ? 
+                   AND (archived IS NULL OR archived = 0) 
+                   AND (group_id IS NULL OR TRIM(CAST(group_id AS TEXT)) = '')
+                 ORDER BY name ASC`,
+                [targetUserId]
+            );
+
+            if (uncategorized.length > 0) {
+                groupsWithCategories.unshift({
+                    id: 'uncategorized',
+                    name: 'Uncategorized',
+                    is_hidden: 0,
+                    categories: uncategorized
+                });
+            }
+
+            return { success: true, data: groupsWithCategories };
         } catch (error) {
             return { success: false, error: error.message, data: [] };
         }
@@ -1655,6 +2105,7 @@ function setupIpcHandlers() {
             const result = await db.run(`INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))`, [userId, name, sortOrder || 0]);
             const id = result.lastID;
             const newGroup = await db.get('SELECT * FROM category_groups WHERE id = ?', [id]);
+            notifyBudgetStateChanged('categoryGroups:changed', { userId, action: 'create', groupId: id });
             return { success: true, data: newGroup };
         } catch (error) {
             return { success: false, error: error.message };
@@ -1668,6 +2119,7 @@ function setupIpcHandlers() {
             const result = await db.run('UPDATE category_groups SET name = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?', [updates.name, id, userId]);
             if (result.changes === 0) return { success: false, error: 'Failed to update group' };
             const updatedGroup = await db.get('SELECT * FROM category_groups WHERE id = ? AND user_id = ?', [id, userId]);
+            notifyBudgetStateChanged('categoryGroups:changed', { userId, action: 'update', groupId: id });
             return { success: true, data: updatedGroup };
         } catch (error) {
             console.error('❌ Error in categoryGroups:update:', error);
@@ -1687,6 +2139,7 @@ function setupIpcHandlers() {
             }
             const result = await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
             if (result.changes === 0) return { success: false, error: `Failed to delete category group ${groupId}` };
+            notifyBudgetStateChanged('categoryGroups:changed', { userId, action: 'delete', groupId });
             return { success: true, data: { id: groupId, name: group.name } };
         } catch (error) {
             console.error('❌ Error in categoryGroups:delete:', error);
@@ -1727,92 +2180,14 @@ function setupIpcHandlers() {
                 userId = currentUser?.id || 2;
             }
 
-            const {
-                name, type, balance = 0,
-                institution, account_number, routing_number, debit_card_number,
-                daily_withdrawal_limit, overdraft_protection, interest_rate, notes
-            } = accountData;
-
-            // Build columns and values dynamically
-            const columns = [
-                'id', 'user_id', 'name', 'type', 'balance',
-                'cleared_balance', 'working_balance', 'account_type_category',
-                'currency', 'institution', 'is_active', 'created_at'
-            ];
-            const values = [
-                id, userId, name, type, balance,
-                0, 0, 'budget', 'USD', institution || null,
-                1, new Date().toISOString()
-            ];
-
-            // Add optional fields if they exist
-            if (account_number !== undefined && account_number !== '') {
-                columns.push('account_number');
-                values.push(account_number);
-            }
-            if (routing_number !== undefined && routing_number !== '') {
-                columns.push('routing_number');
-                values.push(routing_number);
-            }
-            if (debit_card_number !== undefined && debit_card_number !== '') {
-                columns.push('debit_card_number');
-                values.push(debit_card_number);
-            }
-            if (daily_withdrawal_limit !== undefined && daily_withdrawal_limit !== '') {
-                columns.push('daily_withdrawal_limit');
-                values.push(parseFloat(daily_withdrawal_limit));
-            }
-            if (overdraft_protection !== undefined) {
-                columns.push('overdraft_protection');
-                values.push(overdraft_protection ? 1 : 0);
-            }
-            if (interest_rate !== undefined && interest_rate !== '') {
-                columns.push('interest_rate');
-                values.push(parseFloat(interest_rate));
-            }
-            if (notes !== undefined && notes !== '') {
-                columns.push('notes');
-                values.push(notes);
-            }
-
-            // Handle credit/loan specific fields
-            if (type === 'credit') {
-                if (accountData.credit_limit !== undefined) {
-                    columns.push('credit_limit');
-                    values.push(accountData.credit_limit);
-                }
-                if (accountData.due_date !== undefined) {
-                    columns.push('due_date');
-                    values.push(accountData.due_date);
-                }
-                if (accountData.minimum_payment !== undefined) {
-                    columns.push('minimum_payment');
-                    values.push(accountData.minimum_payment);
-                }
-            }
-
-            if (type === 'loan') {
-                if (accountData.original_balance !== undefined) {
-                    columns.push('original_balance');
-                    values.push(accountData.original_balance);
-                }
-                if (accountData.term_months !== undefined) {
-                    columns.push('term_months');
-                    values.push(accountData.term_months);
-                }
-                if (accountData.payment_amount !== undefined) {
-                    columns.push('payment_amount');
-                    values.push(accountData.payment_amount);
-                }
-            }
-
+            const row = buildAccountInsertFromPayload(accountData, id, userId);
+            const columns = Object.keys(row);
+            const values = Object.values(row);
             const placeholders = values.map(() => '?').join(', ');
             await db.run(`INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`, values);
 
-            // Return the newly created account
             const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
             return { success: true, data: newAccount };
-
         } catch (error) {
             console.error('❌ Error creating account:', error);
             return { success: false, error: error.message };
@@ -1829,55 +2204,14 @@ function setupIpcHandlers() {
             }
 
             const accountId = uuidv4();
-            const now = new Date().toISOString();
-
-            // Handle balance sign based on account type
-            let balance = accountData.balance || 0;
-            if (accountData.type === 'credit' || accountData.type === 'loan') {
-                balance = -Math.abs(balance);
-            } else {
-                balance = Math.abs(balance);
-            }
-
-            const accountToInsert = {
-                id: accountId,
-                user_id: userId,
-                name: accountData.name || 'New Account',
-                type: accountData.type || 'checking',
-                balance: balance,
-                cleared_balance: balance,
-                working_balance: balance,
-                account_type_category: accountData.account_type_category || 'budget',
-                currency: accountData.currency || 'USD',
-                institution: accountData.institution || null,
-                // New fields
-                account_number: accountData.account_number || null,
-                routing_number: accountData.routing_number || null,
-                debit_card_number: accountData.debit_card_number || null,
-                daily_withdrawal_limit: accountData.daily_withdrawal_limit || null,
-                overdraft_protection: accountData.overdraft_protection ? 1 : 0,
-                notes: accountData.notes || null,
-                // Existing fields
-                credit_limit: accountData.credit_limit || null,
-                interest_rate: accountData.interest_rate || null,
-                due_date: accountData.due_date || null,
-                minimum_payment: accountData.minimum_payment || null,
-                original_balance: accountData.original_balance || null,
-                term_months: accountData.term_months || null,
-                payment_amount: accountData.payment_amount || null,
-                is_active: 1,
-                created_at: now
-            };
-
-            const columns = Object.keys(accountToInsert);
-            const values = Object.values(accountToInsert);
+            const row = buildAccountInsertFromPayload(accountData, accountId, userId);
+            const columns = Object.keys(row);
+            const values = Object.values(row);
             const placeholders = values.map(() => '?').join(', ');
-
             await db.run(`INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`, values);
 
             const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
             return { success: true, data: newAccount };
-
         } catch (error) {
             console.error('❌ Error in accounts:create:', error);
             return { success: false, error: error.message };
@@ -1974,7 +2308,7 @@ function setupIpcHandlers() {
         const plaidClient = new PlaidApi(configuration);
         try {
             const currentUser = userService.getCurrentUser();
-            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'Money Manager', products: ['transactions'], country_codes: ['US'], language: 'en' });
+            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'IntentFlow', products: ['transactions'], country_codes: ['US'], language: 'en' });
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
             return { success: false, error: error.message };
@@ -1992,7 +2326,7 @@ function setupIpcHandlers() {
             const accessToken = decryptToken(item.access_token);
             if (!accessToken) throw new Error('Failed to decrypt token');
             const currentUser = userService.getCurrentUser();
-            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'Money Manager', products: ['transactions'], country_codes: ['US'], language: 'en', access_token: accessToken });
+            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'IntentFlow', products: ['transactions'], country_codes: ['US'], language: 'en', access_token: accessToken });
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2170,11 +2504,32 @@ function setupIpcHandlers() {
 
     ipcMain.handle('getCategoryHistory', async (event, categoryId, period) => {
         try {
-            // Category history is not fully implemented yet.
-            // Return an empty list to preserve compatibility with renderer usage.
-            return { success: true, data: [] };
+            const db = await getDatabase();
+            const currentUser = userService.getCurrentUser();
+            const ownerId = currentUser?.id;
+            if (!ownerId) {
+                return { success: true, data: { available: 0, assigned: 0, activity: 0 } };
+            }
+            const monthKey = monthlyBudgetService.toLocalMonthKey(period || new Date());
+            const row = await db.get(
+                `SELECT available_amount, budgeted_amount, activity_amount
+                 FROM monthly_budgets
+                 WHERE category_id = ? AND month = ?`,
+                [categoryId, monthKey]
+            );
+            if (!row) {
+                return { success: true, data: { available: 0, assigned: 0, activity: 0 } };
+            }
+            return {
+                success: true,
+                data: {
+                    available: Number(row.available_amount) || 0,
+                    assigned: Number(row.budgeted_amount) || 0,
+                    activity: Number(row.activity_amount) || 0
+                }
+            };
         } catch (error) {
-            return { success: false, error: error.message, data: [] };
+            return { success: false, error: error.message, data: { available: 0, assigned: 0, activity: 0 } };
         }
     });
 
@@ -2188,19 +2543,37 @@ function setupIpcHandlers() {
 
             // Check if this is a transfer
             if (transaction.isTransfer === 1 && transaction.transferAccountId) {
-                // This is a transfer - create linked transactions
+                const txDate = transaction.date || new Date().toISOString().split('T')[0];
                 const transferResult = await payeeService.createLinkedTransfer({
                     sourceAccountId: transaction.accountId,
                     destinationAccountId: transaction.transferAccountId,
                     amount: Math.abs(amount),
-                    date: transaction.date || new Date().toISOString().split('T')[0],
+                    date: txDate,
                     sourcePayeeName: transaction.payee || `Transfer`,
                     memo: transaction.memo || null,
                     cleared: transaction.cleared === 1 || transaction.cleared === true,
                     userId: currentUser.id
                 });
 
+                if (transferResult?.success && transactionLifecycle?.runPostTransactionEffects) {
+                    try {
+                        await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                            accountIds: [transaction.accountId, transaction.transferAccountId],
+                            dates: [txDate],
+                            skipLedgerSync: true
+                        });
+                    } catch (e) {
+                        console.warn('post-transaction budget refresh (transfer):', e?.message || e);
+                    }
+                }
+                notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:added' });
+                if (updateService) updateService.publish('transaction:added', transferResult?.data || {});
                 return transferResult;
+            }
+
+            let categoryId = transaction.categoryId;
+            if (categoryId === 'inflow_ready_to_assign' || categoryId === '') {
+                categoryId = null;
             }
 
             // Regular transaction (non-transfer)
@@ -2210,7 +2583,7 @@ function setupIpcHandlers() {
                 date: transaction.date || new Date().toISOString().split('T')[0],
                 description: transaction.description || transaction.payee || 'Transaction',
                 amount,
-                categoryId: transaction.categoryId || null,
+                categoryId: categoryId || null,
                 payee: transaction.payee || null,
                 memo: transaction.memo || null,
                 isCleared: transaction.cleared ? 1 : 0
@@ -2229,6 +2602,18 @@ function setupIpcHandlers() {
                 }
             }
 
+            if (transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: [transaction.accountId],
+                        dates: [transactionData.date],
+                        skipLedgerSync: true
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh:', e?.message || e);
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:added' });
             if (updateService) updateService.publish('transaction:added', result);
             return { success: true, data: result };
         } catch (error) {
@@ -2242,24 +2627,67 @@ function setupIpcHandlers() {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
 
-            // Check if this is a transfer transaction
             const database = await getDatabase();
-            const transaction = await database.get(
-                'SELECT is_transfer FROM transactions WHERE id = ? AND user_id = ?',
+            const pre = await database.get(
+                `SELECT id, account_id, date, is_transfer, linked_transaction_id
+                 FROM transactions WHERE id = ? AND user_id = ?`,
                 [id, currentUser.id]
             );
+            if (!pre) return { success: false, error: 'Transaction not found' };
 
-            if (transaction && transaction.is_transfer === 1) {
-                // This is a transfer - use the linked update handler
+            if (pre.is_transfer === 1) {
                 const result = await payeeService.updateLinkedTransfer(id, currentUser.id, updates);
-                return result;
+                const dates = [pre.date];
+                if (updates.date !== undefined && updates.date !== pre.date) {
+                    dates.push(updates.date);
+                }
+                const accountIds = [pre.account_id];
+                if (pre.linked_transaction_id) {
+                    const peer = await database.get(
+                        'SELECT account_id FROM transactions WHERE id = ?',
+                        [pre.linked_transaction_id]
+                    );
+                    if (peer?.account_id) accountIds.push(peer.account_id);
+                }
+                if (transactionLifecycle?.runPostTransactionEffects) {
+                    try {
+                        await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                            accountIds,
+                            dates,
+                            skipLedgerSync: true
+                        });
+                    } catch (e) {
+                        console.warn('post-transaction budget refresh (transfer update):', e?.message || e);
+                    }
+                }
+                notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:updated' });
+                if (updateService) updateService.publish('transaction:updated', result?.data ?? result);
+                return result?.success !== false ? result : { success: false, error: result?.error || 'Update failed' };
             }
 
-            // Regular transaction update
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.updateTransaction(id, currentUser.id, updates);
 
+            const post = await database.get(
+                'SELECT account_id, date FROM transactions WHERE id = ? AND user_id = ?',
+                [id, currentUser.id]
+            );
+            const dates = [pre.date];
+            if (post?.date && post.date !== pre.date) dates.push(post.date);
+
+            if (transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: [pre.account_id],
+                        dates,
+                        skipLedgerSync: true
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (update):', e?.message || e);
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:updated' });
             if (updateService) updateService.publish('transaction:updated', result);
             return { success: true, data: result };
         } catch (error) {
@@ -2273,24 +2701,56 @@ function setupIpcHandlers() {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
 
-            // Check if this is a transfer transaction
             const database = await getDatabase();
-            const transaction = await database.get(
-                'SELECT is_transfer FROM transactions WHERE id = ? AND user_id = ?',
+            const pre = await database.get(
+                `SELECT is_transfer, account_id, date, linked_transaction_id
+                 FROM transactions WHERE id = ? AND user_id = ?`,
                 [id, currentUser.id]
             );
+            if (!pre) return { success: false, error: 'Transaction not found' };
 
-            if (transaction && transaction.is_transfer === 1) {
-                // This is a transfer - use the linked delete handler
+            if (pre.is_transfer === 1) {
+                let peerAccountId = null;
+                if (pre.linked_transaction_id) {
+                    const peer = await database.get(
+                        'SELECT account_id FROM transactions WHERE id = ?',
+                        [pre.linked_transaction_id]
+                    );
+                    if (peer) peerAccountId = peer.account_id;
+                }
                 const result = await payeeService.deleteLinkedTransfer(id, currentUser.id);
+                if (transactionLifecycle?.runPostTransactionEffects) {
+                    try {
+                        await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                            accountIds: [pre.account_id, peerAccountId].filter(Boolean),
+                            dates: [pre.date],
+                            skipLedgerSync: true
+                        });
+                    } catch (e) {
+                        console.warn('post-transaction budget refresh (transfer delete):', e?.message || e);
+                    }
+                }
+                notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:deleted' });
+                if (updateService) updateService.publish('transaction:deleted', { id });
                 return result;
             }
 
-            // Regular transaction delete
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.deleteTransaction(id, currentUser.id);
 
+            if (transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: [pre.account_id],
+                        dates: [pre.date],
+                        skipLedgerSync: true
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (delete):', e?.message || e);
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:deleted' });
             if (updateService) updateService.publish('transaction:deleted', { id });
             return { success: true, data: result };
         } catch (error) {
@@ -2355,6 +2815,7 @@ function setupIpcHandlers() {
             const id = categoryData.id || `cat_${Date.now()}`;
             await db.run(`INSERT INTO categories (id, user_id, name, group_id, assigned, target_type, target_amount, target_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [id, categoryData.user_id, categoryData.name, groupId, categoryData.assigned || 0, categoryData.target_type || 'monthly', categoryData.target_amount || 0, categoryData.target_date || null]);
             const newCategory = await db.get('SELECT * FROM categories WHERE id = ?', [id]);
+            notifyBudgetStateChanged('category:created', { categoryId: id, userId: categoryData.user_id });
             return { success: true, data: newCategory };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2370,6 +2831,7 @@ function setupIpcHandlers() {
             if (category.archived) return { success: false, error: 'Category is already archived' };
             const originalGroupId = category.group_id;
             await db.run(`UPDATE categories SET archived = 1, archived_at = datetime('now'), original_group_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`, [originalGroupId, categoryId, userId]);
+            notifyBudgetStateChanged('category:updated', { categoryId, userId, archived: true });
             return { success: true, data: { id: categoryId, archived: true, message: 'Category archived successfully' } };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2394,6 +2856,7 @@ function setupIpcHandlers() {
                 }
             }
             await db.run(`UPDATE categories SET archived = 0, group_id = ?, restored_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?`, [targetGroupId, categoryId, userId]);
+            notifyBudgetStateChanged('category:updated', { categoryId, userId, archived: false });
             return { success: true, data: { id: categoryId, archived: false, group_id: targetGroupId, message: 'Category restored successfully' } };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2418,6 +2881,7 @@ function setupIpcHandlers() {
             if (!category) return { success: false, error: 'Category not found' };
             const newHiddenStatus = category.is_hidden ? 0 : 1;
             await db.run('UPDATE categories SET is_hidden = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?', [newHiddenStatus, categoryId, userId]);
+            notifyBudgetStateChanged('category:updated', { categoryId, userId, is_hidden: newHiddenStatus });
             return { success: true, data: { id: categoryId, is_hidden: newHiddenStatus } };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2430,10 +2894,39 @@ function setupIpcHandlers() {
             let targetUserId = userId;
             if (!targetUserId) targetUserId = userService.getCurrentUser()?.id;
             if (!targetUserId) return { success: true, data: [] };
-            const categories = await dbConnection.all(`SELECT c.*, cg.name as group_name FROM categories c LEFT JOIN category_groups cg ON CAST(cg.id AS TEXT) = c.group_id WHERE c.user_id = ? AND c.archived = 0 ORDER BY cg.sort_order ASC, c.name ASC`, [targetUserId]);
+            const categories = await dbConnection.all(
+                `SELECT c.*, cg.name as group_name
+                 FROM categories c
+                 LEFT JOIN category_groups cg
+                   ON CAST(cg.id AS TEXT) = CAST(COALESCE(c.group_id, '') AS TEXT)
+                  AND cg.user_id = c.user_id
+                 WHERE c.user_id = ?
+                   AND (c.archived IS NULL OR c.archived = 0)
+                 ORDER BY cg.sort_order ASC, c.name ASC`,
+                [targetUserId]
+            );
             return { success: true, data: categories };
         } catch (error) {
             return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('budget:getMonthSnapshot', async (event, userId, monthKey) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = userId;
+            if (!targetUserId) targetUserId = userService.getCurrentUser()?.id;
+            if (!targetUserId) return { success: true, data: { categories: [], monthKey: '', isCurrentCalendarMonth: false } };
+
+            const snapshot = await monthlyBudgetService.getBudgetMonthSnapshot(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date())
+            );
+            return { success: true, data: snapshot };
+        } catch (error) {
+            console.error('budget:getMonthSnapshot error:', error);
+            return { success: false, error: error.message, data: { categories: [], monthKey: '', isCurrentCalendarMonth: false } };
         }
     });
 
@@ -2441,6 +2934,7 @@ function setupIpcHandlers() {
         try {
             const db = await getDatabase();
             await db.run('DELETE FROM categories WHERE id = ?', [categoryId]);
+            notifyBudgetStateChanged('category:deleted', { categoryId });
             return { success: true, data: { id: categoryId } };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2492,6 +2986,7 @@ function setupIpcHandlers() {
             const transactions = await db.get('SELECT COUNT(*) as count FROM transactions WHERE category_id = ?', [categoryId]);
             if (transactions.count > 0) await db.run('DELETE FROM transactions WHERE category_id = ?', [categoryId]);
             await db.run('DELETE FROM categories WHERE id = ?', [categoryId]);
+            notifyBudgetStateChanged('category:deleted', { categoryId });
             return { success: true, data: {} };
         } catch (error) {
             return { success: false, error: error.message };

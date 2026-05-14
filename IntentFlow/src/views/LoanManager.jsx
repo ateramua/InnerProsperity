@@ -296,7 +296,7 @@ function LoanManager({
   const calculateLoanStats = (loan) => {
     const originalBalance = loan.original_balance || Math.abs(loan.balance);
     const progress = ((originalBalance - Math.abs(loan.balance)) / originalBalance) * 100;
-    const monthlyPayment = loan.monthly_payment || loan.monthlyPayment;
+    const monthlyPayment = loan.payment_amount || loan.monthly_payment || loan.monthlyPayment;
     const remainingMonths = loan.remainingPayments ||
       Math.ceil(Math.abs(loan.balance) / (monthlyPayment || 1));
     const totalInterest = (monthlyPayment * remainingMonths) - Math.abs(loan.balance);
@@ -441,7 +441,7 @@ function LoanManager({
         balance: -Math.abs(parseFloat(newLoanData.balance)),
         original_balance: newLoanData.original_balance ? parseFloat(newLoanData.original_balance) : null,
         interest_rate: newLoanData.interest_rate ? parseFloat(newLoanData.interest_rate) : null,
-        monthly_payment: newLoanData.monthly_payment ? parseFloat(newLoanData.monthly_payment) : null,
+        payment_amount: newLoanData.monthly_payment ? parseFloat(newLoanData.monthly_payment) : null,
         term_months: newLoanData.term_months ? parseInt(newLoanData.term_months) : null,
         due_date: newLoanData.due_date || null,
         institution: newLoanData.institution.trim() || null,
@@ -520,7 +520,7 @@ function LoanManager({
       notes: loan.notes || '',
       original_balance: loan.original_balance || null,
       term_months: loan.term_months || null,
-      monthly_payment: loan.monthly_payment || loan.monthlyPayment || null,
+      monthly_payment: loan.payment_amount || loan.monthly_payment || loan.monthlyPayment || null,
       loan_type: loan.loan_type || loan.type || 'personal',
       paired_category_id: loan.paired_category_id || null
     };
@@ -555,7 +555,6 @@ function LoanManager({
         original_balance: updatedData.original_balance ? parseFloat(updatedData.original_balance) : null,
         term_months: updatedData.term_months ? parseInt(updatedData.term_months) : null,
         payment_amount: updatedData.monthly_payment ? parseFloat(updatedData.monthly_payment) : null,
-        monthly_payment: updatedData.monthly_payment ? parseFloat(updatedData.monthly_payment) : null,
         loan_type: updatedData.loan_type || 'personal',
         paired_category_id: updatedData.paired_category_id || null
       };
@@ -614,7 +613,7 @@ function LoanManager({
 
   const filteredLoans = getFilteredLoans();
   const totalBalance = loans.reduce((sum, l) => sum + Math.abs(l.balance || 0), 0);
-  const totalMonthlyPayment = loans.reduce((sum, l) => sum + (l.monthly_payment || l.monthlyPayment || 0), 0);
+  const totalMonthlyPayment = loans.reduce((sum, l) => sum + (l.payment_amount || l.monthly_payment || l.monthlyPayment || 0), 0);
 
   return (
     <div style={styles.container}>
@@ -763,7 +762,7 @@ function LoanManager({
                 <div style={styles.loanDetails}>
                   <div style={styles.detailItem}>
                     <span>Monthly Payment</span>
-                    <strong>${(loan.monthly_payment || loan.monthlyPayment || 0).toFixed(2)}</strong>
+                    <strong>${(loan.payment_amount || loan.monthly_payment || loan.monthlyPayment || 0).toFixed(2)}</strong>
                   </div>
                   <div style={styles.detailItem}>
                     <span>Term</span>
@@ -1361,7 +1360,7 @@ const styles = {
     marginBottom: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -1399,7 +1398,7 @@ const styles = {
     display: 'flex',
     gap: '0.5rem',
     marginBottom: '2rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.25rem',
     borderRadius: '0.5rem',
     width: 'fit-content'
@@ -1423,7 +1422,7 @@ const styles = {
     gap: '1.5rem'
   },
   loanCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem',
     padding: '1.5rem',
     border: '1px solid #374151',
@@ -1591,7 +1590,7 @@ const styles = {
     marginBottom: '1rem'
   },
   amortizationItem: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '0.5rem',
     borderRadius: '0.375rem',
     textAlign: 'center'
@@ -1618,7 +1617,7 @@ const styles = {
   emptyState: {
     textAlign: 'center',
     padding: '4rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem'
   },
   emptyIcon: {
@@ -1656,7 +1655,7 @@ const styles = {
     zIndex: 1000
   },
   modalContent: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '2rem',
     borderRadius: '1rem',
     width: '90%',
@@ -1686,7 +1685,7 @@ const styles = {
   input: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1695,7 +1694,7 @@ const styles = {
   select: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1704,7 +1703,7 @@ const styles = {
   textarea: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1777,14 +1776,14 @@ const styles = {
   modalInput: {
     width: '100%',
     padding: '0.75rem 0.75rem 0.75rem 2rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
     fontSize: '1rem'
   },
   paymentBreakdownModal: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '1rem',
     borderRadius: '0.5rem',
     marginTop: '1rem',
@@ -1837,7 +1836,7 @@ const styles = {
     cursor: 'pointer'
   },
   pairingSection: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '1rem',
     borderRadius: '0.5rem',
     marginTop: '0.5rem'

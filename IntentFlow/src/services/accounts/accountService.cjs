@@ -42,11 +42,30 @@ class AccountService {
                 currency = 'USD',
                 institution = '',
                 creditLimit = null,
+                credit_limit = null,
                 interestRate = null,
+                interest_rate = null,
                 dueDate = null,
+                due_date = null,
                 minimumPayment = null,
+                minimum_payment = null,
                 account_number = null,
                 account_holder_name = null,
+                routing_number = null,
+                debit_card_number = null,
+                daily_withdrawal_limit = null,
+                overdraft_protection = 0,
+                original_balance = null,
+                term_months = null,
+                payment_amount = null,
+                monthly_payment = null,
+                payment_frequency = 'monthly',
+                next_payment_date = null,
+                loan_type = null,
+                paired_category_id = null,
+                rewards_program = null,
+                transfer_limit = null,
+                linked_savings_account = null,
                 notes = null
             } = accountData;
 
@@ -59,21 +78,39 @@ class AccountService {
             // Use either accountTypeCategory or account_type_category
             const finalAccountTypeCategory = accountTypeCategory || account_type_category || 'budget';
 
+            const finalCreditLimit = creditLimit ?? credit_limit;
+            const finalInterest = interestRate ?? interest_rate;
+            const finalDue = dueDate ?? due_date;
+            const finalMinPay = minimumPayment ?? minimum_payment;
+            const finalPaymentAmt = payment_amount ?? monthly_payment;
+
             await db.run(`
                 INSERT INTO accounts (
                     id, user_id, name, type, account_type_category,
                     balance, cleared_balance, working_balance,
                     currency, institution,
                     credit_limit, interest_rate, due_date, minimum_payment,
-                    account_number, account_holder_name, notes,
+                    account_number, routing_number, debit_card_number,
+                    daily_withdrawal_limit, overdraft_protection,
+                    account_holder_name, notes,
+                    original_balance, term_months, payment_amount,
+                    payment_frequency, next_payment_date,
+                    loan_type, paired_category_id,
+                    rewards_program, transfer_limit, linked_savings_account,
                     is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
             `, [
                 id, finalUserId, name, type, finalAccountTypeCategory,
                 balance, balance, balance,
                 currency, institution,
-                creditLimit, interestRate, dueDate, minimumPayment,
-                account_number, account_holder_name, notes
+                finalCreditLimit, finalInterest, finalDue, finalMinPay,
+                account_number, routing_number, debit_card_number,
+                daily_withdrawal_limit, overdraft_protection ? 1 : 0,
+                account_holder_name, notes,
+                original_balance, term_months, finalPaymentAmt,
+                payment_frequency || 'monthly', next_payment_date,
+                loan_type, paired_category_id,
+                rewards_program, transfer_limit, linked_savings_account
             ]);
 
             return this.getAccountById(id, finalUserId);
@@ -135,12 +172,15 @@ class AccountService {
             const allowedUpdates = [
                 'name', 'type', 'account_type_category', 'institution',
                 'account_number', 'account_holder_name', 'notes',
-                'routing_number', 'credit_limit', 'limit',
+                'routing_number', 'debit_card_number', 'daily_withdrawal_limit', 'overdraft_protection',
+                'credit_limit', 'limit',
                 'interest_rate', 'apr', 'due_date', 'dueDate',
                 'minimum_payment', 'minimumPayment', 'is_active',
                 'balance', 'original_balance', 'term_months', 'term',
-                'payment_amount', 'paymentAmount', 'payment_frequency',
-                'next_payment_date', 'nextPaymentDate'
+                'payment_amount', 'paymentAmount', 'monthly_payment', 'payment_frequency',
+                'next_payment_date', 'nextPaymentDate',
+                'loan_type', 'paired_category_id',
+                'rewards_program', 'transfer_limit', 'linked_savings_account'
             ];
 
             const setClauses = [];
@@ -156,6 +196,7 @@ class AccountService {
                     if (key === 'minimumPayment') columnName = 'minimum_payment';
                     if (key === 'term') columnName = 'term_months';
                     if (key === 'paymentAmount') columnName = 'payment_amount';
+                    if (key === 'monthly_payment') columnName = 'payment_amount';
                     if (key === 'nextPaymentDate') columnName = 'next_payment_date';
                     
                     setClauses.push(`${columnName} = ?`);

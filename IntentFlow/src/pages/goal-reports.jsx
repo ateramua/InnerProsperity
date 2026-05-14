@@ -75,7 +75,7 @@ export default function GoalReportsPage() {
           justifyContent: 'space-between',
           alignItems: 'center'
         }}>
-          <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Money Manager</h1>
+          <h1 style={{ fontSize: '1.5rem', margin: 0 }}>IntentFlow</h1>
           <nav style={{ display: 'flex', gap: '1rem' }}>
             <Link href="/">Budget</Link>
             <Link href="/forecast">Forecast</Link>

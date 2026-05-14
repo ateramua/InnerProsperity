@@ -1051,7 +1051,7 @@ const styles = {
   container: {
     width: '100%',
     padding: '2rem',
-    color: 'white'
+    color: '#0047AB'
   },
   header: {
     display: 'flex',
@@ -1093,10 +1093,10 @@ const styles = {
     fontSize: '1.25rem',
     fontWeight: '600',
     marginBottom: '1rem',
-    color: '#9CA3AF'
+    color: '#0047AB'
   },
   accountList: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     overflow: 'hidden'
   },
@@ -1125,7 +1125,7 @@ const styles = {
   },
   accountName: {
     fontWeight: '600',
-    color: 'white'
+    color: '#FFFFFF'
   },
   accountMeta: {
     fontSize: '0.875rem',
@@ -1212,7 +1212,7 @@ const styles = {
     zIndex: 1000
   },
   modalContent: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem',
     padding: '2rem',
     width: '90%',
@@ -1263,7 +1263,7 @@ const styles = {
   input: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1280,7 +1280,7 @@ const styles = {
   select: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1289,7 +1289,7 @@ const styles = {
   textarea: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1311,7 +1311,7 @@ const styles = {
   inputWithSymbol: {
     width: '100%',
     padding: '0.75rem 0.75rem 0.75rem 1.75rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
@@ -1346,7 +1346,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '0.5rem',
-    background: '#111827',
+    background: '#0047AB',
     padding: '0.75rem',
     borderRadius: '0.5rem',
     border: '1px solid #374151'

@@ -489,7 +489,7 @@ const styles = {
     padding: '2rem',
     maxWidth: '1400px',
     margin: '0 auto',
-    color: 'white'
+    color: '#0047AB'
   },
   loadingContainer: {
     display: 'flex',
@@ -520,9 +520,7 @@ const styles = {
     fontSize: '2rem',
     fontWeight: 'bold',
     margin: 0,
-    background: 'linear-gradient(135deg, #3B82F6, #10B981)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent'
+    color: '#0047AB'
   },
   subtitle: {
     fontSize: '0.875rem',
@@ -536,7 +534,7 @@ const styles = {
     marginBottom: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -557,7 +555,7 @@ const styles = {
   },
   summaryLabel: {
     fontSize: '0.75rem',
-    color: '#9CA3AF',
+    color: 'rgba(255,255,255,0.75)',
     marginBottom: '0.25rem',
     textTransform: 'uppercase',
     letterSpacing: '0.05em',
@@ -572,7 +570,8 @@ const styles = {
     display: 'block',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
-    textOverflow: 'ellipsis'
+    textOverflow: 'ellipsis',
+    color: '#FFFFFF'
   },
   filterSection: {
     marginBottom: '2rem'
@@ -601,7 +600,7 @@ const styles = {
   },
   tableContainer: {
     overflowX: 'auto',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
   },
@@ -612,7 +611,7 @@ const styles = {
   },
   tableHeader: {
     borderBottom: '1px solid #374151',
-    background: '#111827'
+    background: '#0047AB'
   },
   th: {
     padding: '1rem',
@@ -700,7 +699,7 @@ const styles = {
   },
   editInput: {
     padding: '0.25rem 0.5rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #3B82F6',
     borderRadius: '0.375rem',
     color: 'white',
@@ -710,7 +709,7 @@ const styles = {
   emptyState: {
     textAlign: 'center',
     padding: '3rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     border: '1px solid #374151'
   },
@@ -731,7 +730,7 @@ const styles = {
   errorContainer: {
     textAlign: 'center',
     padding: '2rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '0.75rem',
     border: '1px solid #EF4444'
   },

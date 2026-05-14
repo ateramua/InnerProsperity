@@ -1,5 +1,6 @@
 // src/views/SummaryView.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import PM from '../constants/pmTheme.js';
 
 const SummaryView = ({
   totalAvailable = 0,
@@ -332,24 +333,19 @@ const SummaryView = ({
       const isExpense = transactionForm.transactionType === 'outflow';
 
       let transactionAmount = 0;
-      let balanceChange = 0;
 
-      // Calculate transaction amount and balance change
+      // Calculate signed transaction amount for the ledger
       if (isCreditOrLoan) {
         if (isExpense) {
           transactionAmount = -Math.abs(amountValue);
-          balanceChange = -Math.abs(amountValue);
         } else {
           transactionAmount = Math.abs(amountValue);
-          balanceChange = Math.abs(amountValue);
         }
       } else {
         if (isExpense) {
           transactionAmount = -Math.abs(amountValue);
-          balanceChange = -Math.abs(amountValue);
         } else {
           transactionAmount = Math.abs(amountValue);
-          balanceChange = Math.abs(amountValue);
         }
       }
 
@@ -388,50 +384,21 @@ const SummaryView = ({
 
       console.log('✅ Transaction added successfully:', transactionResult.data);
 
-      // Step 2: Calculate new balance
-      const currentBalance = selectedAccount.balance || 0;
-      const newBalance = currentBalance + balanceChange;
-
-      console.log(`💰 Account balance update:`);
-      console.log(`   Account: ${selectedAccount.name} (${selectedAccount.type})`);
-      console.log(`   Current balance: ${formatCurrency(currentBalance)}`);
-      console.log(`   Change: ${balanceChange > 0 ? '+' : ''}${formatCurrency(balanceChange)}`);
-      console.log(`   New balance: ${formatCurrency(newBalance)}`);
-
-      // Step 3: Update the account balance in the database
-      const updateResult = await window.electronAPI.updateAccount(
-        selectedAccount.id,
-        userId,
-        { balance: newBalance }
-      );
-
-      if (!updateResult.success) {
-        console.error('❌ Account balance update failed:', updateResult.error);
-        setTransactionError('Transaction added but failed to update account balance. Please refresh the page.');
-        return;
-      }
-
-      console.log('✅ Account balance updated successfully:', updateResult.data);
-
-      // Step 4: Verify the update by fetching the account again
-      const verifyResult = await window.electronAPI.getAccountsSummary(userId);
-      if (verifyResult?.success) {
-        const updatedAccount = verifyResult.data.find(a => a.id === selectedAccount.id);
-        if (updatedAccount) {
-          console.log(`✅ Verification - New balance from DB: ${formatCurrency(updatedAccount.balance)}`);
-        }
-      }
-
-      // Step 5: Refresh all UI components
       await loadAccounts();
 
-      // Force a refresh of the accounts in the parent component
+      const verifyResult = await window.electronAPI.getAccountsSummary(userId);
+      let displayedBalance = null;
+      if (verifyResult?.success) {
+        const updatedAccount = verifyResult.data.find(a => a.id === selectedAccount.id);
+        if (updatedAccount) displayedBalance = updatedAccount.balance;
+      }
+
       window.dispatchEvent(new CustomEvent('accounts-updated', {
-        detail: { accountId: selectedAccount.id, newBalance: newBalance }
+        detail: { accountId: selectedAccount.id, newBalance: displayedBalance }
       }));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
 
-      // Step 6: Reset form and close modal
+      // Reset form and close modal
       setTransactionForm({
         accountId: '',
         transactionType: 'outflow',
@@ -448,7 +415,8 @@ const SummaryView = ({
 
       setShowAddTransactionModal(false);
       fetchPayees();
-      alert(`✅ Transaction added successfully!\n\nAccount: ${selectedAccount.name}\nNew balance: ${formatCurrency(newBalance)}`);
+      const balanceLine = displayedBalance != null ? `\nNew balance: ${formatCurrency(displayedBalance)}` : '';
+      alert(`✅ Transaction added successfully!\n\nAccount: ${selectedAccount.name}${balanceLine}`);
 
     } catch (error) {
       console.error('❌ Error in transaction flow:', error);
@@ -466,7 +434,6 @@ const SummaryView = ({
     const isExpense = transactionForm.transactionType === 'outflow';
 
     let transactionAmount = 0;
-    let balanceChange = 0;
 
     // ==================== HANDLE CREDIT CARD TRANSFER (Using new linked transfer API) ====================
     if (transactionForm.isTransfer && selectedCreditCardCategory && account.type !== 'credit') {
@@ -530,18 +497,14 @@ const SummaryView = ({
     if (isCreditOrLoan) {
       if (isExpense) {
         transactionAmount = -amountValue;
-        balanceChange = -amountValue;
       } else {
         transactionAmount = amountValue;
-        balanceChange = amountValue;
       }
     } else {
       if (isExpense) {
         transactionAmount = -amountValue;
-        balanceChange = -amountValue;
       } else {
         transactionAmount = amountValue;
-        balanceChange = amountValue;
       }
     }
 
@@ -572,11 +535,13 @@ const SummaryView = ({
       throw new Error(result.error || 'Failed to add transaction');
     }
 
-    const currentBalance = account.balance || 0;
-    const newBalance = currentBalance + balanceChange;
-    await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+    const summary = await window.electronAPI.getAccountsSummary(userId);
+    const refreshed = summary?.success && summary.data
+      ? summary.data.find(a => a.id === account.id)
+      : null;
+    const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
-    console.log(`✅ Regular transaction added. Balance: ${currentBalance} → ${newBalance}`);
+    console.log(`✅ Regular transaction added. Ledger balance: ${newBalance}`);
 
     return newBalance;
   };
@@ -669,9 +634,6 @@ const SummaryView = ({
         newAmount = isExpense ? -amountValue : amountValue;
       }
 
-      const oldAmount = originalTransaction.amount;
-      const amountDifference = newAmount - oldAmount;
-
       const updateData = {
         date: editFormData.date,
         payee: editFormData.payee,
@@ -685,11 +647,13 @@ const SummaryView = ({
         throw new Error(updateResult.error || 'Failed to update transaction');
       }
 
-      const currentBalance = account.balance || 0;
-      const newBalance = currentBalance + amountDifference;
-      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
       await loadAccountData(account.id);
+
+      const summary = await window.electronAPI.getAccountsSummary(userId);
+      const refreshed = summary?.success && summary.data
+        ? summary.data.find(a => a.id === account.id)
+        : null;
+      const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
       cancelEditing();
 
@@ -1128,7 +1092,7 @@ const SummaryView = ({
       id: 'reset',
       name: '🔄 Reset All Assigned',
       description: 'Set all categories to $0 assigned',
-      color: '#6B7280',
+      color: '#38BDF8',
       action: generateResetAllocation
     }
   ];
@@ -1153,14 +1117,7 @@ const SummaryView = ({
       const userId = userResult.data.id;
       const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
 
-      let totalBalanceChange = 0;
-
-      // First pass: calculate total balance change
-      for (const transaction of selectedTransactionsList) {
-        totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
-      }
-
-      // Second pass: delete transactions
+      // Delete transactions (main process syncs ledger + budget)
       for (const transaction of selectedTransactionsList) {
         let deleteResult;
 
@@ -1179,11 +1136,13 @@ const SummaryView = ({
         }
       }
 
-      const currentBalance = account.balance || 0;
-      const newBalance = currentBalance + totalBalanceChange;
-      await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
       await loadAccountData(account.id);
+
+      const summary = await window.electronAPI.getAccountsSummary(userId);
+      const refreshed = summary?.success && summary.data
+        ? summary.data.find(a => a.id === account.id)
+        : null;
+      const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
       setSelectedTransactions(new Set());
       setShowDeleteModal(false);
@@ -1370,8 +1329,8 @@ const SummaryView = ({
                   key={strategy.id}
                   style={{
                     ...styles.strategyCard,
-                    borderColor: selectedStrategy === strategy.id ? strategy.color : '#374151',
-                    background: selectedStrategy === strategy.id ? `${strategy.color}20` : '#111827'
+                    borderColor: selectedStrategy === strategy.id ? strategy.color : PM.border,
+                    background: selectedStrategy === strategy.id ? `${strategy.color}20` : PM.bg
                   }}
                   onClick={() => handleStrategySelect(strategy.id)}
                 >
@@ -1458,7 +1417,7 @@ const SummaryView = ({
                   </div>
                   <div style={styles.previewSummary}>
                     <div>Total: {formatCurrency(previewResults.totalToAssign)}</div>
-                    <div style={{ fontSize: '0.65rem', color: '#6B7280' }}>
+                    <div style={{ fontSize: '0.65rem', color: PM.textMuted }}>
                       Remaining: {formatCurrency(previewResults.remainingAfter)}
                     </div>
                   </div>
@@ -1785,65 +1744,65 @@ const styles = {
   container: {
     width: '100%',
     maxWidth: '400px',
-    background: '#0047AB',
+    background: PM.fg,
     borderRadius: '1rem',
     padding: '1.5rem',
-    border: '1px solid #374151',
+    border: '1px solid ' + PM.border,
     position: 'sticky',
     top: '2rem'
   },
   header: { marginBottom: '1.5rem' },
   title: { fontSize: '1.25rem', fontWeight: '600', color: 'white', margin: '0 0 0.25rem 0' },
-  month: { fontSize: '0.875rem', color: '#000000' },
+  month: { fontSize: '0.875rem', color: PM.textMuted },
   metricsContainer: { display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' },
-  metricCard: { display: 'flex', alignItems: 'center', gap: '1rem', padding: '1rem', background: '#0A2472', borderRadius: '0.75rem', border: '1px solid #0A2472' },
+  metricCard: { display: 'flex', alignItems: 'center', gap: '1rem', padding: '1rem', background: PM.bg, borderRadius: '0.75rem', border: '1px solid ' + PM.border },
   metricIcon: { fontSize: '2rem' },
   metricContent: { flex: 1 },
-  metricLabel: { fontSize: '0.875rem', color: '#9CA3AF', marginBottom: '0.25rem' },
+  metricLabel: { fontSize: '0.875rem', color: PM.textMuted, marginBottom: '0.25rem' },
   metricValue: { fontSize: '1.5rem', fontWeight: 'bold', color: 'white', lineHeight: '1.2' },
-  metricSubtext: { fontSize: '0.75rem', color: '#6B7280', marginTop: '0.25rem' },
+  metricSubtext: { fontSize: '0.75rem', color: PM.textMuted, marginTop: '0.25rem' },
   progressSection: { marginBottom: '1.5rem' },
   progressHeader: { display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' },
-  progressTitle: { fontSize: '0.875rem', color: '#0A2472' },
+  progressTitle: { fontSize: '0.875rem', color: PM.textMuted },
   progressPercentage: { fontSize: '0.875rem', fontWeight: '600', color: 'white' },
-  progressBarBackground: { height: '8px', background: '#0A2472', borderRadius: '4px', overflow: 'hidden' },
+  progressBarBackground: { height: '8px', background: PM.bg, borderRadius: '4px', overflow: 'hidden' },
   progressBarFill: { height: '100%', borderRadius: '4px', transition: 'width 0.3s ease' },
   statsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' },
-  statItem: { padding: '0.75rem', background: '#0A2472', borderRadius: '0.5rem', textAlign: 'center' },
-  statLabel: { display: 'block', fontSize: '0.75rem', color: '#9CA3AF', marginBottom: '0.25rem' },
+  statItem: { padding: '0.75rem', background: PM.bg, borderRadius: '0.5rem', textAlign: 'center' },
+  statLabel: { display: 'block', fontSize: '0.75rem', color: PM.textMuted, marginBottom: '0.25rem' },
   statValue: { fontSize: '1rem', fontWeight: '600', color: 'white' },
-  autoAssignSection: { marginBottom: '1.5rem', background: '#0A2472', borderRadius: '0.75rem', border: '1px solid #374151', overflow: 'hidden' },
-  autoAssignHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', background: '#0A2472', borderBottom: '1px solid #0A2472', cursor: 'pointer' },
+  autoAssignSection: { marginBottom: '1.5rem', background: PM.bg, borderRadius: '0.75rem', border: '1px solid ' + PM.border, overflow: 'hidden' },
+  autoAssignHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', background: PM.bg, borderBottom: '1px solid ' + PM.border, cursor: 'pointer' },
   autoAssignTitle: { fontSize: '1rem', fontWeight: '600', color: 'white', margin: 0 },
-  autoAssignToggle: { background: '#0A2472', border: 'none', color: '#9CA3AF', fontSize: '0.9rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' },
+  autoAssignToggle: { background: PM.bg, border: 'none', color: PM.textMuted, fontSize: '0.9rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' },
   autoAssignOptions: { padding: '1rem' },
   strategyGrid: { display: 'grid', gridTemplateColumns: '1fr', gap: '0.75rem', marginBottom: '1rem' },
-  strategyCard: { display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem', background: '#111827', border: '2px solid #374151', borderRadius: '0.5rem', cursor: 'pointer', textAlign: 'left', transition: 'all 0.2s ease' },
+  strategyCard: { display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem', background: PM.bg, border: '2px solid ' + PM.border, borderRadius: '0.5rem', cursor: 'pointer', textAlign: 'left', transition: 'all 0.2s ease' },
   strategyIcon: { fontSize: '1.5rem' },
   strategyContent: { flex: 1 },
   strategyName: { fontSize: '0.95rem', fontWeight: '600', color: 'white', marginBottom: '0.25rem' },
-  strategyDescription: { fontSize: '0.75rem', color: '#9CA3AF' },
-  weightControls: { background: '#0F172A', padding: '12px', borderRadius: '8px', marginBottom: '12px' },
-  weightLabel: { fontSize: '12px', color: '#94A3B8', marginBottom: '8px' },
+  strategyDescription: { fontSize: '0.75rem', color: PM.textMuted },
+  weightControls: { background: PM.bg, padding: '12px', borderRadius: '8px', marginBottom: '12px' },
+  weightLabel: { fontSize: '12px', color: PM.textMuted, marginBottom: '8px' },
   sliderGroup: { marginBottom: '8px' },
   slider: { width: '100%', margin: '4px 0' },
-  calculating: { padding: '1rem', textAlign: 'center', color: '#9CA3AF', fontStyle: 'italic', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' },
-  spinner: { width: '16px', height: '16px', border: '2px solid #374151', borderTopColor: '#8B5CF6', borderRadius: '50%', animation: 'spin 1s linear infinite' },
-  previewContainer: { marginTop: '1rem', padding: '1rem', background: '#111827', borderRadius: '0.5rem', border: '1px solid #374151' },
+  calculating: { padding: '1rem', textAlign: 'center', color: PM.textMuted, fontStyle: 'italic', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' },
+  spinner: { width: '16px', height: '16px', border: '2px solid ' + PM.border, borderTopColor: '#8B5CF6', borderRadius: '50%', animation: 'spin 1s linear infinite' },
+  previewContainer: { marginTop: '1rem', padding: '1rem', background: PM.bg, borderRadius: '0.5rem', border: '1px solid ' + PM.border },
   previewHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' },
   previewTitle: { fontSize: '0.9rem', fontWeight: '600', color: '#8B5CF6' },
   previewMessage: { fontSize: '0.7rem', color: '#4ADE80', marginTop: '0.25rem' },
-  previewSummary: { fontSize: '0.7rem', color: '#9CA3AF' },
+  previewSummary: { fontSize: '0.7rem', color: PM.textMuted },
   previewList: { maxHeight: '300px', overflowY: 'auto', marginBottom: '1rem' },
-  previewItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid #374151' },
+  previewItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid ' + PM.border },
   previewItemInfo: { flex: 1, marginRight: '1rem' },
   previewItemName: { fontSize: '0.85rem', fontWeight: '500', color: 'white', display: 'block' },
-  previewItemReason: { fontSize: '0.65rem', color: '#9CA3AF', display: 'block' },
+  previewItemReason: { fontSize: '0.65rem', color: PM.textMuted, display: 'block' },
   priorityBadge: { fontSize: '0.6rem', color: '#8B5CF6', marginTop: '2px' },
-  previewProgressBar: { marginTop: '0.25rem', height: '3px', background: '#374151', borderRadius: '2px', overflow: 'hidden' },
+  previewProgressBar: { marginTop: '0.25rem', height: '3px', background: PM.fg, borderRadius: '2px', overflow: 'hidden' },
   previewProgressFill: { height: '100%', borderRadius: '2px', transition: 'width 0.2s ease' },
   previewItemAmount: { fontSize: '0.85rem', fontWeight: '600', whiteSpace: 'nowrap' },
-  previewMore: { textAlign: 'center', padding: '0.5rem', color: '#9CA3AF', fontSize: '0.7rem', fontStyle: 'italic' },
+  previewMore: { textAlign: 'center', padding: '0.5rem', color: PM.textMuted, fontSize: '0.7rem', fontStyle: 'italic' },
   previewActions: { display: 'flex', gap: '0.5rem' },
   applyButton: { flex: 1, padding: '0.5rem', background: '#8B5CF6', color: 'white', border: 'none', borderRadius: '0.25rem', fontSize: '0.8rem', fontWeight: '500', cursor: 'pointer', transition: 'all 0.2s ease' },
   cancelPreviewButton: { flex: 1, padding: '0.5rem', background: '#4B5563', color: 'white', border: 'none', borderRadius: '0.25rem', fontSize: '0.8rem', cursor: 'pointer' },
@@ -1851,9 +1810,9 @@ const styles = {
   addTransactionCard: {
     marginTop: '1rem',
     padding: '1rem',
-    background: '#0A2472',
+    background: PM.bg,
     borderRadius: '0.75rem',
-    border: '1px solid #374151'
+    border: '1px solid ' + PM.border
   },
   addTransactionHeader: {
     display: 'flex',
@@ -1881,7 +1840,7 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(0, 0, 0, 0.8)',
+    background: PM.overlay,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1889,27 +1848,28 @@ const styles = {
     backdropFilter: 'blur(4px)'
   },
   modalContent: {
-    background: '#1F2937',
+    background: PM.fg,
     borderRadius: '1rem',
     width: '90%',
     maxWidth: '500px',
     maxHeight: '90vh',
     display: 'flex',
     flexDirection: 'column',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+    boxShadow: PM.shadow,
+    border: '1px solid ' + PM.border
   },
   modalHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '1.5rem',
-    borderBottom: '1px solid #374151'
+    borderBottom: '1px solid ' + PM.border
   },
   modalTitle: { fontSize: '1.25rem', fontWeight: '600', color: 'white', margin: 0 },
   closeButton: {
     background: 'none',
     border: 'none',
-    color: '#9CA3AF',
+    color: PM.textMuted,
     fontSize: '1.25rem',
     cursor: 'pointer',
     padding: '0.25rem 0.5rem',
@@ -1917,52 +1877,52 @@ const styles = {
     transition: 'all 0.2s'
   },
   modalBody: { padding: '1.5rem', overflowY: 'auto', flex: 1 },
-  modalFooter: { display: 'flex', gap: '1rem', padding: '1.5rem', borderTop: '1px solid #374151' },
+  modalFooter: { display: 'flex', gap: '1rem', padding: '1.5rem', borderTop: '1px solid ' + PM.border },
   formGroup: { marginBottom: '1rem' },
-  label: { display: 'block', marginBottom: '0.5rem', color: '#9CA3AF', fontSize: '0.875rem', fontWeight: '500' },
+  label: { display: 'block', marginBottom: '0.5rem', color: PM.textMuted, fontSize: '0.875rem', fontWeight: '500' },
   disabledLabel: { opacity: 0.6 },
   autoManagedBadge: { fontSize: '0.7rem', color: '#F59E0B', marginLeft: '0.5rem' },
   input: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
-    border: '1px solid #374151',
+    background: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '0.5rem',
-    color: 'white',
+    color: PM.text,
     fontSize: '0.875rem'
   },
   select: {
     width: '100%',
     padding: '0.75rem',
-    background: '#111827',
-    border: '1px solid #374151',
+    background: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '0.5rem',
-    color: 'white',
+    color: PM.text,
     fontSize: '0.875rem',
     cursor: 'pointer'
   },
   hint: { display: 'block', marginTop: '0.5rem', color: '#F87171', fontSize: '0.75rem' },
-  payeeHint: { marginTop: '0.25rem', fontSize: '0.65rem', color: '#6B7280' },
+  payeeHint: { marginTop: '0.25rem', fontSize: '0.65rem', color: PM.textMuted },
   inputWrapper: { position: 'relative' },
   currencySymbol: {
     position: 'absolute',
     left: '0.75rem',
     top: '50%',
     transform: 'translateY(-50%)',
-    color: '#9CA3AF',
+    color: PM.textMuted,
     zIndex: 1
   },
   modalInput: {
     width: '100%',
     padding: '0.75rem 0.75rem 0.75rem 2rem',
-    background: '#111827',
-    border: '1px solid #374151',
+    background: PM.well,
+    border: '1px solid ' + PM.border,
     borderRadius: '0.5rem',
-    color: 'white',
+    color: PM.text,
     fontSize: '0.875rem'
   },
   checkboxGroup: { marginTop: '0.5rem' },
-  checkboxLabel: { display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#9CA3AF', fontSize: '0.875rem', cursor: 'pointer' },
+  checkboxLabel: { display: 'flex', alignItems: 'center', gap: '0.5rem', color: PM.textMuted, fontSize: '0.875rem', cursor: 'pointer' },
   checkbox: { width: '1rem', height: '1rem', cursor: 'pointer' },
   errorMessage: {
     marginTop: '0.75rem',
@@ -1977,9 +1937,9 @@ const styles = {
   cancelModalButton: {
     flex: 1,
     padding: '0.75rem',
-    background: '#4B5563',
-    color: 'white',
-    border: 'none',
+    background: PM.bg,
+    color: PM.text,
+    border: '1px solid ' + PM.border,
     borderRadius: '0.5rem',
     fontSize: '0.875rem',
     fontWeight: '500',
@@ -1997,7 +1957,7 @@ const styles = {
     cursor: 'pointer'
   },
   transferPaymentInfo: {
-    background: 'linear-gradient(135deg, #1E3A5F, #0F172A)',
+    background: PM.bg,
     padding: '1rem',
     borderRadius: '0.75rem',
     border: '1px solid #F59E0B',
@@ -2012,13 +1972,13 @@ const styles = {
   },
   transferPaymentMessage: {
     fontSize: '0.875rem',
-    color: '#9CA3AF',
+    color: PM.textMuted,
     marginBottom: '0.75rem',
   },
   loadingPayees: {
     padding: '0.75rem',
     textAlign: 'center',
-    color: '#9CA3AF',
+    color: PM.textMuted,
     fontSize: '0.875rem',
   },
 };

@@ -100,6 +100,9 @@ try {
     getCategories: (userId) =>
       ipcRenderer.invoke('getCategories', userId),
 
+    getBudgetMonthSnapshot: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:getMonthSnapshot', userId, monthKey),
+
     createCategory: (categoryData) =>
       ipcRenderer.invoke('createCategory', categoryData),
 

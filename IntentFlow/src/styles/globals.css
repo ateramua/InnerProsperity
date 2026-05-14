@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --if-bg: #3b82f6;
+  --if-fg: #0047ab;
+  --if-on-fg: #ffffff;
+}
+
 /* Custom animations */
 @keyframes spin {
   0% { transform: rotate(0deg); }
@@ -40,9 +46,11 @@
   @apply border-b border-gray-600 cursor-pointer transition-colors duration-200 hover:bg-gray-700;
 }
 
-/* Glass morphism effect */
+/* Glass morphism — sits on APP_BG; border uses foreground blue */
 .glass {
-  @apply backdrop-blur-md bg-white/10 border border-white/20;
+  @apply backdrop-blur-md;
+  background-color: rgba(255, 255, 255, 0.12);
+  border: 2px solid var(--if-fg);
 }
 
 /* Responsive utilities */

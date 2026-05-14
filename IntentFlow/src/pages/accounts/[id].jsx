@@ -14,6 +14,7 @@ const AccountDetailPage = () => {
     const [categoryGroups, setCategoryGroups] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showAddModal, setShowAddModal] = useState(false);
+    const [loadingCategories, setLoadingCategories] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [transactionError, setTransactionError] = useState('');
     const [showScheduledSection, setShowScheduledSection] = useState(true);
@@ -110,6 +111,12 @@ const AccountDetailPage = () => {
         }).format(amount || 0);
     };
 
+    const isCategoryArchived = (cat) => {
+        if (!cat) return true;
+        const a = cat.archived;
+        return a === true || a === 1 || a === '1' || a === 'true';
+    };
+
     // Get filtered categories based on transaction type
     const getFilteredCategories = () => {
         if (transactionForm.transactionType === 'inflow') {
@@ -118,7 +125,7 @@ const AccountDetailPage = () => {
         if (!categories || categories.length === 0) {
             return [];
         }
-        return categories.filter(cat => cat && !cat.archived);
+        return categories.filter((cat) => cat && !isCategoryArchived(cat));
     };
 
     // ===================== PAYEE DROPDOWN FUNCTIONS =====================
@@ -327,8 +334,8 @@ const AccountDetailPage = () => {
                     if (paymentGroup) {
                         const categoriesResult = await window.electronAPI.getCategories(userId);
                         if (categoriesResult?.success) {
-                            const paymentCategories = categoriesResult.data.filter(cat =>
-                                cat.group_id === paymentGroup.id && !cat.archived
+                            const paymentCategories = categoriesResult.data.filter((cat) =>
+                                String(cat.group_id) === String(paymentGroup.id) && !isCategoryArchived(cat)
                             );
                             setCreditCardPaymentCategories(paymentCategories);
                         }
@@ -344,7 +351,6 @@ const AccountDetailPage = () => {
     const createCreditCardTransferTransaction = async (amountValue, userId) => {
         const isExpense = transactionForm.transactionType === 'outflow';
         const transactionAmount = isExpense ? -amountValue : amountValue;
-        const balanceChange = isExpense ? -amountValue : amountValue;
 
         const transactionData = {
             accountId: account.id,
@@ -398,9 +404,11 @@ const AccountDetailPage = () => {
             }
         }
 
-        const currentBalance = account.balance || 0;
-        const newBalance = currentBalance + balanceChange;
-        await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
+        const summary = await window.electronAPI.getAccountsSummary(userId);
+        const refreshed = summary?.success && summary.data
+            ? summary.data.find(a => a.id === account.id)
+            : null;
+        const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
         return newBalance;
     };
@@ -651,32 +659,6 @@ const AccountDetailPage = () => {
         }
         console.groupEnd();
 
-        // ========== STEP 5: Update checking account balance ==========
-        console.group('💳 STEP 5: UPDATE CHECKING ACCOUNT BALANCE');
-        console.log('Current checking balance:', account.balance);
-
-        const currentBalance = account.balance || 0;
-        const newBalance = currentBalance + balanceChange;
-        console.log('New checking balance:', newBalance);
-
-        await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-        console.log('✅ Checking account balance updated');
-        console.groupEnd();
-
-        // ========== STEP 6: Update loan account balance ==========
-        console.group('🏦 STEP 6: UPDATE LOAN ACCOUNT BALANCE');
-        console.log('Current loan balance:', selectedLoanAccount.balance);
-        console.log('Principal reduction:', breakdown.principalPortion);
-
-        const currentLoanBalance = selectedLoanAccount.balance || 0;
-        const newLoanBalance = currentLoanBalance + breakdown.principalPortion;
-        console.log('New loan balance:', newLoanBalance);
-
-        await window.electronAPI.updateAccount(selectedLoanAccount.id, userId, { balance: newLoanBalance });
-        console.log('✅ Loan account balance updated');
-        console.groupEnd();
-
-        // ========== STEP 7: Final verification ==========
         console.group('🔍🔍🔍 FINAL VERIFICATION');
         console.log('Created transactions:');
         console.log('  - Outflow ID:', outflowId, '(Checking: -' + amountValue + ')');
@@ -684,6 +666,12 @@ const AccountDetailPage = () => {
         if (interestId) console.log('  - Interest ID:', interestId, '(Loan: -' + breakdown.interestPortion + ')');
         console.log('✅ Loan payment completed successfully');
         console.groupEnd();
+
+        const summary = await window.electronAPI.getAccountsSummary(userId);
+        const checkingRefreshed = summary?.success && summary.data
+            ? summary.data.find(a => a.id === account.id)
+            : null;
+        const newBalance = checkingRefreshed != null ? checkingRefreshed.balance : account.balance;
 
         console.groupEnd('🔷🔷🔷 LOAN PAYMENT DEBUG - END 🔷🔷🔷');
 
@@ -785,27 +773,18 @@ const AccountDetailPage = () => {
                 newAmount = isExpense ? -amountValue : amountValue;
             }
 
-            const oldAmount = originalTransaction.amount;
-            const amountDifference = newAmount - oldAmount;
-
-            const updateData = {
-                date: editFormData.date,
-                payee: editFormData.payee,
-                amount: newAmount,
-                categoryId: editFormData.categoryId === 'inflow_ready_to_assign' ? null : editFormData.categoryId,
-                memo: editFormData.memo
-            };
-
             const updateResult = await window.electronAPI.updateTransaction(transactionId, updateData);
             if (!updateResult.success) {
                 throw new Error(updateResult.error || 'Failed to update transaction');
             }
 
-            const currentBalance = account.balance || 0;
-            const newBalance = currentBalance + amountDifference;
-            await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
             await loadAccountData(account.id);
+
+            const summary = await window.electronAPI.getAccountsSummary(userId);
+            const refreshed = summary?.success && summary.data
+                ? summary.data.find(a => a.id === account.id)
+                : null;
+            const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
             cancelEditing();
 
@@ -850,7 +829,6 @@ const AccountDetailPage = () => {
             const amountValue = Math.abs(parseFloat(scheduledTx.amount));
 
             let transactionAmount = isExpense ? -amountValue : amountValue;
-            let balanceChange = isExpense ? -amountValue : amountValue;
 
             const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
                 scheduledTx.categoryId === 'inflow_ready_to_assign';
@@ -872,14 +850,16 @@ const AccountDetailPage = () => {
                 return;
             }
 
-            const currentBalance = account.balance || 0;
-            const newBalance = currentBalance + balanceChange;
-            await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
             await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
 
             await loadAccountData(account.id);
             await loadScheduledTransactions();
+
+            const summary = await window.electronAPI.getAccountsSummary(userId);
+            const refreshed = summary?.success && summary.data
+                ? summary.data.find(a => a.id === account.id)
+                : null;
+            const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
             window.dispatchEvent(new CustomEvent('accounts-updated'));
             window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
@@ -976,11 +956,6 @@ const AccountDetailPage = () => {
             const userId = userResult.data.id;
             const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
 
-            let totalBalanceChange = 0;
-            for (const transaction of selectedTransactionsList) {
-                totalBalanceChange += calculateBalanceChangeForTransaction(transaction);
-            }
-
             for (const transaction of selectedTransactionsList) {
                 const deleteResult = await window.electronAPI.deleteTransaction(transaction.id);
                 if (!deleteResult.success) {
@@ -988,11 +963,13 @@ const AccountDetailPage = () => {
                 }
             }
 
-            const currentBalance = account.balance || 0;
-            const newBalance = currentBalance + totalBalanceChange;
-            await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
             await loadAccountData(account.id);
+
+            const summary = await window.electronAPI.getAccountsSummary(userId);
+            const refreshed = summary?.success && summary.data
+                ? summary.data.find(a => a.id === account.id)
+                : null;
+            const newBalance = refreshed != null ? refreshed.balance : account.balance;
 
             setSelectedTransactions(new Set());
             setShowDeleteModal(false);
@@ -1023,27 +1000,83 @@ const AccountDetailPage = () => {
         }
     }, [account?.id]);
 
-    // Load categories and payees when modal opens
+    // Load payees and related data when modal opens (categories loaded below when Outflow)
     useEffect(() => {
         if (showAddModal) {
-            loadCategories();
             loadLoanAccounts();
             loadCreditCardPaymentCategories();
             fetchPayees();
         }
     }, [showAddModal]);
 
+    // Always load fresh categories from DB for Outflow (single source of truth for the dropdown)
+    useEffect(() => {
+        if (!showAddModal || transactionForm.transactionType !== 'outflow') return;
+        loadCategories();
+    }, [showAddModal, transactionForm.transactionType]);
+
     const loadCategories = async () => {
+        setLoadingCategories(true);
         try {
             const userResult = await window.electronAPI.getCurrentUser();
-            if (userResult?.success && userResult?.data) {
-                const categoriesResult = await window.electronAPI.getCategories(userResult.data.id);
-                if (categoriesResult?.success) {
-                    setCategories(categoriesResult.data);
+            if (!userResult?.success || !userResult?.data) {
+                setCategories([]);
+                return;
+            }
+            const userId = userResult.data.id;
+
+            const flattenGrouped = (groupedData) => {
+                const seen = new Set();
+                const flat = [];
+                for (const group of groupedData || []) {
+                    const gName = group?.name || '';
+                    for (const c of group.categories || []) {
+                        if (c?.id == null || c.id === '') continue;
+                        const idKey = String(c.id);
+                        if (seen.has(idKey)) continue;
+                        if (isCategoryArchived(c)) continue;
+                        seen.add(idKey);
+                        flat.push({
+                            ...c,
+                            group_name: c.group_name || gName
+                        });
+                    }
+                }
+                flat.sort((a, b) => {
+                    const ga = (a.group_name || '').localeCompare(b.group_name || '');
+                    if (ga !== 0) return ga;
+                    return (a.name || '').localeCompare(b.name || '');
+                });
+                return flat;
+            };
+
+            let flat = [];
+
+            if (window.electronAPI?.getGroupsWithCategories) {
+                try {
+                    const grouped = await window.electronAPI.getGroupsWithCategories(userId);
+                    if (grouped?.success && Array.isArray(grouped.data) && grouped.data.length > 0) {
+                        flat = flattenGrouped(grouped.data);
+                    }
+                } catch (e) {
+                    console.warn('getGroupsWithCategories failed, falling back to getCategories:', e.message);
                 }
             }
+
+            if (flat.length === 0) {
+                const categoriesResult = await window.electronAPI.getCategories(userId);
+                if (categoriesResult?.success) {
+                    const rows = categoriesResult.data || [];
+                    flat = rows.filter((c) => c && !isCategoryArchived(c));
+                }
+            }
+
+            setCategories(flat);
         } catch (error) {
             console.error('Error loading categories:', error);
+            setCategories([]);
+        } finally {
+            setLoadingCategories(false);
         }
     };
 
@@ -1104,7 +1137,6 @@ const AccountDetailPage = () => {
         const isExpense = transactionForm.transactionType === 'outflow';
 
         let transactionAmount = 0;
-        let balanceChange = 0;
 
         // Handle credit card transfer
         if (transactionForm.isTransfer && selectedCreditCardCategory && account.type !== 'credit') {
@@ -1121,18 +1153,14 @@ const AccountDetailPage = () => {
         if (isCreditOrLoan) {
             if (isExpense) {
                 transactionAmount = -amountValue;
-                balanceChange = -amountValue;
             } else {
                 transactionAmount = amountValue;
-                balanceChange = amountValue;
             }
         } else {
             if (isExpense) {
                 transactionAmount = -amountValue;
-                balanceChange = -amountValue;
             } else {
                 transactionAmount = amountValue;
-                balanceChange = amountValue;
             }
         }
 
@@ -1163,11 +1191,11 @@ const AccountDetailPage = () => {
             throw new Error(result.error || 'Failed to add transaction');
         }
 
-        const currentBalance = account.balance || 0;
-        const newBalance = currentBalance + balanceChange;
-        await window.electronAPI.updateAccount(account.id, userId, { balance: newBalance });
-
-        return newBalance;
+        const summary = await window.electronAPI.getAccountsSummary(userId);
+        const refreshed = summary?.success && summary.data
+            ? summary.data.find(a => a.id === account.id)
+            : null;
+        return refreshed != null ? refreshed.balance : account.balance;
     };
 
     // Add scheduled transaction
@@ -1490,7 +1518,7 @@ const AccountDetailPage = () => {
                             const isEditing = editingTransactionId === transaction.id;
 
                             if (isEditing) {
-                                const editCategories = categories.filter(cat => cat && !cat.archived);
+                                const editCategories = categories.filter((cat) => cat && !isCategoryArchived(cat));
 
                                 return (
                                     <div key={transaction.id} style={styles.transactionRowEditing}>
@@ -1734,16 +1762,23 @@ const AccountDetailPage = () => {
                                             </div>
                                         )}
                                     </div>
+                                ) : transactionForm.transactionType === 'outflow' && loadingCategories ? (
+                                    <div style={styles.loadingPayees}>Loading categories…</div>
                                 ) : (
                                     <select
-                                        value={transactionForm.categoryId}
+                                        value={transactionForm.categoryId != null ? String(transactionForm.categoryId) : ''}
                                         onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
                                         style={styles.select}
+                                        disabled={transactionForm.transactionType === 'outflow' && loadingCategories}
                                     >
-                                        <option value="">Select a category</option>
-                                        {filteredCategories.map(category => (
-                                            <option key={category.id} value={category.id}>
-                                                {category.name}
+                                        <option value="">
+                                            {transactionForm.transactionType === 'outflow' && filteredCategories.length === 0 && !loadingCategories
+                                                ? 'No categories found — check database / login'
+                                                : 'Select a category'}
+                                        </option>
+                                        {filteredCategories.map((category) => (
+                                            <option key={String(category.id)} value={String(category.id)}>
+                                                {(category.group_name ? `${category.group_name} › ` : '')}{category.name}
                                             </option>
                                         ))}
                                     </select>
@@ -1922,8 +1957,8 @@ const AccountDetailPage = () => {
 const styles = {
     container: {
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
-        color: 'white',
+        background: '#3B82F6',
+        color: '#0047AB',
         padding: '2rem',
         boxSizing: 'border-box',
         width: '100%',
@@ -2627,17 +2662,17 @@ const styles = {
     },
     loadingContainer: {
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #1E3A8A 0%, #1E3A8A 100%)',
+        background: '#3B82F6',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'white'
+        color: '#0047AB'
     },
     loadingSpinner: {
         width: '48px',
         height: '48px',
-        border: '4px solid #3B82F6',
+        border: '4px solid #0047AB',
         borderTopColor: 'transparent',
         borderRadius: '50%',
         animation: 'spin 1s linear infinite',
@@ -2651,12 +2686,12 @@ const styles = {
     },
     errorContainer: {
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #1E3A8A 0%, #1E3A8A 100%)',
+        background: '#3B82F6',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'white',
+        color: '#0047AB',
         textAlign: 'center'
     },
     backLink: {

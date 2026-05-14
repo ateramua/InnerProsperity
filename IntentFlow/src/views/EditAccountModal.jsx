@@ -8,6 +8,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     credit_limit: '',
     interest_rate: '',
     due_date: '',
+    minimum_payment: '',
     institution: '',
     account_number: '',
     routing_number: '',
@@ -66,6 +67,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
           credit_limit: account.credit_limit || account.limit || '',
           interest_rate: account.interest_rate || account.apr || '',
           due_date: account.due_date || account.dueDate || '',
+          minimum_payment: '',
           institution: account.institution || '',
           account_number: '',
           routing_number: '',
@@ -102,6 +104,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
           credit_limit: account.credit_limit || account.limit || '',
           interest_rate: account.interest_rate || account.apr || '',
           due_date: account.due_date || account.dueDate || '',
+          minimum_payment: account.minimum_payment ?? account.minimumPayment ?? '',
           institution: account.institution || '',
           account_number: fullNumber,
           routing_number: fullRoutingNumber,
@@ -111,7 +114,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
           original_balance: account.original_balance ? Math.abs(account.original_balance).toString() : '',
           term_months: account.term_months || '',
           monthly_payment: account.monthly_payment || account.payment_amount || '',
-          loan_type: account.loan_type || account.type || 'personal',
+          loan_type: account.loan_type || 'personal',
           // Debit card fields
           daily_withdrawal_limit: account.daily_withdrawal_limit || '',
           rewards_program: account.rewards_program || '',
@@ -195,6 +198,9 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
       credit_limit: formData.credit_limit === '' ? null : parseFloat(formData.credit_limit),
       interest_rate: formData.interest_rate === '' ? null : parseFloat(formData.interest_rate),
       due_date: formData.due_date || null,
+      minimum_payment: formData.minimum_payment === '' || formData.minimum_payment === undefined || formData.minimum_payment === null
+        ? null
+        : parseFloat(formData.minimum_payment),
       institution: formData.institution || null,
       account_number: formData.account_number || null,
       routing_number: (isChecking || isSavings || isDebitCard || isSavingsCard) ? (formData.routing_number || null) : null,
@@ -203,8 +209,9 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
       // Loan-specific fields
       ...(isLoan && {
         original_balance: formData.original_balance === '' ? null : parseFloat(formData.original_balance),
-        term_months: formData.term_months === '' ? null : parseInt(formData.term_months),
+        term_months: formData.term_months === '' ? null : parseInt(formData.term_months, 10),
         monthly_payment: formData.monthly_payment === '' ? null : parseFloat(formData.monthly_payment),
+        payment_amount: formData.monthly_payment === '' ? null : parseFloat(formData.monthly_payment),
         loan_type: formData.loan_type
       }),
       // Debit card specific fields
@@ -427,6 +434,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
 
           {/* Credit Card specific fields */}
           {isCreditCard && (
+            <>
             <div style={styles.formGroup}>
               <label style={styles.label}>Credit Limit</label>
               <div style={styles.inputWrapper}>
@@ -443,6 +451,24 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
               </div>
               <small style={styles.hint}>Maximum credit available</small>
             </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Minimum Payment</label>
+              <div style={styles.inputWrapper}>
+                <span style={styles.currencySymbol}>$</span>
+                <input
+                  type="number"
+                  name="minimum_payment"
+                  value={formData.minimum_payment}
+                  onChange={handleChange}
+                  style={styles.modalInput}
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                />
+              </div>
+              <small style={styles.hint}>Typical minimum due each statement cycle</small>
+            </div>
+            </>
           )}
 
           {/* Debit Card specific fields */}

@@ -1,6 +1,6 @@
 #!/bin/bash
 # run-production.sh
-echo "🚀 Starting Money Manager in production mode..."
+echo "🚀 Starting IntentFlow in production mode..."
 
 # Build if out directory doesn't exist
 if [ ! -d "out" ]; then

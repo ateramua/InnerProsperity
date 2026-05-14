@@ -12,6 +12,7 @@ import PropertyMapView from '../views/PropertyMapView';
 import ReflectsView from '../views/ReflectsView';
 
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
+import { APP_BG, APP_FG, APP_ON_FG } from '../theme/appPalette';
 
 import '../views/CashAccountsView';
 import '../views/AllAccountsView';
@@ -116,9 +117,17 @@ export default function HomePage() {
 
   if (loading || loadingAccounts) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-primary-900 via-primary-800 to-secondary-900 flex flex-col items-center justify-center text-white">
-        <div className="w-14 h-14 border-4 border-white/20 border-t-primary-400 rounded-full animate-spin shadow-lg shadow-primary-500/50"></div>
-        <p className="mt-3 text-lg font-medium">Loading your workspace...</p>
+      <div
+        className="flex min-h-screen flex-col items-center justify-center"
+        style={{ backgroundColor: APP_BG, color: APP_ON_FG }}
+      >
+        <div
+          className="h-14 w-14 animate-spin rounded-full border-4 shadow-lg"
+          style={{ borderColor: `${APP_FG}33`, borderTopColor: APP_FG }}
+        />
+        <p className="mt-3 text-lg font-medium" style={{ color: APP_ON_FG }}>
+          Loading your workspace...
+        </p>
       </div>
     );
   }

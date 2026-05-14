@@ -299,6 +299,9 @@ function CreditCardManager({
           apr: updatedData.interest_rate ? parseFloat(updatedData.interest_rate) : 18.99,
           due_date: updatedData.due_date || null,
           dueDate: updatedData.due_date || null,
+          minimum_payment: updatedData.minimum_payment === '' || updatedData.minimum_payment === undefined || updatedData.minimum_payment === null
+            ? null
+            : parseFloat(updatedData.minimum_payment),
           institution: updatedData.institution?.trim() || null,
           account_number: updatedData.account_number?.trim() || null,
           account_holder_name: updatedData.account_holder_name?.trim() || null,
@@ -346,6 +349,9 @@ function CreditCardManager({
         }
         if (updatedData.due_date !== undefined) updatePayload.due_date = updatedData.due_date;
         if (updatedData.dueDate !== undefined) updatePayload.dueDate = updatedData.dueDate;
+        if (updatedData.minimum_payment !== undefined && updatedData.minimum_payment !== '') {
+          updatePayload.minimum_payment = parseFloat(updatedData.minimum_payment) || 0;
+        }
         if (updatedData.account_number !== undefined) updatePayload.account_number = updatedData.account_number;
         if (updatedData.account_holder_name !== undefined) updatePayload.account_holder_name = updatedData.account_holder_name;
         if (updatedData.notes !== undefined) updatePayload.notes = updatedData.notes;
@@ -858,7 +864,7 @@ function CreditCardManager({
             <h3 style={styles.modalTitle}>Make a Payment</h3>
 
             {/* Payment Method Options */}
-            <div style={{ marginBottom: '1rem', padding: '1rem', background: '#111827', borderRadius: '0.5rem' }}>
+            <div style={{ marginBottom: '1rem', padding: '1rem', background: '#0047AB', borderRadius: '0.5rem' }}>
               <h4 style={{ marginBottom: '0.75rem', color: 'white' }}>Choose Payment Method</h4>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button
@@ -1043,7 +1049,7 @@ const styles = {
     marginBottom: '2rem'
   },
   summaryCard: {
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '1.25rem',
     borderRadius: '0.75rem',
     border: '1px solid #374151',
@@ -1073,7 +1079,7 @@ const styles = {
     display: 'flex',
     gap: '0.5rem',
     marginBottom: '2rem',
-    background: '#1F2937',
+    background: '#0047AB',
     padding: '0.25rem',
     borderRadius: '0.5rem',
     width: 'fit-content'
@@ -1098,7 +1104,7 @@ const styles = {
     gap: '1.5rem'
   },
   cardItem: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem',
     padding: '1.5rem',
     border: '1px solid #374151',
@@ -1306,7 +1312,7 @@ const styles = {
     marginBottom: '1rem'
   },
   strategyCard: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '0.75rem',
     borderRadius: '0.5rem'
   },
@@ -1385,7 +1391,7 @@ const styles = {
     marginTop: '0.5rem'
   },
   recentTransactions: {
-    background: '#111827',
+    background: '#0047AB',
     padding: '0.75rem',
     borderRadius: '0.5rem'
   },
@@ -1403,7 +1409,7 @@ const styles = {
   emptyState: {
     textAlign: 'center',
     padding: '4rem',
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem'
   },
   emptyIcon: {
@@ -1442,7 +1448,7 @@ const styles = {
     zIndex: 1000
   },
   modalContent: {
-    background: '#1F2937',
+    background: '#0047AB',
     borderRadius: '1rem',
     padding: '2rem',
     maxWidth: '500px',
@@ -1476,7 +1482,7 @@ const styles = {
   modalInput: {
     width: '100%',
     padding: '0.75rem 0.75rem 0.75rem 2rem',
-    background: '#111827',
+    background: '#0047AB',
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',

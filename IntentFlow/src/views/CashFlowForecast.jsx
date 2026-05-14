@@ -474,7 +474,7 @@ const styles = {
         padding: '2rem',
         maxWidth: '1200px',
         margin: '0 auto',
-        color: 'white'
+        color: '#0047AB'
     },
     loadingContainer: {
         display: 'flex',
@@ -488,7 +488,7 @@ const styles = {
         width: '40px',
         height: '40px',
         border: '3px solid #374151',
-        borderTopColor: '#3B82F6',
+        borderTopColor: '#0047AB',
         borderRadius: '50%',
         animation: 'spin 1s linear infinite',
         marginBottom: '1rem'
@@ -503,14 +503,12 @@ const styles = {
         fontSize: '2rem',
         fontWeight: 'bold',
         margin: 0,
-        background: 'linear-gradient(135deg, #3B82F6, #8B5CF6)',
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent'
+        color: '#0047AB'
     },
     dateDisplay: {
         fontSize: '1.1rem',
         color: '#9CA3AF',
-        background: '#1F2937',
+        background: '#0047AB',
         padding: '0.5rem 1rem',
         borderRadius: '0.5rem'
     },
@@ -521,7 +519,7 @@ const styles = {
         marginBottom: '2rem'
     },
     summaryCard: {
-        background: '#1F2937',
+        background: '#0047AB',
         padding: '1.25rem',
         borderRadius: '0.75rem',
         border: '1px solid #374151',
@@ -565,7 +563,7 @@ const styles = {
         color: 'white'
     },
     patternSection: {
-        background: '#1F2937',
+        background: '#0047AB',
         padding: '1.5rem',
         borderRadius: '0.75rem',
         border: '1px solid #374151',
@@ -581,11 +579,11 @@ const styles = {
         flexDirection: 'column',
         gap: '0.5rem',
         padding: '1rem',
-        background: '#111827',
+        background: '#0047AB',
         borderRadius: '0.5rem'
     },
     forecastSection: {
-        background: '#1F2937',
+        background: '#0047AB',
         padding: '1.5rem',
         borderRadius: '0.75rem',
         border: '1px solid #374151',
@@ -615,7 +613,7 @@ const styles = {
         gap: '1rem'
     },
     forecastCard: {
-        background: '#111827',
+        background: '#0047AB',
         padding: '1.25rem',
         borderRadius: '0.75rem',
         border: '1px solid #374151'
@@ -697,7 +695,7 @@ const styles = {
         display: 'flex',
         gap: '1rem',
         padding: '1.5rem',
-        background: '#1F2937',
+        background: '#0047AB',
         borderRadius: '0.75rem',
         border: '1px solid #374151'
     },
@@ -727,7 +725,7 @@ const styles = {
         margin: 0
     },
     insightsSection: {
-        background: '#1F2937',
+        background: '#0047AB',
         padding: '1.5rem',
         borderRadius: '0.75rem',
         border: '1px solid #374151'
@@ -740,7 +738,7 @@ const styles = {
         display: 'flex',
         gap: '1rem',
         padding: '1rem',
-        background: '#111827',
+        background: '#0047AB',
         borderRadius: '0.5rem'
     },
     insightIcon: {

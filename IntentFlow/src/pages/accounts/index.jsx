@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import Sidebar from '../../components/Navigation/Sidebar';  // ADD THIS - it was missing!
 import { accountUtils } from '../../utils/accountUtils';
+import { APP_BG, APP_FG, APP_ON_FG } from '../../theme/appPalette';
 
 export default function AccountsDashboard() {
     console.log('🔵 [AccountsDashboard] Component rendering');
@@ -219,17 +220,17 @@ const handleCreateAccount = async () => {
         return (
             <div style={{
                 minHeight: '100vh',
-                background: 'linear-gradient(135deg, #111827 0%, #1F2937 100%)',
+                background: APP_BG,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: 'white'
+                color: APP_ON_FG
             }}>
                 <div style={{ textAlign: 'center' }}>
                     <div style={{
                         width: '48px',
                         height: '48px',
-                        border: '4px solid #3B82F6',
+                        border: `4px solid ${APP_FG}`,
                         borderTopColor: 'transparent',
                         borderRadius: '50%',
                         animation: 'spin 1s linear infinite',
@@ -529,14 +530,14 @@ const styles = {
     container: {
         display: 'flex',
         minHeight: '100vh',
-        background: '#0047AB'
+        background: APP_BG
     },
     main: {
         flex: 1,
         marginLeft: '280px',
         padding: '2rem',
-        background: '#0047AB',
-        color: 'white',
+        background: APP_BG,
+        color: APP_ON_FG,
         minHeight: '100vh'
     },
     header: {
@@ -549,11 +550,12 @@ const styles = {
     headerTitle: {
         fontSize: '2rem',
         fontWeight: 'bold',
-        margin: 0
+        margin: 0,
+        color: APP_FG
     },
     newAccountButton: {
-        background: '#3B82F6',
-        color: 'white',
+        background: APP_FG,
+        color: APP_ON_FG,
         border: 'none',
         padding: '0.75rem 1.5rem',
         borderRadius: '0.5rem',
@@ -571,14 +573,11 @@ const styles = {
         gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
         gap: '1rem'
     },
-    summaryCard: (color) => ({
-        background: '#0047AB',
+    summaryCard: (_color) => ({
+        background: APP_FG,
         padding: '1.5rem',
         borderRadius: '0.75rem',
-        borderLeft: `4px solid ${color === 'blue' ? '#3B82F6' :
-                color === 'purple' ? '#8B5CF6' :
-                    color === 'green' ? '#10B981' : '#F59E0B'
-            }`
+        border: `2px solid ${APP_BG}`
     }),
     summaryLabel: {
         color: '#9CA3AF',
@@ -604,12 +603,13 @@ const styles = {
         fontSize: '1.25rem',
         fontWeight: '600',
         marginBottom: '1rem',
-        color: '#9CA3AF'
+        color: APP_FG
     },
     accountList: {
-        background: '#0047AB',
+        background: APP_FG,
         borderRadius: '0.75rem',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        border: `2px solid ${APP_BG}`
     },
     accountRow: {
         display: 'flex',
