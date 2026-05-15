@@ -1,8 +1,12 @@
 // src/components/Navigation/Sidebar.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../../contexts/AuthContext';
 import { APP_BG, APP_FG, APP_ON_FG } from '../../theme/appPalette';
+import {
+    confirmNoDuplicateAccount,
+    maskFromAccountNumber,
+} from '../../utils/plaidDuplicateCheck';
 
 const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse }) => {
     const [expandedSection, setExpandedSection] = useState(null);
@@ -27,12 +31,78 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
         notes: ''
     });
 
-    // Account data - all arrays start empty (will be populated from database)
-    const accounts = {
-        cash: [],      // Will be populated from database
-        credit: [],    // Will be populated from database
-        loans: []      // Will be populated from database
-    };
+    const [sidebarAccounts, setSidebarAccounts] = useState({
+        cash: [],
+        credit: [],
+        loans: [],
+    });
+    const [plaidNav, setPlaidNav] = useState({ enabled: true, needsReconnect: false });
+
+    const loadSidebarAccounts = useCallback(async () => {
+        if (!window.electronAPI?.getAccountsSummary) return;
+        try {
+            const userResult = await window.electronAPI.getCurrentUser();
+            if (!userResult?.success || !userResult?.data?.id) return;
+            const userId = userResult.data.id;
+            const result = await window.electronAPI.getAccountsSummary(userId);
+            if (!result?.success || !Array.isArray(result.data)) return;
+            const all = result.data;
+            setSidebarAccounts({
+                cash: all.filter((a) => a.type === 'checking' || a.type === 'savings'),
+                credit: all.filter((a) => a.type === 'credit'),
+                loans: all.filter((a) => a.type === 'loan'),
+            });
+        } catch (err) {
+            console.error('Sidebar: failed to load accounts', err);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadSidebarAccounts();
+        const unsub = window.electronAPI?.onAccountsUpdated?.(() => {
+            loadSidebarAccounts();
+        });
+        return () => {
+            if (typeof unsub === 'function') unsub();
+        };
+    }, [loadSidebarAccounts]);
+
+    useEffect(() => {
+        (async () => {
+            if (!window.electronAPI?.getPlaidConfigStatus) return;
+            try {
+                const cfg = await window.electronAPI.getPlaidConfigStatus();
+                const enabled = cfg?.success && cfg.data?.enabled !== false;
+                let needsReconnect = false;
+                if (enabled && window.electronAPI?.getLinkedItems) {
+                    const itemsRes = await window.electronAPI.getLinkedItems();
+                    if (itemsRes?.success) {
+                        needsReconnect = (itemsRes.data || []).some(
+                            (i) => i.status === 'login_required'
+                        );
+                    }
+                }
+                setPlaidNav({ enabled, needsReconnect });
+            } catch (err) {
+                console.warn('Sidebar: Plaid status check failed', err);
+            }
+        })();
+        const unsub = window.electronAPI?.onAccountsUpdated?.(async () => {
+            if (!window.electronAPI?.getLinkedItems) return;
+            const itemsRes = await window.electronAPI.getLinkedItems();
+            if (itemsRes?.success) {
+                setPlaidNav((prev) => ({
+                    ...prev,
+                    needsReconnect: (itemsRes.data || []).some((i) => i.status === 'login_required'),
+                }));
+            }
+        });
+        return () => {
+            if (typeof unsub === 'function') unsub();
+        };
+    }, []);
+
+    const accounts = sidebarAccounts;
 
     const handleAddAccountClick = (type) => {
         setAccountType(type);
@@ -68,6 +138,15 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
 
             const userId = userResult.data.id;
 
+            const mask = maskFromAccountNumber(newAccountData.account_number);
+            const proceed = await confirmNoDuplicateAccount({
+                type: newAccountData.type,
+                mask,
+                name: newAccountData.name,
+                institution: newAccountData.institution,
+            });
+            if (!proceed) return;
+
             // Prepare account data based on type
             let accountData = {
                 name: newAccountData.name.trim(),
@@ -78,7 +157,8 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                 institution: newAccountData.institution?.trim() || null,
                 account_number: newAccountData.account_number?.trim() || null,
                 account_holder_name: newAccountData.account_holder_name?.trim() || null,
-                notes: newAccountData.notes?.trim() || null
+                notes: newAccountData.notes?.trim() || null,
+                forceCreate: true,
             };
 
             // Handle balance based on account type
@@ -325,6 +405,10 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
         }
     ];
 
+    const visibleNavigationItems = navigationItems.filter(
+        (item) => item.id !== 'linked-banks' || plaidNav.enabled
+    );
+
     const handleNavigation = (itemId, itemType = 'view') => {
         if (itemId === 'forecast') {
             router.push('/forecast');
@@ -483,7 +567,7 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
 
                 {/* Navigation Items */}
                 <nav style={styles.nav}>
-                    {navigationItems.map((item) => (
+                    {visibleNavigationItems.map((item) => (
                         <div key={item.id}>
                             {/* Main Navigation Item */}
                             <div
@@ -518,6 +602,26 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
 
                 {/* Footer */}
                 <div style={styles.footer}>
+                    {plaidNav.enabled && plaidNav.needsReconnect && !isCollapsed && (
+                        <div
+                            style={styles.plaidHealthBanner}
+                            onClick={() => {
+                                router.push('/?view=linked-banks');
+                                if (onNavigate) onNavigate('linked-banks');
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    router.push('/?view=linked-banks');
+                                    if (onNavigate) onNavigate('linked-banks');
+                                }
+                            }}
+                        >
+                            <span>⚠️</span>
+                            <span>Bank connection needs reconnect</span>
+                        </div>
+                    )}
                     <div style={{ ...styles.footerItem, ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={() => router.push('/settings')}>
                         <span style={styles.footerIcon}>⚙️</span>
                         <span style={isCollapsed ? styles.hiddenLabel : undefined}>Settings</span>
@@ -866,6 +970,19 @@ const styles = {
     footer: {
         padding: '20px',
         borderTop: `2px solid ${APP_FG}`
+    },
+    plaidHealthBanner: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 10px',
+        marginBottom: '10px',
+        background: 'rgba(180, 83, 9, 0.25)',
+        border: '1px solid rgba(251, 191, 36, 0.45)',
+        borderRadius: '6px',
+        fontSize: '0.75rem',
+        color: '#FDE68A',
+        cursor: 'pointer',
     },
     footerItem: {
         display: 'flex',

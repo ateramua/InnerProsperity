@@ -1,6 +1,6 @@
 // src/views/SummaryView.jsx
 import React, { useState, useEffect, useCallback } from 'react';
-import PM from '../constants/pmTheme.js';
+import PM from '../constants/pmTheme.jsx';
 
 const SummaryView = ({
   totalAvailable = 0,

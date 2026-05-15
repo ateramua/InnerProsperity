@@ -43,10 +43,13 @@ export default function Settings() {
   const [isSaving, setIsSaving] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const [encryptionSettings, setEncryptionSettings] = useState(defaultEncryptionSettings);
+  const [plaidStatus, setPlaidStatus] = useState({ configured: false, enabled: true, env: 'sandbox' });
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
 
   const tabItems = useMemo(
     () => [
       { key: 'general', label: 'General', description: 'Core preferences and appearance.' },
+      { key: 'banking', label: 'Linked Banks', description: 'Plaid connection, sync, and privacy.' },
       { key: 'prosperity', label: 'Prosperity Map', description: 'Budget and outcome settings.' },
       { key: 'backup', label: 'Backup', description: 'Export or restore encrypted backups.' },
       { key: 'categories', label: 'Categories', description: 'Edit groups and categories.' },
@@ -102,6 +105,20 @@ export default function Settings() {
       setActiveTab('general');
     }
   }, [activeTab, user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electronAPI) return;
+    (async () => {
+      if (window.electronAPI.getPlaidConfigStatus) {
+        const cfg = await window.electronAPI.getPlaidConfigStatus();
+        if (cfg?.success && cfg.data) setPlaidStatus(cfg.data);
+      }
+      if (window.electronAPI.getAutoSyncSetting) {
+        const sync = await window.electronAPI.getAutoSyncSetting();
+        if (sync?.success) setAutoSyncEnabled(sync.enabled !== false);
+      }
+    })();
+  }, []);
 
   const persistBackupMeta = (lastBackupAt) => {
     const payload = { lastBackup: lastBackupAt };
@@ -398,6 +415,50 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'banking' && (
+            <div className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+              <p className="text-sm leading-6 text-slate-300">
+                Bank connections use Plaid. Account credentials are encrypted on this device. IntentFlow does
+                not sell your financial data.
+              </p>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4 text-sm text-slate-300">
+                <p>
+                  <span className="font-semibold text-white">Status: </span>
+                  {!plaidStatus.enabled
+                    ? 'Disabled (PLAID_ENABLED=false)'
+                    : plaidStatus.configured
+                      ? `Configured (${plaidStatus.env || 'sandbox'})`
+                      : 'Not configured — add keys to .env and restart'}
+                </p>
+              </div>
+              <label className="flex items-center gap-3 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={autoSyncEnabled}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked;
+                    setAutoSyncEnabled(enabled);
+                    if (window.electronAPI?.setAutoSyncSetting) {
+                      await window.electronAPI.setAutoSyncSetting(enabled);
+                    }
+                  }}
+                />
+                Automatically sync linked banks hourly and when the app regains focus
+              </label>
+              <p className="text-xs text-slate-500">
+                Data use: balances and transactions are read for budgeting only, stored locally, and
+                never sold. Disconnect anytime in Linked Banks.
+              </p>
+              <Button
+                variant="secondary"
+                onClick={() => router.push('/?view=linked-banks')}
+                disabled={!plaidStatus.enabled}
+              >
+                Open Linked Banks
+              </Button>
             </div>
           )}
 

@@ -14,4 +14,4 @@ const PM = {
   shadow: '0 24px 48px rgba(0, 26, 64, 0.45)',
 };
 
-module.exports = PM;
+export default PM;

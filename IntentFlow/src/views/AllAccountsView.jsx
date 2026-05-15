@@ -1,6 +1,8 @@
 // src/views/AllAccountsView.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import ConnectBankCTA from '../components/ConnectBankCTA';
 import EditAccountModal from './EditAccountModal';
+import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
 
 const AllAccountsView = () => {
   const [accounts, setAccounts] = useState([]);
@@ -216,6 +218,16 @@ const AllAccountsView = () => {
     ? accounts
     : accounts.filter(acc => acc.type === selectedType);
 
+  const accountsByInstitution = useMemo(() => {
+    const map = new Map();
+    for (const acc of filteredAccounts) {
+      const key = (acc.institution || 'No institution').trim() || 'No institution';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(acc);
+    }
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [filteredAccounts]);
+
   // Calculate totals by type
   const totals = accounts.reduce((sums, acc) => {
     const balance = Math.abs(acc.balance || 0);
@@ -364,10 +376,11 @@ const AllAccountsView = () => {
           <div style={styles.emptyStateIcon}>🏦</div>
           <h3 style={styles.emptyStateTitle}>No accounts found</h3>
           <p style={styles.emptyStateText}>
-            {selectedType === 'all'
-              ? 'Add your first account to start tracking your finances'
-              : `No ${selectedType} accounts found. Add one to get started.`
-            }
+            {selectedType === 'all' ? (
+              <ConnectBankCTA label="accounts" />
+            ) : (
+              `No ${selectedType} accounts found. Add one to get started.`
+            )}
           </p>
         </div>
       ) : (
@@ -384,12 +397,23 @@ const AllAccountsView = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredAccounts.map(account => (
+              {accountsByInstitution.map(([institution, group]) => (
+                <React.Fragment key={institution}>
+                  <tr style={styles.institutionHeaderRow}>
+                    <td colSpan={6} style={styles.institutionHeader}>
+                      {institution}
+                      <span style={styles.institutionCount}> ({group.length})</span>
+                    </td>
+                  </tr>
+                  {group.map((account) => (
                 <tr key={account.id} style={styles.tableRow}>
                   <td style={styles.td}>
                     <div style={styles.accountNameCell}>
                       <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
-                      <strong>{account.name}</strong>
+                      <strong>
+                        {account.name}
+                        <PlaidLinkedBadge account={account} />
+                      </strong>
                     </div>
                   </td>
                   <td style={styles.td}>
@@ -463,6 +487,8 @@ const AllAccountsView = () => {
                     </div>
                   </td>
                 </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -619,6 +645,22 @@ const styles = {
     color: '#9CA3AF',
     fontWeight: '600',
     fontSize: '0.875rem'
+  },
+  institutionHeaderRow: {
+    background: '#1F2937',
+  },
+  institutionHeader: {
+    padding: '0.65rem 1rem',
+    fontSize: '0.8rem',
+    fontWeight: 700,
+    color: '#93C5FD',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  institutionCount: {
+    fontWeight: 500,
+    color: '#6B7280',
+    textTransform: 'none',
   },
   tableRow: {
     borderBottom: '1px solid #374151',

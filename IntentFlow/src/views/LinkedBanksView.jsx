@@ -1,8 +1,23 @@
 import React, { useState, useEffect } from 'react';
+import { showAppToast } from '../components/AppToast';
 
 const PLAID_LINK_SCRIPT_URL = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
 
-const LinkedBanksView = () => {
+function isConsentExpiringSoon(item) {
+  if (!item) return false;
+  if (item.status === 'consent_expiring') return true;
+  if (!item.consent_expires_at) return false;
+  const exp = new Date(item.consent_expires_at);
+  const days = (exp.getTime() - Date.now()) / 86400000;
+  return days > 0 && days <= 30;
+}
+
+function formatConsentExpiry(item) {
+  if (!item?.consent_expires_at) return null;
+  return new Date(item.consent_expires_at).toLocaleDateString();
+}
+
+const LinkedBanksView = ({ onNavigate }) => {
   const [loading, setLoading] = useState(false);
   const [connectedItems, setConnectedItems] = useState([]);
   const [error, setError] = useState(null);
@@ -14,6 +29,20 @@ const LinkedBanksView = () => {
   const [unmappedCategories, setUnmappedCategories] = useState([]);
   const [categoryMappings, setCategoryMappings] = useState({});
   const [saving, setSaving] = useState(false);
+  const [plaidConfigured, setPlaidConfigured] = useState(true);
+  const [itemAccounts, setItemAccounts] = useState({});
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+  const [savedMappings, setSavedMappings] = useState([]);
+  const [allCategoryMappings, setAllCategoryMappings] = useState({});
+  const [mergeOffers, setMergeOffers] = useState([]);
+  const [mergingId, setMergingId] = useState(null);
+  const [disconnectItemId, setDisconnectItemId] = useState(null);
+  const [disconnectOptions, setDisconnectOptions] = useState({
+    deleteImportedTransactions: false,
+    deactivateAccounts: true,
+  });
+  const [syncHistory, setSyncHistory] = useState([]);
 
   // Load linked items
   const loadLinkedItems = async () => {
@@ -23,6 +52,18 @@ const LinkedBanksView = () => {
       if (result.success) {
         setConnectedItems(result.data);
         setError(null);
+        const accountsMap = {};
+        if (window.electronAPI?.getPlaidItemAccounts) {
+          await Promise.all(
+            (result.data || []).map(async (item) => {
+              const accRes = await window.electronAPI.getPlaidItemAccounts(item.id);
+              if (accRes?.success) accountsMap[item.id] = accRes.data || [];
+            })
+          );
+          setItemAccounts(accountsMap);
+        }
+        const loginRequired = (result.data || []).find((i) => i.status === 'login_required');
+        if (loginRequired) setNeedsReconnect(loginRequired.id);
       } else {
         setError(result.error);
       }
@@ -38,7 +79,8 @@ const LinkedBanksView = () => {
     if (showMappingModal) {
       const fetchCategories = async () => {
         const userResult = await window.electronAPI.getCurrentUser();
-        const userId = userResult?.data?.id || 2;
+        const userId = userResult?.data?.id;
+        if (!userId) return;
         const catResult = await window.electronAPI.getCategories(userId);
         if (catResult.success) {
           setCategories(catResult.data);
@@ -50,8 +92,74 @@ const LinkedBanksView = () => {
     }
   }, [showMappingModal]);
 
+  const loadPlaidSettings = async () => {
+    if (window.electronAPI?.getAutoSyncSetting) {
+      const res = await window.electronAPI.getAutoSyncSetting();
+      if (res?.success) setAutoSyncEnabled(res.enabled !== false);
+    }
+    if (window.electronAPI?.getPlaidCategoryMappings) {
+      const mapRes = await window.electronAPI.getPlaidCategoryMappings();
+      if (mapRes?.success) {
+        setSavedMappings(mapRes.data || []);
+        const map = {};
+        (mapRes.data || []).forEach((row) => {
+          map[row.plaid_category] = row.category_id;
+        });
+        setAllCategoryMappings(map);
+      }
+    }
+    if (window.electronAPI?.getPlaidSyncHistory) {
+      const hist = await window.electronAPI.getPlaidSyncHistory(10);
+      if (hist?.success) setSyncHistory(hist.data || []);
+    }
+  };
+
+  const handleAutoSyncToggle = async (enabled) => {
+    setAutoSyncEnabled(enabled);
+    if (window.electronAPI?.setAutoSyncSetting) {
+      await window.electronAPI.setAutoSyncSetting(enabled);
+    }
+  };
+
+  const openCategorySettings = async () => {
+    const userResult = await window.electronAPI.getCurrentUser();
+    const userId = userResult?.data?.id;
+    if (!userId) return;
+    const catResult = await window.electronAPI.getCategories(userId);
+    if (catResult.success) setCategories(catResult.data);
+    let rows = savedMappings;
+    if (window.electronAPI?.getPlaidCategoryMappings) {
+      const mapRes = await window.electronAPI.getPlaidCategoryMappings();
+      if (mapRes?.success) {
+        rows = mapRes.data || [];
+        setSavedMappings(rows);
+        const map = {};
+        rows.forEach((row) => {
+          map[row.plaid_category] = row.category_id;
+        });
+        setAllCategoryMappings(map);
+        setCategoryMappings(map);
+      }
+    }
+    setUnmappedCategories(rows.map((m) => m.plaid_category));
+    setShowMappingModal(true);
+  };
+
   useEffect(() => {
     loadLinkedItems();
+    loadPlaidSettings();
+    (async () => {
+      if (window.electronAPI?.getPlaidConfigStatus) {
+        const cfg = await window.electronAPI.getPlaidConfigStatus();
+        if (cfg?.success) setPlaidConfigured(cfg.data?.configured !== false);
+      }
+    })();
+    const unsub = window.electronAPI?.onAccountsUpdated?.(() => {
+      loadLinkedItems();
+    });
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
   }, []);
 
   // Load Plaid Link script
@@ -81,9 +189,13 @@ const LinkedBanksView = () => {
           const exchangeResult = await window.electronAPI.exchangePublicToken(public_token);
           if (exchangeResult.success) {
             await loadLinkedItems();
-            alert('✅ Bank connected successfully!');
+            if (exchangeResult.mergeOffers?.length) {
+              setMergeOffers(exchangeResult.mergeOffers);
+            } else {
+              showAppToast('Bank connected successfully');
+            }
           } else {
-            alert('❌ Failed to connect bank: ' + exchangeResult.error);
+            showAppToast('Failed to connect bank: ' + exchangeResult.error, 'error');
           }
           handler.destroy();
         },
@@ -110,6 +222,13 @@ const LinkedBanksView = () => {
       // 1. Sync accounts
       const accountResult = await window.electronAPI.syncItem(itemId);
       if (!accountResult.success) throw new Error(accountResult.error);
+      if (accountResult.mergeOffers?.length) {
+        setMergeOffers((prev) => {
+          const ids = new Set(prev.map((o) => o.plaidAccountId));
+          const added = accountResult.mergeOffers.filter((o) => !ids.has(o.plaidAccountId));
+          return [...prev, ...added];
+        });
+      }
 
       setSyncStatuses(prev => ({ ...prev, [itemId]: 'Fetching transactions...' }));
 
@@ -127,7 +246,8 @@ const LinkedBanksView = () => {
           });
         }, 5000);
 
-        await loadLinkedItems(); // refresh last_sync date
+        await loadLinkedItems();
+        await loadPlaidSettings();
 
         // Show mapping modal if new categories found
         if (txResult.unmappedCategories?.length) {
@@ -163,7 +283,7 @@ const LinkedBanksView = () => {
   // Sync all banks
   const handleSyncAll = async () => {
     if (syncingItemId) {
-      alert('A sync is already in progress. Please wait.');
+      showAppToast('A sync is already in progress. Please wait.', 'info');
       return;
     }
     setLoading(true);
@@ -173,13 +293,18 @@ const LinkedBanksView = () => {
     setLoading(false);
   };
 
-  // Remove bank
-  const handleRemoveItem = async (itemId) => {
-    if (!confirm('Are you sure you want to disconnect this bank? All associated data will be removed.')) return;
+  const handleRemoveItem = (itemId) => {
+    setDisconnectItemId(itemId);
+    setDisconnectOptions({ deleteImportedTransactions: false, deactivateAccounts: true });
+  };
 
+  const handleConfirmDisconnect = async () => {
+    const itemId = disconnectItemId;
+    if (!itemId) return;
+    setDisconnectItemId(null);
     setSyncingItemId(itemId);
     try {
-      const result = await window.electronAPI.removeItem(itemId);
+      const result = await window.electronAPI.removeItem(itemId, disconnectOptions);
       if (result.success) {
         await loadLinkedItems();
         setSyncStatuses(prev => ({ ...prev, [itemId]: '✅ Bank disconnected.' }));
@@ -233,7 +358,7 @@ const LinkedBanksView = () => {
             // Optionally sync again
             handleSyncItem(itemId);
           } else {
-            alert('❌ Failed to reconnect: ' + exchangeResult.error);
+            showAppToast('Failed to reconnect: ' + exchangeResult.error, 'error');
           }
           handler.destroy();
         },
@@ -246,7 +371,7 @@ const LinkedBanksView = () => {
       handler.open();
     } catch (err) {
       console.error('Error reconnecting bank:', err);
-      alert('Reconnect failed: ' + err.message);
+      showAppToast('Reconnect failed: ' + err.message, 'error');
     } finally {
       setSyncingItemId(null);
     }
@@ -257,34 +382,82 @@ const LinkedBanksView = () => {
     setCategoryMappings(prev => ({ ...prev, [plaidCategory]: categoryId }));
   };
 
+  const handleConfirmMerge = async (offer, targetAccountId) => {
+    if (!window.electronAPI?.mergePlaidAccount) return;
+    setMergingId(offer.plaidAccountId);
+    try {
+      const res = await window.electronAPI.mergePlaidAccount(
+        offer.plaidAccountId,
+        targetAccountId
+      );
+      if (res?.success) {
+        setMergeOffers((prev) => prev.filter((o) => o.plaidAccountId !== offer.plaidAccountId));
+        await loadLinkedItems();
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+      } else {
+        showAppToast(res?.error || 'Failed to link accounts', 'error');
+      }
+    } catch (err) {
+      showAppToast(err.message, 'error');
+    } finally {
+      setMergingId(null);
+    }
+  };
+
+  const handleSkipMergeOffer = (plaidAccountId) => {
+    setMergeOffers((prev) => prev.filter((o) => o.plaidAccountId !== plaidAccountId));
+  };
+
   const handleSaveMappings = async () => {
     setSaving(true);
     try {
-      const promises = [];
+      let transactionsUpdated = 0;
       for (const [plaidCategory, categoryId] of Object.entries(categoryMappings)) {
-        if (categoryId) {
-          promises.push(window.electronAPI.saveCategoryMapping(plaidCategory, categoryId));
+        if (!categoryId) continue;
+        const res = await window.electronAPI.saveCategoryMapping(plaidCategory, categoryId);
+        if (res?.success) {
+          transactionsUpdated += res.transactionsUpdated || 0;
+        } else {
+          throw new Error(res?.error || 'Failed to save mapping');
         }
       }
-      await Promise.all(promises);
-      alert('✅ Category mappings saved!');
+      showAppToast(
+        transactionsUpdated > 0
+          ? `Mappings saved — updated ${transactionsUpdated} transaction(s)`
+          : 'Category mappings saved'
+      );
       setShowMappingModal(false);
-      // Optionally re‑sync affected banks to apply categories immediately
-      for (const item of connectedItems) {
-        await handleSyncItem(item.id);
-      }
+      await loadPlaidSettings();
     } catch (error) {
       console.error('Error saving mappings:', error);
-      alert('Failed to save some mappings: ' + error.message);
+      showAppToast('Failed to save mappings: ' + error.message, 'error');
     } finally {
       setSaving(false);
     }
   };
 
+  const handleUnlinkAccount = async (accountId, accountName) => {
+    if (!window.electronAPI?.unlinkPlaidAccount) return;
+    const ok = window.confirm(
+      `Unlink "${accountName}" from Plaid? The bank connection stays active for your other accounts.`
+    );
+    if (!ok) return;
+    try {
+      const res = await window.electronAPI.unlinkPlaidAccount(accountId);
+      if (res?.success) {
+        showAppToast('Account unlinked from Plaid');
+        await loadLinkedItems();
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+      } else {
+        showAppToast(res?.error || 'Unlink failed', 'error');
+      }
+    } catch (err) {
+      showAppToast(err.message, 'error');
+    }
+  };
+
   return (
-    
     <div style={styles.container}>
-    <div className="spinner w-10 h-10 border-4 border-white border-t-transparent rounded-full"></div>
       <div style={styles.header}>
         <h2 style={styles.title}>Linked Banks</h2>
         <div style={styles.buttonGroup}>
@@ -298,14 +471,73 @@ const LinkedBanksView = () => {
           <button
             onClick={handleConnectBank}
             style={styles.connectButton}
-            disabled={loading}
+            disabled={loading || !plaidConfigured}
           >
             {loading ? 'Connecting...' : '+ Connect New Bank'}
           </button>
         </div>
       </div>
 
+      {!plaidConfigured && (
+        <div style={styles.error}>
+          Plaid is not configured. Set PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV, then restart the app.
+        </div>
+      )}
+
       {error && <div style={styles.error}>⚠️ {error}</div>}
+
+      <p style={styles.complianceNote}>
+        Connecting a bank lets IntentFlow read balances and transactions through Plaid. Credentials are
+        encrypted and stored only on this device. You can disconnect anytime in Linked Banks. IntentFlow
+        does not sell your financial data.
+      </p>
+
+      <div style={styles.settingsCard}>
+        <button
+          type="button"
+          onClick={() => setShowSettingsPanel((v) => !v)}
+          style={styles.settingsToggle}
+        >
+          {showSettingsPanel ? '▼' : '▶'} Plaid settings
+        </button>
+        {showSettingsPanel && (
+          <div style={styles.settingsBody}>
+            <label style={styles.settingRow}>
+              <input
+                type="checkbox"
+                checked={autoSyncEnabled}
+                onChange={(e) => handleAutoSyncToggle(e.target.checked)}
+              />
+              <span>Automatically sync linked banks every hour (and on app focus)</span>
+            </label>
+            <p style={styles.settingHint}>
+              Sandbox tip: use the institution&apos;s test phone (often ending in 1111). Phone prompts are
+              controlled by Plaid/your bank, not IntentFlow.
+            </p>
+            <button type="button" onClick={openCategorySettings} style={styles.settingsLinkButton}>
+              Manage category mappings ({savedMappings.length})
+            </button>
+            {syncHistory.length > 0 && (
+              <div style={styles.syncHistoryBox}>
+                <div style={styles.syncHistoryTitle}>Recent sync activity</div>
+                <ul style={styles.syncHistoryList}>
+                  {syncHistory.slice(0, 5).map((run) => (
+                    <li key={run.id} style={styles.syncHistoryItem}>
+                      <span>{run.institution_name || run.item_id || 'Bank'}</span>
+                      <span style={styles.syncHistoryMeta}>
+                        {run.sync_type} · {run.status}
+                        {run.transactions_added > 0 ? ` · +${run.transactions_added} txn` : ''}
+                        {' · '}
+                        {new Date(run.started_at).toLocaleString()}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {loading && !connectedItems.length && (
         <div style={styles.loading}>Loading your linked banks...</div>
@@ -318,6 +550,32 @@ const LinkedBanksView = () => {
         </div>
       )}
 
+      {connectedItems.some(isConsentExpiringSoon) && (
+        <div style={styles.consentBanner}>
+          <strong>Consent renewal needed</strong>
+          <p style={styles.consentBannerText}>
+            One or more bank connections expire soon. Reconnect before access ends.
+          </p>
+          <ul style={styles.consentList}>
+            {connectedItems.filter(isConsentExpiringSoon).map((item) => (
+              <li key={`consent-${item.id}`} style={styles.consentListItem}>
+                <span>
+                  {item.institution_name || item.id}
+                  {formatConsentExpiry(item) ? ` — by ${formatConsentExpiry(item)}` : ''}
+                </span>
+                <button
+                  type="button"
+                  style={styles.consentReconnectBtn}
+                  onClick={() => handleReconnect(item.id)}
+                >
+                  Reconnect
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {connectedItems.map((item) => (
         <div key={item.id} style={styles.bankCard}>
           <div style={styles.bankHeader}>
@@ -325,9 +583,59 @@ const LinkedBanksView = () => {
               {item.institution_name || item.id}
             </h3>
             <span style={styles.bankStatus}>
-              {item.last_sync ? `Last synced: ${new Date(item.last_sync).toLocaleString()}` : 'Never synced'}
+              {item.status === 'login_required'
+                ? 'Needs reconnect'
+                : item.status === 'consent_expiring'
+                  ? `Consent expires${formatConsentExpiry(item) ? ` ${formatConsentExpiry(item)}` : ' soon'}`
+                  : item.last_sync
+                    ? `Last synced: ${new Date(item.last_sync).toLocaleString()}`
+                    : 'Never synced'}
             </span>
           </div>
+          {syncingItemId === item.id && (
+            <div style={styles.syncProgressTrack}>
+              <div style={styles.syncProgressBar} />
+            </div>
+          )}
+          {itemAccounts[item.id]?.length > 0 && (
+            <ul style={styles.accountList}>
+              {itemAccounts[item.id].map((acc) => (
+                <li key={acc.plaid_account_id} style={styles.accountListItem}>
+                  <div style={styles.accountListRow}>
+                    {acc.account_id && onNavigate ? (
+                      <button
+                        type="button"
+                        style={styles.accountLinkBtn}
+                        onClick={() => onNavigate(`account-${acc.account_id}`)}
+                      >
+                        {acc.account_name || acc.name}
+                        {acc.mask ? ` •••• ${acc.mask}` : ''}
+                        {acc.source === 'plaid' ? ' 🔗' : ''}
+                      </button>
+                    ) : (
+                      <span>
+                        {acc.account_name || acc.name}
+                        {acc.mask ? ` •••• ${acc.mask}` : ''}
+                        {acc.source === 'plaid' ? ' 🔗' : ''}
+                      </span>
+                    )}
+                    {acc.account_id && (
+                      <button
+                        type="button"
+                        style={styles.unlinkAccountBtn}
+                        onClick={() =>
+                          handleUnlinkAccount(acc.account_id, acc.account_name || acc.name)
+                        }
+                        title="Stop syncing this account only"
+                      >
+                        Unlink
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
           <div style={styles.bankActions}>
             <button
               onClick={() => handleSyncItem(item.id)}
@@ -343,7 +651,7 @@ const LinkedBanksView = () => {
             >
               Remove
             </button>
-            {needsReconnect === item.id && (
+            {(needsReconnect === item.id || item.status === 'login_required') && (
               <button
                 onClick={() => handleReconnect(item.id)}
                 style={styles.reconnectButton}
@@ -358,6 +666,106 @@ const LinkedBanksView = () => {
           )}
         </div>
       ))}
+
+      {disconnectItemId && (
+        <div style={styles.mergeModalOverlay}>
+          <div style={styles.mergeModalContent}>
+            <h3 style={styles.modalTitle}>Disconnect bank?</h3>
+            <p style={styles.mergeIntro}>
+              This disconnects Plaid only — your account rows stay in the app unless you hide them.
+              Imported transactions can be soft-deleted; manual entries are kept.
+            </p>
+            <label style={styles.settingRow}>
+              <input
+                type="checkbox"
+                checked={disconnectOptions.deactivateAccounts}
+                onChange={(e) =>
+                  setDisconnectOptions((o) => ({ ...o, deactivateAccounts: e.target.checked }))
+                }
+              />
+              <span>Hide linked accounts in the app (recommended)</span>
+            </label>
+            <label style={styles.settingRow}>
+              <input
+                type="checkbox"
+                checked={disconnectOptions.deleteImportedTransactions}
+                onChange={(e) =>
+                  setDisconnectOptions((o) => ({
+                    ...o,
+                    deleteImportedTransactions: e.target.checked,
+                  }))
+                }
+              />
+              <span>Soft-delete imported bank transactions (keeps manual entries)</span>
+            </label>
+            <div style={styles.modalActions}>
+              <button type="button" onClick={handleConfirmDisconnect} style={styles.saveButton}>
+                Disconnect
+              </button>
+              <button
+                type="button"
+                onClick={() => setDisconnectItemId(null)}
+                style={styles.cancelButton}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mergeOffers.length > 0 && (
+        <div style={styles.mergeModalOverlay}>
+          <div style={styles.mergeModalContent}>
+            <h3 style={styles.modalTitle}>Link to existing account?</h3>
+            <p style={styles.mergeIntro}>
+              We found manual accounts that may match newly imported bank accounts. Link them to
+              avoid duplicates.
+            </p>
+            {mergeOffers.map((offer) => (
+              <div key={offer.plaidAccountId} style={styles.mergeOfferCard}>
+                <div style={styles.mergePlaidName}>
+                  <strong>{offer.plaidDisplayName}</strong>
+                  {offer.mask ? ` •••• ${offer.mask}` : ''}
+                </div>
+                <p style={styles.mergeHint}>Choose an existing account to link:</p>
+                <ul style={styles.mergeCandidateList}>
+                  {offer.candidates.map((c) => (
+                    <li key={c.id} style={styles.mergeCandidateItem}>
+                      <span>
+                        {c.name}
+                        {c.institution ? ` — ${c.institution}` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        style={styles.mergeLinkButton}
+                        disabled={mergingId === offer.plaidAccountId}
+                        onClick={() => handleConfirmMerge(offer, c.id)}
+                      >
+                        {mergingId === offer.plaidAccountId ? 'Linking…' : 'Link here'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  style={styles.mergeSkipButton}
+                  onClick={() => handleSkipMergeOffer(offer.plaidAccountId)}
+                >
+                  Keep separate (skip)
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              style={styles.cancelButton}
+              onClick={() => setMergeOffers([])}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Category Mapping Modal */}
       {showMappingModal && (
@@ -448,6 +856,165 @@ const styles = {
     marginBottom: '1rem',
     color: '#FECACA',
   },
+  complianceNote: {
+    fontSize: '0.8rem',
+    color: '#9CA3AF',
+    lineHeight: 1.5,
+    margin: '0 0 1rem',
+    maxWidth: '720px',
+  },
+  settingsCard: {
+    background: '#1F2937',
+    border: '1px solid #374151',
+    borderRadius: '0.75rem',
+    marginBottom: '1.5rem',
+    overflow: 'hidden',
+  },
+  settingsToggle: {
+    width: '100%',
+    textAlign: 'left',
+    padding: '1rem 1.25rem',
+    background: 'transparent',
+    border: 'none',
+    color: '#E5E7EB',
+    fontSize: '1rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  settingsBody: {
+    padding: '0 1.25rem 1.25rem',
+    borderTop: '1px solid #374151',
+  },
+  settingRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '0.75rem',
+    color: '#D1D5DB',
+    fontSize: '0.9rem',
+    marginTop: '1rem',
+    cursor: 'pointer',
+  },
+  settingHint: {
+    margin: '0.75rem 0 0',
+    fontSize: '0.8rem',
+    color: '#9CA3AF',
+    lineHeight: 1.45,
+  },
+  settingsLinkButton: {
+    marginTop: '1rem',
+    padding: '0.5rem 1rem',
+    background: '#374151',
+    color: '#F9FAFB',
+    border: 'none',
+    borderRadius: '0.375rem',
+    cursor: 'pointer',
+    fontSize: '0.875rem',
+  },
+  mergeModalOverlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.75)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1100,
+    padding: '1rem',
+  },
+  mergeModalContent: {
+    background: '#1F2937',
+    borderRadius: '0.75rem',
+    padding: '1.5rem',
+    maxWidth: '520px',
+    width: '100%',
+    maxHeight: '85vh',
+    overflowY: 'auto',
+    border: '1px solid #374151',
+  },
+  mergeIntro: {
+    color: '#9CA3AF',
+    fontSize: '0.9rem',
+    marginBottom: '1rem',
+  },
+  mergeOfferCard: {
+    background: '#111827',
+    borderRadius: '0.5rem',
+    padding: '1rem',
+    marginBottom: '1rem',
+    border: '1px solid #374151',
+  },
+  mergePlaidName: {
+    marginBottom: '0.5rem',
+    color: '#F3F4F6',
+  },
+  mergeHint: {
+    fontSize: '0.8rem',
+    color: '#9CA3AF',
+    margin: '0.5rem 0',
+  },
+  mergeCandidateList: {
+    listStyle: 'none',
+    padding: 0,
+    margin: 0,
+  },
+  mergeCandidateItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '0.75rem',
+    padding: '0.5rem 0',
+    borderBottom: '1px solid #374151',
+    color: '#E5E7EB',
+    fontSize: '0.875rem',
+  },
+  mergeLinkButton: {
+    padding: '0.35rem 0.75rem',
+    background: '#0047AB',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0.25rem',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    whiteSpace: 'nowrap',
+  },
+  mergeSkipButton: {
+    marginTop: '0.5rem',
+    padding: '0.35rem 0.75rem',
+    background: 'transparent',
+    color: '#9CA3AF',
+    border: '1px solid #4B5563',
+    borderRadius: '0.25rem',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+  },
+  syncHistoryBox: {
+    marginTop: '1rem',
+    paddingTop: '1rem',
+    borderTop: '1px solid #374151',
+  },
+  syncHistoryTitle: {
+    fontSize: '0.85rem',
+    fontWeight: 600,
+    color: '#D1D5DB',
+    marginBottom: '0.5rem',
+  },
+  syncHistoryList: {
+    listStyle: 'none',
+    padding: 0,
+    margin: 0,
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
+  },
+  syncHistoryItem: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.15rem',
+    padding: '0.35rem 0',
+    borderBottom: '1px solid #374151',
+  },
+  syncHistoryMeta: {
+    fontSize: '0.7rem',
+    color: '#6B7280',
+  },
   loading: {
     textAlign: 'center',
     padding: '2rem',
@@ -488,6 +1055,67 @@ const styles = {
     background: '#111827',
     padding: '0.25rem 0.5rem',
     borderRadius: '0.25rem',
+  },
+  accountList: {
+    listStyle: 'none',
+    margin: '0 0 0.75rem 0',
+    padding: '0 0 0 0.5rem',
+    fontSize: '0.85rem',
+    color: '#D1D5DB',
+  },
+  accountListItem: {
+    marginBottom: '0.35rem',
+  },
+  accountListRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.5rem',
+  },
+  unlinkAccountBtn: {
+    padding: '0.2rem 0.5rem',
+    fontSize: '0.7rem',
+    background: 'transparent',
+    border: '1px solid rgba(248, 113, 113, 0.45)',
+    borderRadius: '0.25rem',
+    color: '#FCA5A5',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  consentBanner: {
+    marginBottom: '1rem',
+    padding: '1rem',
+    borderRadius: '0.5rem',
+    background: 'rgba(180, 83, 9, 0.2)',
+    border: '1px solid rgba(251, 191, 36, 0.45)',
+    color: '#FDE68A',
+  },
+  consentBannerText: {
+    margin: '0.5rem 0',
+    fontSize: '0.85rem',
+    color: '#FCD34D',
+  },
+  consentList: {
+    listStyle: 'none',
+    padding: 0,
+    margin: 0,
+  },
+  consentListItem: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.75rem',
+    marginTop: '0.35rem',
+    fontSize: '0.85rem',
+  },
+  consentReconnectBtn: {
+    padding: '0.25rem 0.6rem',
+    fontSize: '0.75rem',
+    background: '#D97706',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '0.25rem',
+    cursor: 'pointer',
   },
   bankActions: {
     display: 'flex',
@@ -603,7 +1231,5 @@ const styles = {
     cursor: 'pointer',
   },
 };
-
-
 
 export default LinkedBanksView;

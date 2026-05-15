@@ -168,6 +168,41 @@ class AccountService {
     async updateAccount(id, userId, updates) {
         const db = await this.getDb();
         try {
+            const existing = await this.getAccountById(id, userId);
+            if (!existing) {
+                return null;
+            }
+
+            const isPlaidLinked =
+                existing.source === 'plaid' ||
+                (await db.get(
+                    'SELECT 1 FROM plaid_accounts WHERE account_id = ? LIMIT 1',
+                    [id]
+                ));
+
+            if (isPlaidLinked) {
+                const blocked = [
+                    'balance',
+                    'cleared_balance',
+                    'working_balance',
+                    'credit_limit',
+                    'limit',
+                    'original_balance',
+                    'name',
+                    'type',
+                    'account_type_category',
+                    'institution',
+                ];
+                const attempted = Object.keys(updates).filter((k) => blocked.includes(k));
+                if (attempted.length > 0) {
+                    const err = new Error(
+                        `Cannot edit ${attempted.join(', ')} on a bank-linked account. Sync from Linked Banks or edit notes only.`
+                    );
+                    err.code = 'PLAID_ACCOUNT_READONLY';
+                    throw err;
+                }
+            }
+
             // Complete list of allowed fields for update
             const allowedUpdates = [
                 'name', 'type', 'account_type_category', 'institution',
@@ -180,7 +215,8 @@ class AccountService {
                 'payment_amount', 'paymentAmount', 'monthly_payment', 'payment_frequency',
                 'next_payment_date', 'nextPaymentDate',
                 'loan_type', 'paired_category_id',
-                'rewards_program', 'transfer_limit', 'linked_savings_account'
+                'rewards_program', 'transfer_limit', 'linked_savings_account',
+                'sync_enabled', 'balance_locked'
             ];
 
             const setClauses = [];
@@ -245,6 +281,22 @@ class AccountService {
     async deleteAccount(id, userId) {
         const db = await this.getDb();
         try {
+            const existing = await this.getAccountById(id, userId);
+            if (!existing) {
+                return false;
+            }
+            const plaidLink = await db.get(
+                'SELECT 1 FROM plaid_accounts WHERE account_id = ? LIMIT 1',
+                [id]
+            );
+            if (existing.source === 'plaid' || plaidLink) {
+                const err = new Error(
+                    'This account is linked via Plaid. Remove the bank connection in Linked Banks instead of deleting the account here.'
+                );
+                err.code = 'PLAID_ACCOUNT_DELETE_BLOCKED';
+                throw err;
+            }
+
             // Soft delete by setting is_active = 0
             await db.run(`
                 UPDATE accounts 
@@ -318,7 +370,10 @@ class AccountService {
         console.log('🔵🔵🔵 accountService.getAccountsSummary CALLED for userId:', userId);
         const db = await this.getDb();
         try {
-            const accounts = await db.all(`SELECT * FROM accounts WHERE user_id = ?`, [userId]);
+            const accounts = await db.all(
+                `SELECT * FROM accounts WHERE user_id = ? AND IFNULL(is_active, 1) = 1`,
+                [userId]
+            );
             console.log(`🔵 Found ${accounts.length} accounts`);
 
             // 🔍 Debug: log first account's interest_rate
@@ -345,8 +400,28 @@ class AccountService {
                 // Account number fields
                 account_number: account.account_number,
                 account_holder_name: account.account_holder_name,
-                notes: account.notes
+                notes: account.notes,
+                source: account.source || 'manual',
+                external_mask: account.external_mask || null,
+                sync_enabled: account.sync_enabled !== 0,
+                balance_locked: account.balance_locked === 1,
+                plaid_linked: false,
             }));
+
+            const plaidLinks = await db.all(
+                `SELECT pa.account_id, pi.id AS plaid_item_id
+                 FROM plaid_accounts pa
+                 JOIN plaid_items pi ON pa.item_id = pi.id
+                 WHERE pi.user_id = ?`,
+                [userId]
+            );
+            const linkByAccount = new Map(plaidLinks.map((r) => [r.account_id, r.plaid_item_id]));
+            for (const acc of formattedAccounts) {
+                if (linkByAccount.has(acc.id)) {
+                    acc.plaid_linked = true;
+                    acc.plaid_item_id = linkByAccount.get(acc.id);
+                }
+            }
 
             return formattedAccounts;
         } catch (error) {

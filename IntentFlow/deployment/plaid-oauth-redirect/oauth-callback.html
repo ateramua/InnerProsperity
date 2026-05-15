@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bank login — return to IntentFlow</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+        max-width: 28rem;
+        margin: 3rem auto;
+        padding: 0 1.25rem;
+        line-height: 1.5;
+        color: #0f172a;
+      }
+      h1 {
+        font-size: 1.25rem;
+      }
+      p {
+        color: #334155;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Bank sign-in complete</h1>
+    <p>
+      If a window or tab opened for your bank, you can <strong>close this tab</strong> and return to
+      <strong>IntentFlow</strong> to finish connecting your account.
+    </p>
+    <p id="hint" style="font-size: 0.875rem; color: #64748b"></p>
+    <script>
+      (function () {
+        var q = window.location.search || '';
+        if (q.indexOf('oauth_state_id=') !== -1) {
+          document.getElementById('hint').textContent =
+            'OAuth state received. If Link does not complete in the app, see deployment/plaid-oauth-redirect/README.md (Electron / webview).';
+        }
+        setTimeout(function () {
+          if (window.opener) {
+            try {
+              window.close();
+            } catch (e) {}
+          }
+        }, 1500);
+      })();
+    </script>
+    <!--
+      Optional: Link reinitialization for same-origin web apps (NOT shared with Electron file://).
+      1. Before opening Link on YOUR site: localStorage.setItem('intentflow_plaid_link_token', link_token)
+      2. Uncomment script below and load https://cdn.plaid.com/link/v2/stable/link-initialize.js
+      3. Test only on HTTPS matching this page's origin.
+
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <script>
+      (function () {
+        var token = localStorage.getItem('intentflow_plaid_link_token');
+        if (!token || !window.Plaid) return;
+        if (!window.location.search.includes('oauth_state_id')) return;
+        try {
+          var h = window.Plaid.create({
+            token: token,
+            receivedRedirectUri: window.location.href,
+            onSuccess: function () {
+              localStorage.removeItem('intentflow_plaid_link_token');
+            },
+            onExit: function () {},
+          });
+          h.open();
+        } catch (e) {}
+      })();
+    </script>
+    -->
+  </body>
+</html>

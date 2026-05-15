@@ -101,7 +101,11 @@ export default function HomePage() {
     };
 
     window.addEventListener('accounts-updated', handleAccountsUpdated);
-    return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
+    const unsubIpc = window.electronAPI?.onAccountsUpdated?.(handleAccountsUpdated);
+    return () => {
+      window.removeEventListener('accounts-updated', handleAccountsUpdated);
+      if (typeof unsubIpc === 'function') unsubIpc();
+    };
   }, []);
 
   // Redirect to login if not authenticated

@@ -110,7 +110,12 @@ async function runMigrations(existingDb) {
             '009_fix_account_summary_view.sql',
             '010_add_check_number.sql',
             '011_add_user_password_columns.sql',
-            '012_add_account_profile_columns.cjs'
+            '012_add_account_profile_columns.cjs',
+            '013_plaid_integration.cjs',
+            '014_add_transaction_transfer_columns.cjs',
+            '015_plaid_phase3.cjs',
+            '016_plaid_consent.cjs',
+            '017_plaid_product_gaps.cjs',
         ];
 
         for (const migration of migrations) {

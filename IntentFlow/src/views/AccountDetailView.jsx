@@ -1,5 +1,8 @@
 // src/views/AccountDetailView.jsx
 import React, { useState, useEffect } from 'react';
+import PlaidAccountSyncBanner from '../components/PlaidAccountSyncBanner';
+import PlaidTxnBadge from '../components/PlaidTxnBadge';
+import { isPlaidImportedTransaction } from '../utils/plaidTransactionUtils';
 
 function AccountDetailView({ account: propAccount, accountId, onBack, onMakePayment }) {
   console.log('🔥 AccountDetailView mounted – timestamp', Date.now());
@@ -1410,6 +1413,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         )}
       </div>
 
+      <PlaidAccountSyncBanner account={account} />
+
       {/* Account Summary */}
       <div style={styles.summaryCard}>
         <div style={styles.summaryRow}>
@@ -1607,6 +1612,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                         value={editFormData.date}
                         onChange={(e) => handleEditChange('date', e.target.value)}
                         style={styles.editInput}
+                        readOnly={isPlaidImportedTransaction(tx)}
+                        disabled={isPlaidImportedTransaction(tx)}
                       />
                     </div>
                     <div style={styles.transactionDescription}>
@@ -1662,7 +1669,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                     </div>
                     <div style={styles.transactionDate}>{formatDisplayDate(tx.date)}</div>
                     <div style={styles.transactionDescription}>
-                      <div>{tx.payee || tx.description || 'Transaction'}</div>
+                      <div>
+                        {tx.payee || tx.description || 'Transaction'}
+                        <PlaidTxnBadge transaction={tx} />
+                      </div>
                       {isInterestCharge && (
                         <div style={styles.interestBadgeSmall}>💰 Interest Charge</div>
                       )}

@@ -24,8 +24,14 @@ export default function ReconcilePage() {
     const loadAccountData = async () => {
         setLoading(true);
         try {
-            // Get account details
-            const accountResult = await window.electronAPI.getAccountById(id, 2);
+            const userResult = await window.electronAPI.getCurrentUser();
+            const userId = userResult?.data?.id;
+            if (!userId) {
+                setLoading(false);
+                return;
+            }
+
+            const accountResult = await window.electronAPI.getAccountById(id, userId);
             if (accountResult.success) {
                 setAccount(accountResult.data);
             }
@@ -151,12 +157,41 @@ export default function ReconcilePage() {
 
                         <div style={styles.balanceBox}>
                             <div style={styles.balanceRow}>
-                                <span style={styles.balanceLabel}>Your current balance:</span>
+                                <span style={styles.balanceLabel}>Register balance (app):</span>
                                 <span style={styles.balanceValue}>
                                     {formatCurrency(account.balance)}
                                 </span>
                             </div>
+                            {account.cleared_balance != null && (
+                                <div style={styles.balanceRow}>
+                                    <span style={styles.balanceLabel}>Cleared in register:</span>
+                                    <span style={styles.balanceValue}>
+                                        {formatCurrency(account.cleared_balance)}
+                                    </span>
+                                </div>
+                            )}
                         </div>
+
+                        {account.source === 'plaid' && (
+                            <div style={styles.plaidHintBox}>
+                                <strong>Bank-linked account</strong>
+                                <p style={styles.plaidHintText}>
+                                    Bank balance (from last sync):{' '}
+                                    <strong>{formatCurrency(account.balance)}</strong>
+                                    {account.last_balance_sync_at && (
+                                        <>
+                                            {' '}
+                                            — synced{' '}
+                                            {new Date(account.last_balance_sync_at).toLocaleString()}
+                                        </>
+                                    )}
+                                </p>
+                                <p style={styles.plaidHintSub}>
+                                    Enter your statement balance below and match uncleared transactions.
+                                    Use Linked Banks → Sync Now to refresh the bank balance before reconciling.
+                                </p>
+                            </div>
+                        )}
 
                         <div style={styles.formGroup}>
                             <label style={styles.label}>Statement Date</label>
@@ -380,6 +415,24 @@ const styles = {
         display: 'block',
         fontSize: '0.875rem',
         color: '#9CA3AF'
+    },
+    plaidHintBox: {
+        background: 'rgba(0, 71, 171, 0.15)',
+        border: '1px solid rgba(147, 197, 253, 0.35)',
+        borderRadius: '0.5rem',
+        padding: '1rem',
+        marginBottom: '1.25rem',
+        color: '#E5E7EB',
+    },
+    plaidHintText: {
+        margin: '0.5rem 0 0',
+        fontSize: '0.9rem',
+    },
+    plaidHintSub: {
+        margin: '0.5rem 0 0',
+        fontSize: '0.8rem',
+        color: '#9CA3AF',
+        lineHeight: 1.45,
     },
     reconcileButton: {
         width: '100%',

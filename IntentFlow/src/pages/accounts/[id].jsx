@@ -2,6 +2,7 @@
 import { useRouter } from 'next/router';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import PlaidAccountSyncBanner from '../../components/PlaidAccountSyncBanner';
 
 const AccountDetailPage = () => {
     const router = useRouter();
@@ -1375,6 +1376,8 @@ const AccountDetailPage = () => {
                     </div>
                 </div>
             </div>
+
+            <PlaidAccountSyncBanner account={account} />
 
             {/* Info Banner for Loan Accounts - When viewing a loan account from this page */}
             {isLoanAccountView && (

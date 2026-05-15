@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { isPlaidLinkedAccount, hasPlaidAccountBridge } from '../utils/plaidAccountUtils';
+import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
 
-const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = 'edit' }) => {
+const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = 'edit', onNavigate }) => {
   const [formData, setFormData] = useState({
     name: '',
     type: '',
@@ -34,6 +36,9 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
   // For displaying masked routing number
   const [displayRoutingNumber, setDisplayRoutingNumber] = useState('');
   const [isEditingRoutingNumber, setIsEditingRoutingNumber] = useState(false);
+  const [plaidSyncEnabled, setPlaidSyncEnabled] = useState(true);
+  const [plaidBalanceLocked, setPlaidBalanceLocked] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
 
   // Helper function to mask account number safely
   const maskAccountNumber = (number) => {
@@ -128,6 +133,8 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
         setDisplayRoutingNumber(maskRoutingNumber(fullRoutingNumber));
         setIsEditingAccountNumber(false);
         setIsEditingRoutingNumber(false);
+        setPlaidSyncEnabled(account.sync_enabled !== false);
+        setPlaidBalanceLocked(account.balance_locked === true);
       }
     }
   }, [account, isOpen]);
@@ -182,6 +189,9 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    const linked =
+      account?.id && account.id !== 'new' && isPlaidLinkedAccount(account);
     
     // Prepare data for save based on account type
     const isLoan = formData.type === 'loan';
@@ -192,22 +202,30 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     const isCreditCard = formData.type === 'credit';
     
     const saveData = {
-      name: formData.name,
-      type: formData.type,
-      balance: formData.balance === '' ? 0 : parseFloat(formData.balance),
-      credit_limit: formData.credit_limit === '' ? null : parseFloat(formData.credit_limit),
+      name: linked ? undefined : formData.name,
+      type: linked ? undefined : formData.type,
+      balance: linked
+        ? undefined
+        : formData.balance === ''
+          ? 0
+          : parseFloat(formData.balance),
+      credit_limit: linked
+        ? undefined
+        : formData.credit_limit === ''
+          ? null
+          : parseFloat(formData.credit_limit),
       interest_rate: formData.interest_rate === '' ? null : parseFloat(formData.interest_rate),
       due_date: formData.due_date || null,
       minimum_payment: formData.minimum_payment === '' || formData.minimum_payment === undefined || formData.minimum_payment === null
         ? null
         : parseFloat(formData.minimum_payment),
-      institution: formData.institution || null,
+      institution: linked ? undefined : formData.institution || null,
       account_number: formData.account_number || null,
       routing_number: (isChecking || isSavings || isDebitCard || isSavingsCard) ? (formData.routing_number || null) : null,
       account_holder_name: formData.account_holder_name || null,
       notes: formData.notes || null,
       // Loan-specific fields
-      ...(isLoan && {
+      ...(isLoan && !linked && {
         original_balance: formData.original_balance === '' ? null : parseFloat(formData.original_balance),
         term_months: formData.term_months === '' ? null : parseInt(formData.term_months, 10),
         monthly_payment: formData.monthly_payment === '' ? null : parseFloat(formData.monthly_payment),
@@ -225,7 +243,13 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
         transfer_limit: formData.transfer_limit === '' ? null : parseFloat(formData.transfer_limit),
         linked_savings_account: formData.linked_savings_account || null,
         rewards_program: formData.rewards_program || null
-      })
+      }),
+      ...(account?.id &&
+        account.id !== 'new' &&
+        hasPlaidAccountBridge(account) && {
+          sync_enabled: plaidSyncEnabled ? 1 : 0,
+          balance_locked: plaidBalanceLocked ? 1 : 0,
+        })
     };
     
     console.log('📤 Submitting save data:', saveData);
@@ -233,8 +257,11 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     console.log('📤 Routing number being saved:', saveData.routing_number);
     console.log('📤 Account type:', formData.type);
     
+    const filtered = Object.fromEntries(
+      Object.entries(saveData).filter(([, v]) => v !== undefined)
+    );
     const accountId = account?.id === 'new' ? 'new' : account?.id;
-    await onSave(accountId, saveData);
+    await onSave(accountId, filtered);
   };
 
   const handleDelete = () => {
@@ -243,9 +270,33 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     }
   };
 
+  const handleUnlinkPlaid = async () => {
+    if (!window.electronAPI?.unlinkPlaidAccount || !account?.id) return;
+    const ok = window.confirm(
+      'Stop syncing this account from Plaid? Your bank connection stays active for other accounts on this institution.'
+    );
+    if (!ok) return;
+    setUnlinking(true);
+    try {
+      const res = await window.electronAPI.unlinkPlaidAccount(account.id);
+      if (res?.success) {
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        onClose();
+      } else {
+        window.alert(res?.error || 'Failed to unlink account');
+      }
+    } catch (err) {
+      window.alert(err.message);
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const isNewCard = account?.id === 'new';
+  const plaidLinked = !isNewCard && isPlaidLinkedAccount(account);
+  const plaidBridge = !isNewCard && hasPlaidAccountBridge(account);
   const isLoan = formData.type === 'loan';
   const isChecking = formData.type === 'checking';
   const isSavings = formData.type === 'savings';
@@ -291,7 +342,45 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
     <div style={styles.modalOverlay} onClick={onClose}>
       <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
         <h2 style={styles.modalTitle}>{getTitle()}</h2>
-        
+
+        {plaidLinked && (
+          <div style={styles.plaidBanner}>
+            This account is synced from your bank. Balance and account details update when you sync in{' '}
+            <strong>Linked Banks</strong>. You can edit notes and category-related fields here.
+          </div>
+        )}
+
+        {plaidBridge && (
+          <div style={styles.plaidControls}>
+            <label style={styles.plaidCheckRow}>
+              <input
+                type="checkbox"
+                checked={plaidSyncEnabled}
+                onChange={(e) => setPlaidSyncEnabled(e.target.checked)}
+              />
+              <span>Sync balances from bank</span>
+            </label>
+            <label style={styles.plaidCheckRow}>
+              <input
+                type="checkbox"
+                checked={plaidBalanceLocked}
+                disabled={!plaidSyncEnabled}
+                onChange={(e) => setPlaidBalanceLocked(e.target.checked)}
+              />
+              <span>Lock balance (ignore bank balance updates)</span>
+            </label>
+            <PlaidManageConnectionLink account={account} onNavigate={onNavigate} />
+            <button
+              type="button"
+              style={styles.unlinkPlaidButton}
+              onClick={handleUnlinkPlaid}
+              disabled={unlinking}
+            >
+              {unlinking ? 'Unlinking…' : 'Unlink from Plaid (keep account)'}
+            </button>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit}>
           <div style={styles.formGroup}>
             <label style={styles.label}>
@@ -305,6 +394,8 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
               style={styles.input}
               placeholder={getPlaceholderByType(formData.type)}
               required
+              readOnly={plaidLinked}
+              disabled={plaidLinked}
             />
           </div>
 
@@ -319,6 +410,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
               onChange={handleChange}
               style={styles.select}
               required
+              disabled={plaidLinked}
             >
               <option value="credit">💳 Credit Card</option>
               <option value="debit_card">💳 Debit Card</option>
@@ -356,12 +448,21 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
                     setFormData({ ...formData, balance: '' });
                   }
                 }}
-                style={styles.modalInput}
+                style={{
+                  ...styles.modalInput,
+                  ...(plaidLinked ? styles.readOnlyInput : {}),
+                }}
                 step="0.01"
                 placeholder="0.00"
+                readOnly={plaidLinked}
+                disabled={plaidLinked}
               />
             </div>
-            <small style={styles.hint}>{getBalanceHint()}</small>
+            <small style={styles.hint}>
+              {plaidLinked
+                ? 'Balance is synced from your bank. Use Linked Banks → Sync Now to refresh.'
+                : getBalanceHint()}
+            </small>
           </div>
 
           {/* Loan-specific fields */}
@@ -730,7 +831,7 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
             <button type="submit" style={styles.saveButton}>
               {isNewCard ? 'Create Account' : 'Save Changes'}
             </button>
-            {!isNewCard && onDelete && (
+            {!isNewCard && onDelete && !plaidLinked && (
               <button type="button" onClick={handleDelete} style={styles.deleteButton}>
                 Delete Account
               </button>
@@ -769,6 +870,49 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000
+  },
+  plaidControls: {
+    marginBottom: '1rem',
+    padding: '0.75rem 1rem',
+    borderRadius: '0.5rem',
+    border: '1px solid rgba(147, 197, 253, 0.25)',
+    background: 'rgba(15, 23, 42, 0.5)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+  },
+  plaidCheckRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontSize: '0.85rem',
+    color: '#E2E8F0',
+    cursor: 'pointer',
+  },
+  unlinkPlaidButton: {
+    marginTop: '0.25rem',
+    padding: '0.4rem 0.75rem',
+    background: 'transparent',
+    border: '1px solid rgba(248, 113, 113, 0.5)',
+    borderRadius: '0.35rem',
+    color: '#FCA5A5',
+    fontSize: '0.8rem',
+    cursor: 'pointer',
+    alignSelf: 'flex-start',
+  },
+  plaidBanner: {
+    background: 'rgba(0, 71, 171, 0.2)',
+    border: '1px solid rgba(147, 197, 253, 0.35)',
+    borderRadius: '0.5rem',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    fontSize: '0.85rem',
+    color: '#BFDBFE',
+    lineHeight: 1.45,
+  },
+  readOnlyInput: {
+    opacity: 0.85,
+    cursor: 'not-allowed',
   },
   modalContent: {
     background: '#1F2937',

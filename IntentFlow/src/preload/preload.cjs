@@ -3,19 +3,44 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 console.log('🔌 Preload script loaded');
 
+ipcRenderer.on('accounts-updated', (_event, detail) => {
+  window.dispatchEvent(new CustomEvent('accounts-updated', { detail }));
+});
+
 try {
   contextBridge.exposeInMainWorld('electronAPI', {
 
     // ==================== PLAID ====================
+    getPlaidConfigStatus: () => ipcRenderer.invoke('plaid-get-config-status'),
     createLinkToken: () => ipcRenderer.invoke('plaid-create-link-token'),
     exchangePublicToken: (publicToken) => ipcRenderer.invoke('plaid-exchange-public-token', publicToken),
     getLinkedItems: () => ipcRenderer.invoke('plaid-get-linked-items'),
+    getPlaidItemAccounts: (itemId) => ipcRenderer.invoke('plaid-get-item-accounts', itemId),
     syncItem: (itemId) => ipcRenderer.invoke('plaid-sync-item', itemId),
     syncTransactions: (itemId, startDate = null, endDate = null) =>
       ipcRenderer.invoke('plaid-sync-transactions', itemId, startDate, endDate),
-    removeItem: (itemId) => ipcRenderer.invoke('plaid-remove-item', itemId),
+    removeItem: (itemId, options) => ipcRenderer.invoke('plaid-remove-item', itemId, options),
+    getPlaidSyncHistory: (limit) => ipcRenderer.invoke('plaid-get-sync-history', limit),
+    getAccountPlaidLinkStatus: (accountId) =>
+      ipcRenderer.invoke('plaid-get-account-link-status', accountId),
+    syncPlaidAccount: (accountId) => ipcRenderer.invoke('plaid-sync-account', accountId),
+    unlinkPlaidAccount: (accountId) => ipcRenderer.invoke('plaid-unlink-account', accountId),
     saveCategoryMapping: (plaidCategory, categoryId) =>
       ipcRenderer.invoke('plaid-save-category-mapping', plaidCategory, categoryId),
+    reapplyAllPlaidCategoryMappings: () =>
+      ipcRenderer.invoke('plaid-reapply-all-category-mappings'),
+    getPlaidCategoryMappings: () => ipcRenderer.invoke('plaid-get-category-mappings'),
+    mergePlaidAccount: (plaidAccountId, targetAccountId) =>
+      ipcRenderer.invoke('plaid-merge-account', plaidAccountId, targetAccountId),
+    linkAccountToPlaid: (plaidAccountId, targetAccountId) =>
+      ipcRenderer.invoke('plaid-link-account-to-plaid', plaidAccountId, targetAccountId),
+    checkDuplicateAccount: (payload) =>
+      ipcRenderer.invoke('plaid-check-duplicate-account', payload),
+    onAccountsUpdated: (callback) => {
+      const listener = (_event, detail) => callback(detail);
+      ipcRenderer.on('accounts-updated', listener);
+      return () => ipcRenderer.removeListener('accounts-updated', listener);
+    },
 
     // ==================== AUTH ====================
     createUser: (userData) => ipcRenderer.invoke('create-user', userData),

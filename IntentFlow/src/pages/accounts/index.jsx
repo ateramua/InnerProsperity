@@ -3,6 +3,8 @@
 /** @jsx React.createElement */
 
 import React, { useState, useEffect } from 'react';
+import AccountsByInstitution from '../../components/AccountsByInstitution';
+import PlaidLinkedBadge from '../../components/PlaidLinkedBadge';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import Sidebar from '../../components/Navigation/Sidebar';  // ADD THIS - it was missing!
@@ -50,15 +52,13 @@ export default function AccountsDashboard() {
     };
 
     useEffect(() => {
-        console.log('🔥🔥🔥 ACCOUNTS PAGE MOUNTED - CHECKING ELECTRON API');
-        console.log('🔥 window.electronAPI exists:', !!window.electronAPI);
-        console.log('🔥 getAccountsSummary available:', !!window.electronAPI?.getAccountsSummary);
-        console.log('🔵 [useEffect] Component mounted, calling loadAccounts()');
         loadAccounts();
-
-        // Cleanup function
+        const refresh = () => loadAccounts();
+        window.addEventListener('accounts-updated', refresh);
+        window.addEventListener('accounts-changed', refresh);
         return () => {
-            console.log('🔵 [useEffect] Component unmounting');
+            window.removeEventListener('accounts-updated', refresh);
+            window.removeEventListener('accounts-changed', refresh);
         };
     }, []);
 
@@ -297,6 +297,13 @@ const handleCreateAccount = async () => {
 
                 {/* Account Lists */}
                 <div style={styles.accountsContainer}>
+                    <AccountsByInstitution
+                        accounts={accounts}
+                        onNavigate={handleNavigation}
+                        formatCurrency={formatCurrency}
+                        getAccountIcon={getAccountIcon}
+                        getBalanceColor={getBalanceColor}
+                    />
                     {/* Budget Accounts Section */}
                     <div style={styles.section}>
                         <h2 style={styles.sectionTitle}>BUDGET ACCOUNTS</h2>
@@ -309,7 +316,7 @@ const handleCreateAccount = async () => {
                                             <div style={styles.accountInfo}>
                                                 <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
                                                 <div>
-                                                    <div style={styles.accountName}>{account.name}</div>
+                                                    <div style={styles.accountName}>{account.name}<PlaidLinkedBadge account={account} /></div>
                                                     <div style={styles.accountMeta}>
                                                         {account.institution || account.type.charAt(0).toUpperCase() + account.type.slice(1)}
                                                         {account.type === 'credit' && account.credit_limit && ` • Limit: ${formatCurrency(account.credit_limit)}`}

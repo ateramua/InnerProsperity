@@ -7,10 +7,12 @@ import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import BudgetEngine from "../shared/budgetEngine.mjs";
 import Button from '../components/ui/Button';
 import CategoryTargetModal from '../components/CategoryTargetModal';
-import PM from '../constants/pmTheme.js';
-import budgetMonthUtils from '../utils/budgetMonthUtils.js';
-
-const { formatBudgetMonthKey, roundMoney, monthKeyToLocalDate } = budgetMonthUtils;
+import PM from '../constants/pmTheme.jsx';
+import {
+  formatBudgetMonthKey,
+  roundMoney,
+  monthKeyToLocalDate,
+} from '../utils/budgetMonthUtils.jsx';
 
 const PropertyMapView = () => {
   // ==================== STATE DECLARATIONS ====================

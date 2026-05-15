@@ -21,6 +21,7 @@ import AddLoanForm from './AddLoanForm';
 import ForecastPage from '../pages/forecast';
 import AccountModal from './AccountModal';
 import LinkedBanksView from './LinkedBanksView';
+import AppToastHost from '../components/AppToast';
 
 const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavigate }) => {
   console.log('🔍 ViewContainer received currentView:', currentView);
@@ -158,6 +159,13 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       currentView === 'loan-strategist' ||
       currentView === 'loan-add' ||
       currentView.startsWith('account-')) {
+      refreshLoans();
+    }
+  }, [currentView]);
+
+  useEffect(() => {
+    if (currentView === 'linked-banks') {
+      loadCreditCards();
       refreshLoans();
     }
   }, [currentView]);
@@ -663,6 +671,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         }
         return (
           <CreditCardManager
+            onNavigate={onNavigate}
             cards={creditCards}
             transactions={transactions}
             onMakePayment={handleMakePayment}
@@ -749,7 +758,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         );
 
       case 'linked-banks':
-        return <LinkedBanksView />;
+        return <LinkedBanksView onNavigate={onNavigate} />;
 
       case 'loan-dashboard':
         if (isLoadingLoans) {
@@ -762,6 +771,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         }
         return (
           <LoanManager
+            onNavigate={onNavigate}
             loans={loans}
             onMakePayment={handleLoanPayment}
             onEditLoan={handleEditLoanClick}
@@ -850,6 +860,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       <div style={styles.container}>
         {renderView()}
       </div>
+      <AppToastHost />
       <AccountModal
         isOpen={showAccountModal}
         onClose={() => {

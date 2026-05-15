@@ -110,7 +110,16 @@ async function ensureSchema(db) {
       payee TEXT,
       memo TEXT,
       is_cleared INTEGER DEFAULT 0,
+      is_transfer INTEGER DEFAULT 0,
+      transfer_group_id TEXT,
+      linked_transaction_id TEXT,
+      counterparty_account_id TEXT,
+      transfer_account_id TEXT,
+      import_id TEXT,
+      check_number TEXT,
       plaid_transaction_id TEXT UNIQUE,
+      plaid_category_key TEXT,
+      is_deleted INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (account_id) REFERENCES accounts(id),
@@ -151,6 +160,7 @@ async function ensureSchema(db) {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       last_sync DATETIME,
       cursor TEXT,
+      consent_expires_at DATETIME,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
 

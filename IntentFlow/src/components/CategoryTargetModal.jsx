@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import PM from '../constants/pmTheme.js';
+import PM from '../constants/pmTheme.jsx';
 
 const CategoryTargetModal = ({ 
   isOpen, 

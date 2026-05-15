@@ -1,8 +1,17 @@
 // src/views/LoanManager.jsx
 import React, { useState, useEffect } from 'react';
 import EditAccountModal from './EditAccountModal';
+import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
+import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
+import ConnectBankCTA from '../components/ConnectBankCTA';
+import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
+import {
+  confirmNoDuplicateAccount,
+  maskFromAccountNumber,
+} from '../utils/plaidDuplicateCheck';
 
 function LoanManager({
+  onNavigate,
   loans = [],
   onMakePayment,
   onEditLoan,
@@ -372,6 +381,15 @@ function LoanManager({
         return;
       }
 
+      const mask = maskFromAccountNumber(newLoanData.account_number);
+      const proceed = await confirmNoDuplicateAccount({
+        type: 'loan',
+        mask,
+        name: newLoanData.name,
+        institution: newLoanData.institution,
+      });
+      if (!proceed) return;
+
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         alert('You must be logged in to create a loan');
@@ -450,7 +468,8 @@ function LoanManager({
         notes: newLoanData.notes.trim() || null,
         user_id: userId,
         currency: 'USD',
-        paired_category_id: pairedCategoryId
+        paired_category_id: pairedCategoryId,
+        forceCreate: true,
       };
 
       console.log('📝 Creating loan with data:', loanData);
@@ -582,6 +601,13 @@ function LoanManager({
   };
 
   const handleDeleteLoanAccount = async (accountId) => {
+    const loan = loans.find((l) => l.id === accountId) || editingLoan;
+    if (loan && isPlaidLinkedAccount(loan)) {
+      alert(
+        'This loan is linked via Plaid. Open Linked Banks and remove the bank connection to disconnect it.'
+      );
+      return;
+    }
     if (!window.confirm('Are you sure you want to delete this loan? This action cannot be undone.')) {
       return;
     }
@@ -702,7 +728,7 @@ function LoanManager({
           <h3 style={styles.emptyTitle}>No loans found</h3>
           <p style={styles.emptyText}>
             {filter === 'all'
-              ? 'Add your first loan to start tracking'
+              ? (<ConnectBankCTA label="loans" onNavigate={onNavigate} />)
               : 'No loans match the selected filter'}
           </p>
           {filter === 'all' && (
@@ -736,7 +762,11 @@ function LoanManager({
                 
                 <div style={styles.loanHeader}>
                   <div>
-                    <h3 style={styles.loanName}>{loan.name}</h3>
+                    <h3 style={styles.loanName}>
+                      {loan.name}
+                      <PlaidLinkedBadge account={loan} />
+                      <PlaidManageConnectionLink account={loan} onNavigate={onNavigate} />
+                    </h3>
                     <div style={styles.loanLender}>{loan.lender || loan.institution || 'Lender'}</div>
                   </div>
                   <div style={styles.loanRate}>{loan.interest_rate || loan.interestRate || 0}%</div>

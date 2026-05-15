@@ -1,6 +1,14 @@
 // src/views/CashAccountsView.jsx
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/router';
+import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
+import ConnectBankCTA from '../components/ConnectBankCTA';
+import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
+import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
+import {
+  confirmNoDuplicateAccount,
+  maskFromAccountNumber,
+} from '../utils/plaidDuplicateCheck';
 
 // ✅ HELPER FUNCTIONS
 const parseNumber = (value, fallback = null) => {
@@ -314,6 +322,15 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     console.log('[DEBUG] inlineFormData:', JSON.stringify(inlineFormData, null, 2));
     if (!validateInlineForm()) return;
 
+    const mask = maskFromAccountNumber(inlineFormData.account_number);
+    const proceed = await confirmNoDuplicateAccount({
+      type: inlineFormData.type,
+      mask,
+      name: inlineFormData.name,
+      institution: inlineFormData.institution,
+    });
+    if (!proceed) return;
+
     setIsSubmitting(true);
     try {
       const userResult = await window.electronAPI.getCurrentUser();
@@ -340,7 +357,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         interest_rate: parseNumber(inlineFormData.interest_rate),
         notes: cleanString(inlineFormData.notes),
         user_id: userId,
-        userId: userId
+        userId: userId,
+        forceCreate: true,
       };
 
       console.log('📝 Creating account with data:', accountData);
@@ -397,10 +415,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
 
       const userId = userResult.data.id;
 
+      const linked = isPlaidLinkedAccount(editingAccount);
       const updates = {
-        name: cleanString(editFormData.name),
-        balance: parseNumber(editFormData.balance, 0),
-        institution: cleanString(editFormData.institution),
+        ...(linked ? {} : { name: cleanString(editFormData.name) }),
+        ...(linked ? {} : { balance: parseNumber(editFormData.balance, 0) }),
+        ...(linked ? {} : { institution: cleanString(editFormData.institution) }),
         account_number: cleanNumberString(editFormData.account_number),
         routing_number: cleanString(editFormData.routing_number),
         debit_card_number: cleanNumberString(editFormData.debit_card_number),
@@ -438,7 +457,13 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   };
 
   // ✅ FIXED: handleDeleteAccount with unified event name
-  const handleDeleteAccount = async (accountId, accountName) => {
+  const handleDeleteAccount = async (accountId, accountName, account) => {
+    if (account && isPlaidLinkedAccount(account)) {
+      alert(
+        'This account is linked via Plaid. Open Linked Banks and remove the bank connection to disconnect it.'
+      );
+      return;
+    }
     if (!window.confirm(`Are you sure you want to delete "${accountName}"? This action cannot be undone.`)) {
       return;
     }
@@ -562,7 +587,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 <div style={styles.accountInfo} onClick={() => handleAccountClick(account.id)}>
                   <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
                   <div>
-                    <div style={styles.accountName}>{account.name}</div>
+                    <div style={styles.accountName}>
+                      {account.name}
+                      <PlaidLinkedBadge account={account} />
+                      <PlaidManageConnectionLink account={account} />
+                    </div>
                     <div style={styles.accountMeta}>
                       {account.institution || 'No institution'}
                       {account.account_number && ` • •••• ${account.account_number.slice(-4)}`}
@@ -583,7 +612,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                     ✏️
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteAccount(account.id, account.name); }}
+                    onClick={(e) => { e.stopPropagation(); handleDeleteAccount(account.id, account.name, account); }}
                     style={styles.deleteButton}
                     title="Delete Account"
                   >
@@ -594,7 +623,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
             ))}
             {checkingAccounts.length === 0 && (
               <div style={styles.emptyState}>
-                No checking accounts yet. Click "New Account" to add one.
+                <ConnectBankCTA label="checking accounts" />
               </div>
             )}
           </div>
@@ -611,7 +640,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 <div style={styles.accountInfo} onClick={() => handleAccountClick(account.id)}>
                   <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
                   <div>
-                    <div style={styles.accountName}>{account.name}</div>
+                    <div style={styles.accountName}>
+                      {account.name}
+                      <PlaidLinkedBadge account={account} />
+                      <PlaidManageConnectionLink account={account} />
+                    </div>
                     <div style={styles.accountMeta}>
                       {account.institution || 'No institution'}
                       {account.account_number && ` • •••• ${account.account_number.slice(-4)}`}
@@ -632,7 +665,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                     ✏️
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteAccount(account.id, account.name); }}
+                    onClick={(e) => { e.stopPropagation(); handleDeleteAccount(account.id, account.name, account); }}
                     style={styles.deleteButton}
                     title="Delete Account"
                   >
@@ -643,7 +676,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
             ))}
             {savingsAccounts.length === 0 && (
               <div style={styles.emptyState}>
-                No savings accounts yet. Click "New Account" to add one.
+                <ConnectBankCTA label="savings accounts" />
               </div>
             )}
           </div>
@@ -853,6 +886,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
             </div>
 
             <form onSubmit={(e) => { e.preventDefault(); handleUpdateAccount(); }}>
+              {isPlaidLinkedAccount(editingAccount) && (
+                <div style={styles.plaidBanner}>
+                  Bank-linked account: balance and name sync from Linked Banks. You can still edit notes and bank details below.
+                </div>
+              )}
               <div style={styles.formGroup}>
                 <label style={styles.label}>Account Name <span style={styles.required}>*</span></label>
                 <input
@@ -862,6 +900,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                   onChange={handleEditChange}
                   style={{ ...styles.input, ...(editErrors.name && styles.inputError) }}
                   placeholder="Account name"
+                  readOnly={isPlaidLinkedAccount(editingAccount)}
+                  disabled={isPlaidLinkedAccount(editingAccount)}
                 />
                 {editErrors.name && <div style={styles.fieldError}>{editErrors.name}</div>}
               </div>
@@ -878,6 +918,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                     step="0.01"
                     style={styles.inputWithSymbol}
                     placeholder="0.00"
+                    readOnly={isPlaidLinkedAccount(editingAccount)}
+                    disabled={isPlaidLinkedAccount(editingAccount)}
                   />
                 </div>
               </div>
@@ -1023,9 +1065,11 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 <button type="submit" style={styles.saveButton} disabled={isEditing}>
                   {isEditing ? 'Saving...' : 'Save Changes'}
                 </button>
-                <button type="button" onClick={() => handleDeleteAccount(editingAccount.id, editingAccount.name)} style={styles.modalDeleteButton}>
-                  Delete Account
-                </button>
+                {!isPlaidLinkedAccount(editingAccount) && (
+                  <button type="button" onClick={() => handleDeleteAccount(editingAccount.id, editingAccount.name, editingAccount)} style={styles.modalDeleteButton}>
+                    Delete Account
+                  </button>
+                )}
                 <button type="button" onClick={() => setShowEditModal(false)} style={styles.cancelButton}>
                   Cancel
                 </button>
@@ -1122,6 +1166,16 @@ const styles = {
   },
   accountIcon: {
     fontSize: '1.5rem'
+  },
+  plaidBanner: {
+    background: 'rgba(0, 71, 171, 0.2)',
+    border: '1px solid rgba(147, 197, 253, 0.35)',
+    borderRadius: '0.5rem',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    fontSize: '0.85rem',
+    color: '#BFDBFE',
+    lineHeight: 1.45,
   },
   accountName: {
     fontWeight: '600',

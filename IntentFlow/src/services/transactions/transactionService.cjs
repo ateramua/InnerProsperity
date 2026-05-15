@@ -30,6 +30,7 @@ class TransactionService {
                 JOIN accounts a ON t.account_id = a.id
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.user_id = ?
+                  AND (t.is_deleted IS NULL OR t.is_deleted = 0)
             `;
             const params = [userId];
 
@@ -90,16 +91,38 @@ class TransactionService {
     async updateTransaction(id, userId, updates) {
         const db = await this.getDb();
         try {
+            const oldTransaction = await this.getTransactionById(id, userId);
+            if (!oldTransaction) return null;
+
+            let effectiveUpdates = { ...updates };
+            if (oldTransaction.plaid_transaction_id) {
+                const {
+                    filterPlaidTransactionUpdates,
+                } = require('../../utils/plaidTransactionUtils.cjs');
+                const { updates: filtered, removed } = filterPlaidTransactionUpdates(
+                    oldTransaction,
+                    updates
+                );
+                if (removed.length) {
+                    const err = new Error(
+                        `Bank-imported transactions cannot change: ${removed.join(', ')}. Edit category or memo only.`
+                    );
+                    err.code = 'PLAID_TRANSACTION_READONLY';
+                    throw err;
+                }
+                effectiveUpdates = filtered;
+            }
+
             const allowedUpdates = [
                 'date', 'description', 'amount', 'category_id',
                 'payee', 'memo', 'check_number', 'is_cleared',
-                'linked_transaction_id'  // <-- ADD THIS
+                'linked_transaction_id'
             ];
 
             const setClauses = [];
             const values = [];
 
-            for (const [key, value] of Object.entries(updates)) {
+            for (const [key, value] of Object.entries(effectiveUpdates)) {
                 if (allowedUpdates.includes(key)) {
                     setClauses.push(`${key} = ?`);
                     values.push(value);
@@ -111,19 +134,13 @@ class TransactionService {
             setClauses.push('updated_at = datetime("now")');
             values.push(id, userId);
 
-            // Get the account_id before update to update balances later
-            const oldTransaction = await this.getTransactionById(id, userId);
-
             await db.run(`
                 UPDATE transactions 
                 SET ${setClauses.join(', ')}
                 WHERE id = ? AND user_id = ?
             `, values);
 
-            // Update account balances
-            if (oldTransaction) {
-                await this.updateAccountBalances(oldTransaction.account_id);
-            }
+            await this.updateAccountBalances(oldTransaction.account_id);
 
             return this.getTransactionById(id, userId);
         } finally {
@@ -144,6 +161,7 @@ class TransactionService {
       END as transfer_counterparty_name
     FROM transactions t
     WHERE t.account_id = ? AND t.user_id = ?
+      AND (t.is_deleted IS NULL OR t.is_deleted = 0)
     ORDER BY t.date DESC, t.created_at DESC
   `;
         return await db.all(query, [accountId, userId]);
@@ -156,10 +174,18 @@ class TransactionService {
             const transaction = await this.getTransactionById(id, userId);
             if (!transaction) return false;
 
-            await db.run(`
-                DELETE FROM transactions 
-                WHERE id = ? AND user_id = ?
-            `, [id, userId]);
+            if (transaction.plaid_transaction_id) {
+                await db.run(
+                    `UPDATE transactions SET is_deleted = 1, updated_at = datetime('now')
+                     WHERE id = ? AND user_id = ?`,
+                    [id, userId]
+                );
+            } else {
+                await db.run(
+                    `DELETE FROM transactions WHERE id = ? AND user_id = ?`,
+                    [id, userId]
+                );
+            }
 
             // Update account balances
             await this.updateAccountBalances(transaction.account_id);
@@ -232,6 +258,7 @@ class TransactionService {
             FROM transactions t
             LEFT JOIN categories c ON t.category_id = c.id
             WHERE t.account_id = ? AND t.user_id = ?
+              AND (t.is_deleted IS NULL OR t.is_deleted = 0)
             ORDER BY t.date ASC, t.created_at ASC
         `, [accountId, userId]);
 

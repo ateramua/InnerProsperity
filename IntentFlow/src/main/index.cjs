@@ -1,5 +1,6 @@
 // src/main/index.cjs
 require('dotenv').config();
+const { loadPlaidEnvFromUserData } = require('../services/plaid/loadPlaidEnv.cjs');
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -410,6 +411,15 @@ console.log('   - accountService.getAccountsSummary exists:', !!(accountService 
 console.log('   - userService loaded:', !!userService);
 console.log('   - settingsService loaded:', !!settingsService);
 console.log('   - TransactionService loaded:', !!TransactionService);
+
+const {
+    getPlaidConfig,
+    createPlaidClient,
+    sanitizeLinkedItemRow,
+    buildLinkTokenCreatePayload,
+} = requireModule('../services/plaid/plaidService.cjs') || {};
+const plaidSync = requireModule('../services/plaid/plaidSync.cjs') || {};
+const plaidAccountMatch = requireModule('../services/plaid/plaidAccountMatch.cjs') || {};
 console.log('   - CategoryGroupService loaded:', !!CategoryGroupService);
 console.log('   - ForecastService loaded:', !!ForecastService);
 console.log('   - MoneyMap loaded:', !!MoneyMap);
@@ -425,6 +435,9 @@ let db;
 let nativeServer = null;
 let ipcHandlersRegistered = false;
 let backgroundSyncInterval = null;
+let focusSyncTimeout = null;
+let lastFocusPlaidSyncAt = 0;
+const FOCUS_SYNC_COOLDOWN_MS = 60_000;
 
 // ==================== DATABASE PATH HELPER (UPDATED) ====================
 // This function now delegates to the centralized database configuration
@@ -599,13 +612,18 @@ async function initDatabase() {
 }
 
 // ==================== PLAID HELPER FUNCTIONS ====================
-async function getCategoryMappings(userId) {
-    const db = await getDatabase();
-    return await db.all(`
-        SELECT plaid_category, category_id
-        FROM plaid_category_mappings
-        WHERE user_id = ?
-    `, [userId]);
+function getPlaidSyncDeps() {
+    return {
+        getDatabase,
+        decryptToken,
+        updateAccountBalances,
+    };
+}
+
+function notifyAccountsUpdated(source = 'plaid') {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('accounts-updated', { source });
+    }
 }
 
 async function updateAccountBalances(accountId) {
@@ -619,253 +637,126 @@ async function updateAccountBalances(accountId) {
 }
 
 async function syncTransactionsForItem(itemId) {
-    const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-    const configuration = new Configuration({
-        basePath: PlaidEnvironments[process.env.PLAID_ENV],
-        baseOptions: {
-            headers: {
-                'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID,
-                'PLAID-SECRET': process.env.PLAID_SECRET,
-            },
-        },
-    });
-    const plaidClient = new PlaidApi(configuration);
-    const db = await getDatabase();
-
-    const item = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
-    if (!item) throw new Error('Item not found');
-
-    const accessToken = decryptToken(item.access_token);
-    const cursor = item.cursor || null;
-
-    const linkedAccounts = await db.all(`
-        SELECT pa.account_id, a.user_id, pa.plaid_account_id
-        FROM plaid_accounts pa
-        JOIN accounts a ON pa.account_id = a.id
-        WHERE pa.item_id = ?
-    `, [itemId]);
-
-    if (linkedAccounts.length === 0) {
-        return { success: false, error: 'No linked accounts found for this item' };
+    if (!plaidSync.syncTransactionsForItem) {
+        throw new Error('Plaid sync module not loaded');
     }
-
-    const userId = linkedAccounts[0]?.user_id;
-    if (!userId) {
-        return { success: false, error: 'No user found for this item' };
-    }
-
-    const existingMappings = await getCategoryMappings(userId);
-
-    let added = [], modified = [], removed = [];
-    let hasMore = true;
-    let nextCursor = cursor;
-
-    while (hasMore) {
-        try {
-            const request = { access_token: accessToken };
-            if (nextCursor) request.cursor = nextCursor;
-            const response = await plaidClient.transactionsSync(request);
-            added.push(...response.data.added);
-            modified.push(...response.data.modified);
-            removed.push(...response.data.removed);
-            hasMore = response.data.has_more;
-            nextCursor = response.data.next_cursor;
-        } catch (error) {
-            if (error.response?.data?.error_code === 'ITEM_LOGIN_REQUIRED') {
-                console.log(`⚠️ Item ${itemId} requires reauthentication`);
-                return { success: false, error: 'ITEM_LOGIN_REQUIRED', itemId };
-            }
-            throw error;
-        }
-    }
-
-    let transactionsAdded = 0;
-    let transactionsModified = 0;
-    let transactionsRemoved = 0;
-    const updatedAccounts = new Set();
-    const unmappedCategories = new Set();
-
-    const insertTransaction = async (plaidTx, accountId, userId, categoryId) => {
-        await db.run(`
-            INSERT INTO transactions (
-                account_id, user_id, date, description, amount,
-                category_id, payee, memo, is_cleared, plaid_transaction_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `, [
-            accountId, userId,
-            plaidTx.date,
-            plaidTx.name,
-            plaidTx.amount,
-            categoryId,
-            plaidTx.merchant_name || null,
-            plaidTx.pending ? 'Pending' : null,
-            plaidTx.pending ? 0 : 1,
-            plaidTx.transaction_id,
-        ]);
-        updatedAccounts.add(accountId);
-    };
-
-    const updateTransaction = async (plaidTx, accountId, userId, categoryId) => {
-        await db.run(`
-            UPDATE transactions
-            SET date = ?, description = ?, amount = ?,
-                category_id = ?, payee = ?, memo = ?, is_cleared = ?
-            WHERE plaid_transaction_id = ? AND user_id = ?
-        `, [
-            plaidTx.date,
-            plaidTx.name,
-            plaidTx.amount,
-            categoryId,
-            plaidTx.merchant_name || null,
-            plaidTx.pending ? 'Pending' : null,
-            plaidTx.pending ? 0 : 1,
-            plaidTx.transaction_id,
-            userId,
-        ]);
-        updatedAccounts.add(accountId);
-    };
-
-    for (const plaidTx of added) {
-        const accountLink = linkedAccounts.find(acc => acc.plaid_account_id === plaidTx.account_id);
-        if (!accountLink) continue;
-
-        const existing = await db.get(`SELECT id FROM transactions WHERE plaid_transaction_id = ?`, [plaidTx.transaction_id]);
-        if (existing) continue;
-
-        const mapping = existingMappings.find(m => m.plaid_category === plaidTx.category);
-        const categoryId = mapping ? mapping.category_id : null;
-        if (!categoryId && plaidTx.category) unmappedCategories.add(plaidTx.category);
-
-        await insertTransaction(plaidTx, accountLink.account_id, accountLink.user_id, categoryId);
-        transactionsAdded++;
-    }
-
-    for (const plaidTx of modified) {
-        const accountLink = linkedAccounts.find(acc => acc.plaid_account_id === plaidTx.account_id);
-        if (!accountLink) continue;
-
-        const mapping = existingMappings.find(m => m.plaid_category === plaidTx.category);
-        const categoryId = mapping ? mapping.category_id : null;
-
-        await updateTransaction(plaidTx, accountLink.account_id, accountLink.user_id, categoryId);
-        transactionsModified++;
-    }
-
-    for (const plaidTx of removed) {
-        const existingTx = await db.get(`SELECT account_id FROM transactions WHERE plaid_transaction_id = ?`, [plaidTx.transaction_id]);
-        if (existingTx) {
-            await db.run(`DELETE FROM transactions WHERE plaid_transaction_id = ?`, [plaidTx.transaction_id]);
-            updatedAccounts.add(existingTx.account_id);
-            transactionsRemoved++;
-        }
-    }
-
-    for (const accountId of updatedAccounts) {
-        await updateAccountBalances(accountId);
-    }
-
-    await db.run(`UPDATE plaid_items SET cursor = ?, last_sync = datetime('now'), updated_at = datetime('now') WHERE id = ?`, [nextCursor, itemId]);
-
-    return {
-        success: true,
-        transactionsAdded,
-        transactionsModified,
-        transactionsRemoved,
-        unmappedCategories: Array.from(unmappedCategories),
-    };
+    return plaidSync.syncTransactionsForItem(itemId, getPlaidSyncDeps());
 }
 
 async function syncPlaidAccounts(itemId) {
-    const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-    const configuration = new Configuration({
-        basePath: PlaidEnvironments[process.env.PLAID_ENV],
-        baseOptions: {
-            headers: {
-                'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID,
-                'PLAID-SECRET': process.env.PLAID_SECRET,
-            },
-        },
-    });
-    const plaidClient = new PlaidApi(configuration);
-
+    if (!plaidSync.syncPlaidAccounts) {
+        throw new Error('Plaid sync module not loaded');
+    }
     try {
-        const db = await getDatabase();
-        const item = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
-        if (!item) throw new Error('Item not found');
-
-        const accessToken = decryptToken(item.access_token);
-        if (!accessToken) {
-            return { success: false, error: 'TOKEN_DECRYPTION_FAILED', itemId };
-        }
-
-        const accountsResponse = await plaidClient.accountsGet({ access_token: accessToken });
-        const plaidAccounts = accountsResponse.data.accounts;
-
-        for (const plaidAccount of plaidAccounts) {
-            const existing = await db.get(`SELECT account_id FROM plaid_accounts WHERE plaid_account_id = ?`, [plaidAccount.account_id]);
-            if (!existing) {
-                let internalType;
-                if (plaidAccount.type === 'depository') {
-                    internalType = plaidAccount.subtype === 'checking' ? 'checking' : 'savings';
-                } else if (plaidAccount.type === 'credit') {
-                    internalType = 'credit';
-                } else if (plaidAccount.type === 'loan') {
-                    internalType = 'loan';
-                } else {
-                    internalType = 'other';
-                }
-
-                const userId = item.user_id;
-                const internalAccountId = uuidv4();
-
-                await db.run(`
-                    INSERT INTO accounts (id, user_id, name, type, balance, institution, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-                `, [
-                    internalAccountId,
-                    userId,
-                    plaidAccount.name,
-                    internalType,
-                    plaidAccount.balances.current || 0,
-                    plaidAccount.official_name || null
-                ]);
-
-                await db.run(`
-                    INSERT INTO plaid_accounts (plaid_account_id, item_id, account_id, name, official_name, type, subtype, mask)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                `, [
-                    plaidAccount.account_id,
-                    itemId,
-                    internalAccountId,
-                    plaidAccount.name,
-                    plaidAccount.official_name,
-                    plaidAccount.type,
-                    plaidAccount.subtype,
-                    plaidAccount.mask
-                ]);
-            }
-        }
-        return { success: true };
+        return await plaidSync.syncPlaidAccounts(itemId, getPlaidSyncDeps());
     } catch (error) {
         if (error.response?.data?.error_code === 'ITEM_LOGIN_REQUIRED') {
-            console.warn(`⚠️ Item ${itemId} requires reauthentication`);
             return { success: false, error: 'ITEM_LOGIN_REQUIRED', itemId };
         }
-        console.error('Error syncing accounts:', error.response?.data || error.message);
         throw error;
     }
 }
 
-async function getLinkedItems() {
+async function runPlaidBackgroundSync(source = 'background') {
+    if (!plaidSync.syncPlaidAccounts) return;
     const currentUser = userService.getCurrentUser();
+    if (!currentUser) return;
+
     const db = await getDatabase();
-    return await db.all(`
-        SELECT * FROM plaid_items WHERE user_id = ? ORDER BY created_at DESC
-    `, [currentUser.id]);
+    const row = await db.get(
+        `SELECT value FROM user_settings WHERE user_id = ? AND key = ?`,
+        [currentUser.id, 'autoSyncEnabled']
+    );
+    const autoSyncEnabled = row ? row.value !== 'false' : true;
+    if (!autoSyncEnabled) return;
+
+    const cfg = getPlaidConfig ? getPlaidConfig() : { configured: false };
+    if (!cfg.configured) return;
+
+    console.log(`🔄 Running Plaid sync (${source})...`);
+    try {
+        if (plaidSync.pollPlaidWebhookRelay && process.env.PLAID_WEBHOOK_RELAY_URL) {
+            const relayResult = await plaidSync.pollPlaidWebhookRelay(
+                currentUser.id,
+                async (itemId) => {
+                    await verifyPlaidItemOwnership(itemId);
+                    await syncPlaidAccounts(itemId);
+                    await syncTransactionsForItem(itemId);
+                },
+                {
+                    handlePendingExpiration: (itemId, uid) =>
+                        plaidSync.handlePendingExpiration(itemId, uid, getPlaidSyncDeps()),
+                }
+            );
+            if (relayResult?.synced?.length) {
+                console.log(`📡 Webhook relay triggered sync for ${relayResult.synced.length} item(s)`);
+            }
+        }
+
+        const items = await getLinkedItemsSafe();
+        for (const item of items) {
+            try {
+                await syncPlaidAccounts(item.id);
+                const result = await syncTransactionsForItem(item.id);
+                if (result.success && result.transactionsAdded > 0) {
+                    console.log(
+                        `✅ Plaid sync (${source}) ${item.institution_name || item.id}: ${result.transactionsAdded} new txns`
+                    );
+                }
+            } catch (err) {
+                console.error(`❌ Plaid sync (${source}) failed for ${item.id}:`, err.message);
+            }
+        }
+        notifyAccountsUpdated(`plaid-${source}`);
+    } catch (error) {
+        console.error(`Plaid sync (${source}) error:`, error);
+    }
+}
+
+function scheduleFocusPlaidSync() {
+    if (focusSyncTimeout) clearTimeout(focusSyncTimeout);
+    focusSyncTimeout = setTimeout(async () => {
+        const now = Date.now();
+        if (now - lastFocusPlaidSyncAt < FOCUS_SYNC_COOLDOWN_MS) return;
+        lastFocusPlaidSyncAt = now;
+        await runPlaidBackgroundSync('focus');
+    }, 2000);
+}
+
+async function getLinkedItemsSafe() {
+    const currentUser = userService.getCurrentUser();
+    if (!currentUser) return [];
+    const db = await getDatabase();
+    const rows = await db.all(
+        `SELECT id, user_id, institution_id, institution_name, created_at, updated_at, last_sync, status, last_error
+         FROM plaid_items WHERE user_id = ? ORDER BY created_at DESC`,
+        [currentUser.id]
+    );
+    return rows.map((row) => (sanitizeLinkedItemRow ? sanitizeLinkedItemRow(row) : row));
+}
+
+async function verifyPlaidItemOwnership(itemId) {
+    const currentUser = userService.getCurrentUser();
+    if (!currentUser) throw new Error('Not logged in');
+    const db = await getDatabase();
+    if (plaidSync.assertItemOwnedByUser) {
+        return plaidSync.assertItemOwnedByUser(db, itemId, currentUser.id);
+    }
+    const item = await db.get('SELECT * FROM plaid_items WHERE id = ? AND user_id = ?', [
+        itemId,
+        currentUser.id,
+    ]);
+    if (!item) throw new Error('Item not found or not owned by user');
+    return item;
 }
 
 // ==================== APP INITIALIZATION ====================
 app.whenReady().then(async () => {
+    const plaidEnvLoad = loadPlaidEnvFromUserData(() => app.getPath('userData'));
+    if (plaidEnvLoad.loaded) {
+        console.log(`✅ Plaid env loaded from userData (${plaidEnvLoad.keysSet} keys)`);
+    }
+
     console.log('🚀 Starting IntentFlow...');
     console.log('🔍 app.isPackaged:', app.isPackaged);
     console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
@@ -903,38 +794,7 @@ app.whenReady().then(async () => {
 
         await createWindow();
 
-        backgroundSyncInterval = setInterval(async () => {
-            const currentUser = userService.getCurrentUser();
-            if (!currentUser) return;
-
-            const db = await getDatabase();
-            const row = await db.get(`
-                SELECT value FROM user_settings WHERE user_id = ? AND key = ?
-            `, [currentUser.id, 'autoSyncEnabled']);
-            const autoSyncEnabled = row ? row.value !== 'false' : true;
-            if (!autoSyncEnabled) {
-                console.log('🔁 Background sync disabled by user');
-                return;
-            }
-
-            console.log('🔄 Running background sync...');
-            try {
-                const items = await getLinkedItems();
-                for (const item of items) {
-                    try {
-                        await syncPlaidAccounts(item.id);
-                        const result = await syncTransactionsForItem(item.id);
-                        if (result.success && result.transactionsAdded > 0) {
-                            console.log(`✅ Background sync for ${item.institution_name || item.id}: ${result.transactionsAdded} new transactions`);
-                        }
-                    } catch (err) {
-                        console.error(`❌ Background sync failed for item ${item.id}:`, err);
-                    }
-                }
-            } catch (error) {
-                console.error('Background sync error:', error);
-            }
-        }, 3600000);
+        backgroundSyncInterval = setInterval(() => runPlaidBackgroundSync('background'), 3600000);
     } catch (error) {
         console.error('❌ Failed to initialize database:', error);
         dialog.showErrorBox(
@@ -969,6 +829,8 @@ function createWindow() {
     });
 
     mainWindow = win;
+
+    win.on('focus', () => scheduleFocusPlaidSync());
 
     if (isDev) {
         const devPort = process.env.PORT || 3000;
@@ -2203,6 +2065,31 @@ function setupIpcHandlers() {
                 userId = currentUser?.id || 2;
             }
 
+            if (!accountData.forceCreate && plaidAccountMatch.checkManualAccountDuplicate) {
+                const mask =
+                    accountData.external_mask ||
+                    (accountData.account_number
+                        ? String(accountData.account_number).replace(/\D/g, '').slice(-4)
+                        : null);
+                const duplicates = await plaidAccountMatch.checkManualAccountDuplicate(
+                    db,
+                    userId,
+                    {
+                        type: accountData.type,
+                        mask: mask || null,
+                        name: accountData.name,
+                        institution: accountData.institution,
+                    }
+                );
+                if (duplicates.length) {
+                    return {
+                        success: false,
+                        error: 'DUPLICATE_ACCOUNT',
+                        duplicates,
+                    };
+                }
+            }
+
             const accountId = uuidv4();
             const row = buildAccountInsertFromPayload(accountData, accountId, userId);
             const columns = Object.keys(row);
@@ -2211,6 +2098,7 @@ function setupIpcHandlers() {
             await db.run(`INSERT INTO accounts (${columns.join(', ')}) VALUES (${placeholders})`, values);
 
             const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
+            notifyAccountsUpdated('manual');
             return { success: true, data: newAccount };
         } catch (error) {
             console.error('❌ Error in accounts:create:', error);
@@ -2224,6 +2112,7 @@ function setupIpcHandlers() {
             if (!id) return { success: false, error: 'Account ID is required' };
             if (!userId) return { success: false, error: 'User ID is required' };
             const result = await accountService.updateAccount(id, userId, updates);
+            notifyAccountsUpdated('manual');
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2233,12 +2122,14 @@ function setupIpcHandlers() {
     ipcMain.handle('accounts:delete', async (event, id, userId) => {
         try {
             if (!id || !userId) return { success: false, error: 'ID and userId required' };
-            const db = await getDatabase();
-            const result = await db.run('DELETE FROM accounts WHERE id = ? AND user_id = ?', [id, userId]);
-            if (result && result.changes > 0) return { success: true };
+            const deleted = await accountService.deleteAccount(id, userId);
+            if (deleted) {
+                notifyAccountsUpdated('manual');
+                return { success: true };
+            }
             return { success: false, error: 'Account not found or already deleted' };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, code: error.code };
         }
     });
 
@@ -2265,7 +2156,10 @@ function setupIpcHandlers() {
             try { result = await accountService.getAccountsSummary(effectiveUserId); } catch (serviceError) { result = []; }
             if (!result || result.length === 0) {
                 const db = await getDatabase();
-                const directAccounts = await db.all('SELECT * FROM accounts WHERE user_id = ?', [effectiveUserId]);
+                const directAccounts = await db.all(
+                    'SELECT * FROM accounts WHERE user_id = ? AND IFNULL(is_active, 1) = 1',
+                    [effectiveUserId]
+                );
                 result = directAccounts.map(account => ({ id: account.id, name: account.name, type: account.type, balance: account.balance || 0, institution: account.institution || '', account_type_category: account.account_type_category || 'budget', cleared_balance: account.cleared_balance || account.balance || 0, working_balance: account.working_balance || account.balance || 0, currency: account.currency || 'USD', is_active: account.is_active !== 0 }));
             }
             return { success: true, data: result || [] };
@@ -2302,13 +2196,26 @@ function setupIpcHandlers() {
     });
 
     // ==================== PLAID HANDLERS ====================
+    ipcMain.handle('plaid-get-config-status', async () => {
+        const cfg = getPlaidConfig ? getPlaidConfig() : { configured: false, env: process.env.PLAID_ENV || 'sandbox' };
+        return { success: true, data: cfg };
+    });
+
     ipcMain.handle('plaid-create-link-token', async () => {
-        const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-        const configuration = new Configuration({ basePath: PlaidEnvironments[process.env.PLAID_ENV], baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
-        const plaidClient = new PlaidApi(configuration);
         try {
             const currentUser = userService.getCurrentUser();
-            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'IntentFlow', products: ['transactions'], country_codes: ['US'], language: 'en' });
+            if (!currentUser) throw new Error('Not logged in');
+            const plaidClient = createPlaidClient();
+            const payload = buildLinkTokenCreatePayload
+                ? buildLinkTokenCreatePayload(currentUser.id)
+                : {
+                      user: { client_user_id: currentUser.id.toString() },
+                      client_name: 'IntentFlow',
+                      products: ['transactions', 'liabilities'],
+                      country_codes: ['US'],
+                      language: 'en',
+                  };
+            const response = await plaidClient.linkTokenCreate(payload);
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2316,17 +2223,23 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-create-update-link-token', async (event, itemId) => {
-        const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-        const configuration = new Configuration({ basePath: PlaidEnvironments[process.env.PLAID_ENV], baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
-        const plaidClient = new PlaidApi(configuration);
         try {
-            const db = await getDatabase();
-            const item = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
-            if (!item) throw new Error('Item not found');
+            const item = await verifyPlaidItemOwnership(itemId);
             const accessToken = decryptToken(item.access_token);
             if (!accessToken) throw new Error('Failed to decrypt token');
             const currentUser = userService.getCurrentUser();
-            const response = await plaidClient.linkTokenCreate({ user: { client_user_id: currentUser.id.toString() }, client_name: 'IntentFlow', products: ['transactions'], country_codes: ['US'], language: 'en', access_token: accessToken });
+            const plaidClient = createPlaidClient();
+            const payload = buildLinkTokenCreatePayload
+                ? buildLinkTokenCreatePayload(currentUser.id, { accessToken })
+                : {
+                      user: { client_user_id: currentUser.id.toString() },
+                      client_name: 'IntentFlow',
+                      products: ['transactions', 'liabilities'],
+                      country_codes: ['US'],
+                      language: 'en',
+                      access_token: accessToken,
+                  };
+            const response = await plaidClient.linkTokenCreate(payload);
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2334,27 +2247,48 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-exchange-public-token', async (event, publicToken) => {
-        const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
-        const configuration = new Configuration({ basePath: PlaidEnvironments[process.env.PLAID_ENV], baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
-        const plaidClient = new PlaidApi(configuration);
         try {
+            const plaidClient = createPlaidClient();
             const response = await plaidClient.itemPublicTokenExchange({ public_token: publicToken });
             const accessToken = response.data.access_token;
             const itemId = response.data.item_id;
             const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
             const encryptedToken = encryptToken(accessToken);
             const db = await getDatabase();
             const existingItem = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
-            if (existingItem) await db.run(`UPDATE plaid_items SET access_token = ?, updated_at = datetime('now') WHERE id = ?`, [encryptedToken, itemId]);
-            else await db.run(`INSERT INTO plaid_items (id, user_id, access_token, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))`, [itemId, currentUser.id, encryptedToken]);
+            if (existingItem) {
+                await db.run(
+                    `UPDATE plaid_items SET access_token = ?, user_id = ?, status = 'active', last_error = NULL, updated_at = datetime('now') WHERE id = ?`,
+                    [encryptedToken, currentUser.id, itemId]
+                );
+            } else {
+                await db.run(
+                    `INSERT INTO plaid_items (id, user_id, access_token, status, created_at, updated_at) VALUES (?, ?, ?, 'active', datetime('now'), datetime('now'))`,
+                    [itemId, currentUser.id, encryptedToken]
+                );
+            }
             const instResponse = await plaidClient.itemGet({ access_token: accessToken });
             const institutionId = instResponse.data.item.institution_id;
             if (institutionId) {
-                const instData = await plaidClient.institutionsGetById({ institution_id: institutionId, country_codes: ['US'] });
-                await db.run(`UPDATE plaid_items SET institution_id = ?, institution_name = ? WHERE id = ?`, [institutionId, instData.data.institution.name, itemId]);
+                const instData = await plaidClient.institutionsGetById({
+                    institution_id: institutionId,
+                    country_codes: ['US'],
+                });
+                await db.run(
+                    `UPDATE plaid_items SET institution_id = ?, institution_name = ? WHERE id = ?`,
+                    [institutionId, instData.data.institution.name, itemId]
+                );
             }
-            await syncPlaidAccounts(itemId);
-            return { success: true, item_id: itemId };
+            const accountSync = await syncPlaidAccounts(itemId);
+            const txResult = await syncTransactionsForItem(itemId);
+            notifyAccountsUpdated('plaid-connect');
+            return {
+                success: true,
+                item_id: itemId,
+                sync: txResult,
+                mergeOffers: accountSync?.mergeOffers || [],
+            };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -2362,8 +2296,27 @@ function setupIpcHandlers() {
 
     ipcMain.handle('plaid-get-linked-items', async () => {
         try {
-            const items = await getLinkedItems();
+            const items = await getLinkedItemsSafe();
             return { success: true, data: items };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-get-item-accounts', async (event, itemId) => {
+        try {
+            await verifyPlaidItemOwnership(itemId);
+            const db = await getDatabase();
+            const rows = await db.all(
+                `SELECT pa.plaid_account_id, pa.mask, pa.name, pa.type, pa.subtype,
+                        a.id AS account_id, a.name AS account_name, a.type AS account_type, a.balance, a.source
+                 FROM plaid_accounts pa
+                 LEFT JOIN accounts a ON pa.account_id = a.id
+                 WHERE pa.item_id = ?
+                 ORDER BY pa.name`,
+                [itemId]
+            );
+            return { success: true, data: rows };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -2371,34 +2324,245 @@ function setupIpcHandlers() {
 
     ipcMain.handle('plaid-sync-item', async (event, itemId) => {
         try {
+            await verifyPlaidItemOwnership(itemId);
+            const accountResult = await syncPlaidAccounts(itemId);
+            if (!accountResult.success) {
+                if (plaidSync.logSyncError) {
+                    const db = await getDatabase();
+                    await plaidSync.logSyncError(db, itemId, 'accounts', accountResult.error);
+                }
+                return accountResult;
+            }
             const db = await getDatabase();
-            const item = await db.get('SELECT * FROM plaid_items WHERE id = ?', [itemId]);
-            if (!item) throw new Error('Item not found');
-            await syncPlaidAccounts(itemId);
-            await db.run(`UPDATE plaid_items SET last_sync = datetime('now'), updated_at = datetime('now') WHERE id = ?`, [itemId]);
-            return { success: true };
+            await db.run(
+                `UPDATE plaid_items SET last_sync = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+                [itemId]
+            );
+            notifyAccountsUpdated('plaid-sync-accounts');
+            return {
+                success: true,
+                mergeOffers: accountResult?.mergeOffers || [],
+            };
+        } catch (error) {
+            if (plaidSync.logSyncError) {
+                const db = await getDatabase();
+                await plaidSync.logSyncError(db, itemId, 'accounts', error.message);
+            }
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-link-account-to-plaid', async (event, plaidAccountId, targetAccountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            if (!plaidAccountMatch.mergePlaidAccountToManual) {
+                throw new Error('Plaid merge module not loaded');
+            }
+            const result = await plaidAccountMatch.mergePlaidAccountToManual(
+                await getDatabase(),
+                currentUser.id,
+                plaidAccountId,
+                targetAccountId,
+                {
+                    ...getPlaidSyncDeps(),
+                    createPlaidClient,
+                }
+            );
+            notifyAccountsUpdated('plaid-link-account');
+            return result;
         } catch (error) {
             return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-merge-account', async (event, plaidAccountId, targetAccountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            if (!plaidAccountMatch.mergePlaidAccountToManual) {
+                throw new Error('Plaid merge module not loaded');
+            }
+            const result = await plaidAccountMatch.mergePlaidAccountToManual(
+                await getDatabase(),
+                currentUser.id,
+                plaidAccountId,
+                targetAccountId,
+                {
+                    ...getPlaidSyncDeps(),
+                    createPlaidClient,
+                }
+            );
+            notifyAccountsUpdated('plaid-merge');
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-check-duplicate-account', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: true, duplicates: [] };
+            if (!plaidAccountMatch.checkManualAccountDuplicate) {
+                return { success: true, duplicates: [] };
+            }
+            const db = await getDatabase();
+            const duplicates = await plaidAccountMatch.checkManualAccountDuplicate(
+                db,
+                currentUser.id,
+                payload || {}
+            );
+            return { success: true, duplicates };
+        } catch (error) {
+            return { success: false, error: error.message, duplicates: [] };
         }
     });
 
     ipcMain.handle('plaid-sync-transactions', async (event, itemId) => {
         try {
-            return await syncTransactionsForItem(itemId);
+            await verifyPlaidItemOwnership(itemId);
+            const result = await syncTransactionsForItem(itemId);
+            if (!result.success && plaidSync.logSyncError) {
+                const db = await getDatabase();
+                await plaidSync.logSyncError(db, itemId, 'transactions', result.error);
+            }
+            if (result.success) notifyAccountsUpdated('plaid-sync-transactions');
+            return result;
+        } catch (error) {
+            if (plaidSync.logSyncError) {
+                const db = await getDatabase();
+                await plaidSync.logSyncError(db, itemId, 'transactions', error.message);
+            }
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-get-account-link-status', async (event, accountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'Not logged in' };
+            const db = await getDatabase();
+            const row = await db.get(
+                `SELECT a.source, a.last_balance_sync_at, pi.id AS item_id, pi.status AS item_status,
+                        pi.institution_name, pi.last_sync AS item_last_sync, pi.last_error,
+                        pa.plaid_account_id, pa.mask
+                 FROM accounts a
+                 LEFT JOIN plaid_accounts pa ON pa.account_id = a.id
+                 LEFT JOIN plaid_items pi ON pa.item_id = pi.id
+                 WHERE a.id = ? AND a.user_id = ?`,
+                [accountId, currentUser.id]
+            );
+            return { success: true, data: row || null };
         } catch (error) {
             return { success: false, error: error.message };
         }
     });
 
-    ipcMain.handle('plaid-remove-item', async (event, itemId) => {
+    ipcMain.handle('plaid-sync-account', async (event, accountId) => {
         try {
-            const db = await getDatabase();
             const currentUser = userService.getCurrentUser();
-            const item = await db.get('SELECT * FROM plaid_items WHERE id = ? AND user_id = ?', [itemId, currentUser.id]);
-            if (!item) throw new Error('Item not found or not owned by user');
-            await db.run('DELETE FROM plaid_accounts WHERE item_id = ?', [itemId]);
-            await db.run('DELETE FROM plaid_items WHERE id = ?', [itemId]);
-            return { success: true };
+            if (!currentUser) throw new Error('Not logged in');
+            const db = await getDatabase();
+            const link = await db.get(
+                `SELECT pa.item_id FROM plaid_accounts pa
+                 JOIN plaid_items pi ON pa.item_id = pi.id
+                 WHERE pa.account_id = ? AND pi.user_id = ?`,
+                [accountId, currentUser.id]
+            );
+            if (!link?.item_id) throw new Error('Account is not linked to Plaid');
+            await verifyPlaidItemOwnership(link.item_id);
+            const accountResult = await syncPlaidAccounts(link.item_id);
+            if (!accountResult.success) {
+                if (plaidSync.logSyncError) {
+                    await plaidSync.logSyncError(db, link.item_id, 'accounts', accountResult.error);
+                }
+                return accountResult;
+            }
+            const txResult = await syncTransactionsForItem(link.item_id);
+            if (!txResult.success && plaidSync.logSyncError) {
+                await plaidSync.logSyncError(db, link.item_id, 'transactions', txResult.error);
+            }
+            await db.run(
+                `UPDATE plaid_items SET last_sync = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+                [link.item_id]
+            );
+            notifyAccountsUpdated('plaid-sync-account');
+            return { success: true, transactions: txResult };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-unlink-account', async (event, accountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            if (!plaidSync.unlinkPlaidAccount) throw new Error('Plaid sync module not loaded');
+            const result = await plaidSync.unlinkPlaidAccount(
+                accountId,
+                currentUser.id,
+                getPlaidSyncDeps()
+            );
+            notifyAccountsUpdated('plaid-unlink-account');
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-remove-item', async (event, itemId, options = {}) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            if (!plaidSync.removePlaidItem) throw new Error('Plaid sync module not loaded');
+            const result = await plaidSync.removePlaidItem(
+                itemId,
+                currentUser.id,
+                getPlaidSyncDeps(),
+                options
+            );
+            notifyAccountsUpdated('plaid-remove');
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-get-sync-history', async (event, limit = 15) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: true, data: [] };
+            const db = await getDatabase();
+            const table = await db.get(
+                `SELECT name FROM sqlite_master WHERE type='table' AND name='plaid_sync_runs'`
+            );
+            if (!table) return { success: true, data: [] };
+            const rows = await db.all(
+                `SELECT r.*, i.institution_name
+                 FROM plaid_sync_runs r
+                 LEFT JOIN plaid_items i ON r.item_id = i.id
+                 WHERE r.user_id = ?
+                 ORDER BY r.started_at DESC
+                 LIMIT ?`,
+                [currentUser.id, limit]
+            );
+            return { success: true, data: rows };
+        } catch (error) {
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('plaid-get-category-mappings', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: true, data: [] };
+            const db = await getDatabase();
+            const rows = await db.all(
+                `SELECT plaid_category, category_id FROM plaid_category_mappings WHERE user_id = ? ORDER BY plaid_category`,
+                [currentUser.id]
+            );
+            return { success: true, data: rows };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -2407,9 +2571,40 @@ function setupIpcHandlers() {
     ipcMain.handle('plaid-save-category-mapping', async (event, plaidCategory, categoryId) => {
         try {
             const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
             const db = await getDatabase();
-            await db.run(`INSERT INTO plaid_category_mappings (user_id, plaid_category, category_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(user_id, plaid_category) DO UPDATE SET category_id = ?, updated_at = datetime('now')`, [currentUser.id, plaidCategory, categoryId, categoryId]);
-            return { success: true };
+            await db.run(
+                `INSERT INTO plaid_category_mappings (user_id, plaid_category, category_id, updated_at)
+                 VALUES (?, ?, ?, datetime('now'))
+                 ON CONFLICT(user_id, plaid_category) DO UPDATE SET category_id = ?, updated_at = datetime('now')`,
+                [currentUser.id, plaidCategory, categoryId, categoryId]
+            );
+            let transactionsUpdated = 0;
+            if (plaidSync.reapplyPlaidCategoryMapping) {
+                const r = await plaidSync.reapplyPlaidCategoryMapping(
+                    db,
+                    currentUser.id,
+                    plaidCategory,
+                    categoryId
+                );
+                transactionsUpdated = r.updated || 0;
+            }
+            return { success: true, transactionsUpdated };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-reapply-all-category-mappings', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const db = await getDatabase();
+            if (!plaidSync.reapplyAllPlaidCategoryMappings) {
+                return { success: false, error: 'Plaid sync module not loaded' };
+            }
+            const r = await plaidSync.reapplyAllPlaidCategoryMappings(db, currentUser.id);
+            return { success: true, transactionsUpdated: r.updated || 0 };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -2430,6 +2625,29 @@ function setupIpcHandlers() {
         const db = await getDatabase();
         const row = await db.get(`SELECT value FROM user_settings WHERE user_id = ? AND key = ?`, [currentUser.id, key]);
         return { success: true, data: row ? row.value : defaultValue };
+    });
+
+    ipcMain.handle('get-auto-sync-setting', async () => {
+        const currentUser = userService.getCurrentUser();
+        if (!currentUser) return { success: true, enabled: true };
+        const db = await getDatabase();
+        const row = await db.get(
+            `SELECT value FROM user_settings WHERE user_id = ? AND key = ?`,
+            [currentUser.id, 'autoSyncEnabled']
+        );
+        const enabled = row ? row.value !== 'false' : true;
+        return { success: true, enabled };
+    });
+
+    ipcMain.handle('set-auto-sync-setting', async (event, enabled) => {
+        const currentUser = userService.getCurrentUser();
+        if (!currentUser) return { success: false, error: 'Not logged in' };
+        const db = await getDatabase();
+        await db.run(
+            `INSERT OR REPLACE INTO user_settings (user_id, key, value, updated_at) VALUES (?, ?, ?, datetime('now'))`,
+            [currentUser.id, 'autoSyncEnabled', enabled ? 'true' : 'false']
+        );
+        return { success: true, enabled: !!enabled };
     });
 
     // ==================== TRANSACTION HANDLERS ====================

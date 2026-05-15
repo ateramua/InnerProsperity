@@ -2,8 +2,17 @@
 import React, { useState, useEffect } from 'react';
 import EditAccountModal from './EditAccountModal';
 import { QRCodeCanvas } from 'qrcode.react';
+import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
+import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
+import ConnectBankCTA from '../components/ConnectBankCTA';
+import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
+import {
+  confirmNoDuplicateAccount,
+  maskFromAccountNumber,
+} from '../utils/plaidDuplicateCheck';
 
 function CreditCardManager({
+  onNavigate,
   cards = [],
   transactions = [],
   onMakePayment,
@@ -280,6 +289,15 @@ function CreditCardManager({
           return;
         }
 
+        const mask = maskFromAccountNumber(updatedData.account_number);
+        const proceed = await confirmNoDuplicateAccount({
+          type: 'credit',
+          mask,
+          name: updatedData.name,
+          institution: updatedData.institution,
+        });
+        if (!proceed) return;
+
         let balanceValue = 0;
         if (updatedData.balance !== undefined && updatedData.balance !== null && updatedData.balance !== '') {
           const parsedBalance = parseFloat(updatedData.balance);
@@ -308,7 +326,8 @@ function CreditCardManager({
           notes: updatedData.notes?.trim() || null,
           user_id: userId,
           userId: userId,
-          currency: 'USD'
+          currency: 'USD',
+          forceCreate: true,
         };
 
         const result = await window.electronAPI.createAccount(cardData);
@@ -475,6 +494,13 @@ function CreditCardManager({
   };
 
   const handleDeleteCard = async (cardId) => {
+    const card = cards.find((c) => c.id === cardId) || editingCard;
+    if (card && isPlaidLinkedAccount(card)) {
+      alert(
+        'This card is linked via Plaid. Open Linked Banks and remove the bank connection to disconnect it.'
+      );
+      return;
+    }
     if (!window.confirm('Are you sure you want to delete this credit card? This action cannot be undone.')) {
       return;
     }
@@ -598,7 +624,7 @@ function CreditCardManager({
           <div style={styles.emptyIcon}>💳</div>
           <h3 style={styles.emptyTitle}>No credit cards found</h3>
           <p style={styles.emptyText}>
-            {filter === 'all' ? 'Get started by adding your first credit card' : 'No cards match the selected filter'}
+            {filter === 'all' ? (<><ConnectBankCTA label="credit cards" onNavigate={onNavigate} /></>) : 'No cards match the selected filter'}
           </p>
           {filter === 'all' && (
             <button onClick={handleAddNewCard} style={styles.emptyAddButton}>
@@ -636,7 +662,11 @@ function CreditCardManager({
                 {/* Card Header */}
                 <div style={styles.cardHeader}>
                   <div>
-                    <h3 style={styles.cardName}>{card.name}</h3>
+                    <h3 style={styles.cardName}>
+                      {card.name}
+                      <PlaidLinkedBadge account={card} />
+                      <PlaidManageConnectionLink account={card} onNavigate={onNavigate} />
+                    </h3>
                     <div style={styles.cardInstitution}>
                       {issuer.icon} {issuer.name} • {card.institution || 'Credit Card'}
                     </div>
