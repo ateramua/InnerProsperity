@@ -785,7 +785,8 @@ async function pollPlaidWebhookRelay(userId, onSyncItem, deps = {}) {
   const baseUrl = process.env.PLAID_WEBHOOK_RELAY_URL;
   if (!baseUrl || typeof onSyncItem !== 'function') return { polled: false, synced: [] };
 
-  const url = `${baseUrl.replace(/\/$/, '')}/pending?userId=${encodeURIComponent(userId)}`;
+  const relayBase = baseUrl.replace(/\/$/, '');
+  const url = `${relayBase}/pending?userId=${encodeURIComponent(userId)}`;
   const headers = {};
   if (process.env.PLAID_WEBHOOK_RELAY_API_KEY) {
     headers.Authorization = `Bearer ${process.env.PLAID_WEBHOOK_RELAY_API_KEY}`;
@@ -801,19 +802,40 @@ async function pollPlaidWebhookRelay(userId, onSyncItem, deps = {}) {
   }
 
   const synced = [];
+  const acknowledgedEventIds = [];
   for (const entry of data?.items || []) {
     if (!entry?.itemId) continue;
     try {
       if (entry.webhookCode === 'PENDING_EXPIRATION' && deps?.handlePendingExpiration) {
         await deps.handlePendingExpiration(entry.itemId, userId);
         synced.push(entry.itemId);
+        if (entry.eventId) acknowledgedEventIds.push(entry.eventId);
         continue;
       }
-      if (!entry.syncRequired) continue;
+      if (!entry.syncRequired) {
+        if (entry.eventId) acknowledgedEventIds.push(entry.eventId);
+        continue;
+      }
       await onSyncItem(entry.itemId, userId);
       synced.push(entry.itemId);
+      if (entry.eventId) acknowledgedEventIds.push(entry.eventId);
     } catch (err) {
       console.warn('Webhook relay sync skipped for item', entry.itemId, err.message);
+    }
+  }
+
+  if (acknowledgedEventIds.length) {
+    try {
+      await fetch(`${relayBase}/pending/ack`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ eventIds: acknowledgedEventIds }),
+      });
+    } catch (err) {
+      console.warn('Webhook relay ack failed:', err.message);
     }
   }
   return { polled: true, synced };

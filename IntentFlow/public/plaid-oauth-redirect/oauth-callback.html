@@ -33,7 +33,7 @@
         var q = window.location.search || '';
         if (q.indexOf('oauth_state_id=') !== -1) {
           document.getElementById('hint').textContent =
-            'OAuth state received. If Link does not complete in the app, see deployment/plaid-oauth-redirect/README.md (Electron / webview).';
+            'OAuth state received. If Link does not complete in the app, return to IntentFlow and retry from Linked Banks.';
         }
         setTimeout(function () {
           if (window.opener) {

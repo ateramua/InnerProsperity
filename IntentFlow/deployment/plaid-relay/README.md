@@ -15,6 +15,7 @@ If a production secret was ever pasted into chat or committed, **rotate it in th
 | GET | `/health` | Liveness (`{"ok":true,"service":"intentflow-plaid-relay"}`) |
 | POST | `/plaid/webhook` | Plaid team / item webhooks (preserve raw body + `Plaid-Verification` header) |
 | GET | `/pending?userId=…` | App polls and clears queued items (optional `Authorization: Bearer <RELAY_API_KEY>`) |
+| POST | `/pending/ack` | App acknowledges successfully processed event ids |
 
 **Plaid Dashboard → Webhooks URL:**
 
@@ -39,6 +40,37 @@ If a production secret was ever pasted into chat or committed, **rotate it in th
 | `HOST` | `0.0.0.0` |
 | `PORT` | `8787` (or whatever the platform maps internally) |
 | `RELAY_API_KEY` or `PLAID_WEBHOOK_RELAY_API_KEY` | Recommended: long random string; protects `GET /pending` |
+| `PLAID_WEBHOOK_STORE_PATH` | Optional; defaults to `data/plaid-webhooks.json` |
+
+---
+
+## Durable webhook queue
+
+The relay persists incoming webhooks to **`data/plaid-webhooks.json`** by default so process restarts do not erase pending sync flags. Each record stores a dedupe id (`webhook_id` when Plaid sends one, otherwise a SHA-256 hash of the raw body), `item_id`, user id, webhook code, timestamps, status, and delivery attempts.
+
+Statuses:
+
+- `pending` — ready for the desktop app to poll.
+- `delivery_attempted` — returned by `/pending`; if the app does not acknowledge it through `/pending/ack`, it becomes eligible again after `PLAID_WEBHOOK_DELIVERY_RETRY_MS` (default 5 minutes).
+- `delivered` — acknowledged by the app after successful processing; recent delivered rows are retained for deduplication.
+- `ignored` — webhook did not include enough data for this relay contract.
+
+For production hosts with ephemeral filesystems (including many Render/Railway/Fly setups unless a disk/volume is attached), mount persistent storage and set:
+
+```bash
+PLAID_WEBHOOK_STORE_PATH=/data/plaid-webhooks.json
+```
+
+On Render, attach a **Persistent Disk** and point `PLAID_WEBHOOK_STORE_PATH` at that disk path. Without persistent disk, this is still better than memory during a single process lifetime, but queued events can disappear when the container is replaced.
+
+Optional tuning:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PLAID_WEBHOOK_DELIVERY_RETRY_MS` | `300000` | Retry `delivery_attempted` events after this many ms if not marked delivered |
+| `PLAID_WEBHOOK_MAX_COMPLETED_EVENTS` | `500` | Retain this many delivered events for deduplication |
+
+`GET /health` includes store counts and the store path so you can verify the relay is using the intended persistent location.
 
 ---
 

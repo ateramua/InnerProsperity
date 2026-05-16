@@ -487,9 +487,11 @@ const LinkedBanksView = ({ onNavigate }) => {
       {error && <div style={styles.error}>⚠️ {error}</div>}
 
       <p style={styles.complianceNote}>
-        Connecting a bank lets IntentFlow read balances and transactions through Plaid. Credentials are
-        encrypted and stored only on this device. You can disconnect anytime in Linked Banks. IntentFlow
-        does not sell your financial data.
+        By connecting your account, you authorize IntentFlow to securely access your financial data via
+        Plaid. IntentFlow uses linked account balances, account details, liabilities, and transactions for
+        budgeting and account sync only. You can disconnect anytime in Linked Banks. See the{' '}
+        <a href="/privacy" style={styles.complianceLink}>Privacy Policy</a> and{' '}
+        <a href="/terms" style={styles.complianceLink}>Terms of Service</a>.
       </p>
 
       <div style={styles.settingsCard}>
@@ -862,6 +864,10 @@ const styles = {
     lineHeight: 1.5,
     margin: '0 0 1rem',
     maxWidth: '720px',
+  },
+  complianceLink: {
+    color: '#93C5FD',
+    textDecoration: 'underline',
   },
   settingsCard: {
     background: '#1F2937',

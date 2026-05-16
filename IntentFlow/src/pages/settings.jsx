@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../contexts/AuthContext';
-import AppShell from '../components/layout/AppShell';
+import AppShell from '../components/Layout/AppShell';
 import Button from '../components/ui/Button';
 
 const defaultGroups = [
@@ -452,6 +452,32 @@ export default function Settings() {
                 Data use: balances and transactions are read for budgeting only, stored locally, and
                 never sold. Disconnect anytime in Linked Banks.
               </p>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4">
+                <h3 className="text-sm font-semibold text-white">Data deletion and Plaid access</h3>
+                <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-300">
+                  <li>Disconnect a bank in Linked Banks to revoke Plaid access for that institution.</li>
+                  <li>Use each account&apos;s delete action to remove local account data from IntentFlow.</li>
+                  <li>Use encrypted backups if you want an export before deleting local data.</li>
+                </ul>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => router.push('/?view=linked-banks')}
+                    disabled={!plaidStatus.enabled}
+                  >
+                    Disconnect or revoke bank access
+                  </Button>
+                  <Button variant="secondary" onClick={() => router.push('/accounts')}>
+                    Manage account deletion
+                  </Button>
+                  <Button variant="secondary" onClick={() => router.push('/privacy')}>
+                    Privacy Policy
+                  </Button>
+                  <Button variant="secondary" onClick={() => router.push('/terms')}>
+                    Terms of Service
+                  </Button>
+                </div>
+              </div>
               <Button
                 variant="secondary"
                 onClick={() => router.push('/?view=linked-banks')}

@@ -17,7 +17,7 @@ Development still uses **`IntentFlow/.env`** (`PLAID_*` vars); packaged builds p
 
 ## 2. Production OAuth redirect (`PLAID_REDIRECT_URI`)
 
-**Host file:** `IntentFlow/public/plaid-oauth-redirect/oauth-callback.html` is copied into the site root as **`/plaid-oauth-redirect/oauth-callback.html`** (Next `public/` or static export `out/`). Extra hosting notes: [`deployment/plaid-oauth-redirect/README.md`](../deployment/plaid-oauth-redirect/README.md).
+**Host file:** `IntentFlow/public/plaid-oauth-redirect/oauth-callback.html` is copied into the site root as **`/plaid-oauth-redirect/oauth-callback.html`** (Next `public/` or static export `out/`).
 
 1. In **[Plaid Dashboard](https://dashboard.plaid.com/)** → **Team settings** → **API** → **Allowed redirect URIs**, add exactly the HTTPS URL where that file is served (no `?` query of your own — Plaid appends `oauth_state_id`).
 2. Set in **`IntentFlow/.env`** (development) **or** `plaid.env.json` in userData (packaged app) — same string as the allowlist:
@@ -31,7 +31,7 @@ The desktop app **cannot** receive Plaid webhooks. Use a small HTTPS service tha
 
 1. Accepts `POST /plaid/webhook` from Plaid.
 2. Verifies the **`Plaid-Verification`** JWT and body hash (see [Plaid webhook verification](https://plaid.com/docs/api/webhooks/webhook-verification/)).
-3. Exposes `GET /pending?userId=…` for the app to poll (same contract as the example stub).
+3. Exposes `GET /pending?userId=…` for the app to poll and `POST /pending/ack` for successful processing acknowledgements.
 
 ### Run the production relay (Node)
 
@@ -53,12 +53,15 @@ Required environment on the **server**:
 | `PORT` | Listen port (default `8787`) |
 | `HOST` | Bind address (default `0.0.0.0`) |
 | `RELAY_API_KEY` or `PLAID_WEBHOOK_RELAY_API_KEY` | Optional; if set, `/pending` requires `Authorization: Bearer <key>` |
+| `PLAID_WEBHOOK_STORE_PATH` | Optional durable queue path (default `data/plaid-webhooks.json`; use a persistent disk path in production) |
 
 Optional:
 
 | Variable | Purpose |
 |----------|---------|
 | `PLAID_RELAY_SKIP_JWT_VERIFY` | `true` only for local mocks—**never** in production |
+| `PLAID_WEBHOOK_DELIVERY_RETRY_MS` | Retry window for `/pending` delivery attempts (default 5 minutes) |
+| `PLAID_WEBHOOK_MAX_COMPLETED_EVENTS` | Delivered-event retention for deduplication (default 500) |
 
 ### Plaid Dashboard webhook URL
 
@@ -75,11 +78,15 @@ Set:
 - `PLAID_WEBHOOK_RELAY_URL=https://your-relay-host.example`
 - `PLAID_WEBHOOK_RELAY_API_KEY=<same as RELAY_API_KEY>` if you enabled auth on `/pending`
 
-The main process polls `GET {PLAID_WEBHOOK_RELAY_URL}/pending?userId=…` during sync.
+The main process polls `GET {PLAID_WEBHOOK_RELAY_URL}/pending?userId=…` during sync and acknowledges successfully processed events with `POST {PLAID_WEBHOOK_RELAY_URL}/pending/ack`.
 
 ### TLS termination
 
 Terminating TLS at a reverse proxy (Caddy, nginx, load balancer) is fine: forward **`Plaid-Verification`** and raw body unchanged to Node.
+
+### Durable webhook queue
+
+The production relay persists webhook events to **`data/plaid-webhooks.json`** by default, dedupes by Plaid `webhook_id` (or a raw-body SHA-256 hash), and reloads unfinished events on startup. The app acknowledges successful processing through `/pending/ack`; unacknowledged delivery attempts become retryable after the configured retry window. If your host has an ephemeral filesystem, attach a persistent disk and set **`PLAID_WEBHOOK_STORE_PATH`** to that mounted path (for example `/data/plaid-webhooks.json` on Render). `GET /health` reports queue counts and the active store path.
 
 ### Local development
 
@@ -108,3 +115,213 @@ Point `PLAID_WEBHOOK_RELAY_URL=http://localhost:8787`. For Sandbox, prefer `npm 
 | `npm run plaid:report-duplicates` | Local duplicate-account report (offline admin) |
 
 From repo root, `npm run plaid:relay` forwards to IntentFlow via root `package.json`.
+
+# 6. Env Notes
+
+   ## Plaid Deployment URLs
+
+### Vercel Frontend / OAuth Page
+
+Production app URL:
+
+https://intentflow-6c9b.vercel.app
+
+Deployment-specific URL:
+
+https://intentflow-6c9b-o35owkz1z-abdi-teramus-projects.vercel.app
+
+Plaid OAuth redirect URI:
+
+https://intentflow-6c9b.vercel.app/plaid-oauth.html
+
+Use the Plaid OAuth redirect URI when Plaid asks for an allowed redirect URI.
+
+### Render Webhook Relay
+
+Render service base URL:
+
+https://intentflow-m0m4.onrender.com
+
+Plaid webhook relay URL:
+
+https://intentflow-m0m4.onrender.com/plaid/webhook
+
+Use the Plaid webhook relay URL when Plaid asks for a webhook URL.
+
+### Summary
+
+Vercel hosts the browser page that Plaid redirects back to after OAuth.
+
+Render hosts the relay/server endpoint that can receive Plaid webhook events.
+
+# IntentFlow — Plaid Production Deployment Configuration
+
+## 1. Vercel Production App URL
+
+Stable production base URL:
+
+```env
+https://intentflow-6c9b.vercel.app
+```
+
+This is the main production frontend URL and should be used for Plaid OAuth redirect configuration.
+
+---
+
+## 2. Vercel Deployment URL (Do NOT use for Plaid)
+
+Deployment-specific URL:
+
+```env
+https://intentflow-6c9b-o35owkz1z-abdi-teramus-projects.vercel.app
+```
+
+This URL may change between deployments.
+
+Do NOT use this for:
+
+* Plaid Redirect URI
+* Production OAuth configuration
+* Persistent integrations
+
+Use only the stable Vercel production domain instead.
+
+---
+
+# 3. Plaid OAuth Redirect URI
+
+Correct production redirect URI:
+
+```env
+https://intentflow-6c9b.vercel.app/oauth-callback.html
+```
+
+Add ONLY this URL inside:
+
+* Plaid Dashboard
+* Allowed Redirect URIs
+
+---
+
+# 4. Render Webhook Relay Service
+
+Render base service URL:
+
+```env
+https://intentflow-m0m4.onrender.com
+```
+
+This service hosts the Plaid webhook relay/server.
+
+---
+
+# 5. Plaid Webhook Endpoint
+
+Relay route defined in the app:
+
+```env
+/plaid/webhook
+```
+
+Full production webhook endpoint:
+
+```env
+https://intentflow-m0m4.onrender.com/plaid/webhook
+```
+
+This is the URL Plaid sends webhook events to.
+
+---
+
+# 6. App Environment Variable Configuration
+
+Inside your app `.env`:
+
+```env
+PLAID_WEBHOOK_RELAY_URL=https://intentflow-m0m4.onrender.com
+```
+
+IMPORTANT:
+
+* Use ONLY the base URL
+* Do NOT append `/plaid/webhook`
+
+The application constructs the route internally.
+
+---
+
+# 7. Plaid Dashboard Webhook Configuration
+
+When Plaid asks for a webhook URL, use:
+
+```env
+https://intentflow-m0m4.onrender.com/plaid/webhook
+```
+
+This must include the full endpoint path.
+
+---
+
+# 8. Frontend vs Backend Responsibilities
+
+## Vercel
+
+Hosts:
+
+* Frontend app
+* OAuth callback page
+
+Purpose:
+
+* Plaid redirects users back here after OAuth/login flow
+
+---
+
+## Render
+
+Hosts:
+
+* Plaid webhook relay/server
+
+Purpose:
+
+* Receives Plaid webhook events
+* Processes account updates/sync notifications
+
+---
+
+# 9. Current PLAID_REDIRECT_URI Value
+
+Current configured value:
+
+```env
+PLAID_REDIRECT_URI=https://intentflow-6c9b-o35owkz1z-abdi-teramus-projects.vercel.app/plaid-oauth-redirect/oauth-callback.html
+```
+
+Recommended production value instead:
+
+```env
+PLAID_REDIRECT_URI=https://intentflow-6c9b.vercel.app/oauth-callback.html
+```
+
+Reason:
+
+* Uses stable production domain
+* Avoids deployment-specific URL changes
+* Better for Plaid production reliability
+
+---
+
+# 10. Final Recommended Production Values
+
+```env
+PLAID_REDIRECT_URI=https://intentflow-6c9b.vercel.app/oauth-callback.html
+
+PLAID_WEBHOOK_RELAY_URL=https://intentflow-m0m4.onrender.com
+```
+
+Plaid webhook endpoint:
+
+```env
+https://intentflow-m0m4.onrender.com/plaid/webhook
+```

@@ -3,21 +3,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 
-import AppShell from '../components/layout/AppShell';
+import AppShell from '../components/Layout/AppShell';
 import Sidebar from '../components/Navigation/Sidebar';
 import ViewContainers from '../views/ViewContainer';
 import UpdateIndicator from '../components/UpdateIndicator';
 
-import PropertyMapView from '../views/PropertyMapView';
-import ReflectsView from '../views/ReflectsView';
-
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import { APP_BG, APP_FG, APP_ON_FG } from '../theme/appPalette';
-
-import '../views/CashAccountsView';
-import '../views/AllAccountsView';
-
-import '../views/force-imports';
 
 export default function HomePage() {
   const { isAuthenticated, loading } = useAuth();
