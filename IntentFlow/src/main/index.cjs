@@ -420,6 +420,7 @@ const {
 } = requireModule('../services/plaid/plaidService.cjs') || {};
 const plaidSync = requireModule('../services/plaid/plaidSync.cjs') || {};
 const plaidAccountMatch = requireModule('../services/plaid/plaidAccountMatch.cjs') || {};
+const extensionBridgeModule = requireModule('../services/extension/extensionBridge.cjs') || {};
 console.log('   - CategoryGroupService loaded:', !!CategoryGroupService);
 console.log('   - ForecastService loaded:', !!ForecastService);
 console.log('   - MoneyMap loaded:', !!MoneyMap);
@@ -433,6 +434,7 @@ let mainWindow;
 let splashWindow;
 let db;
 let nativeServer = null;
+let extensionBridge = null;
 let ipcHandlersRegistered = false;
 let backgroundSyncInterval = null;
 let focusSyncTimeout = null;
@@ -750,6 +752,43 @@ async function verifyPlaidItemOwnership(itemId) {
     return item;
 }
 
+async function startExtensionBridge() {
+    if (extensionBridge || typeof extensionBridgeModule.createExtensionBridge !== 'function') {
+        return;
+    }
+
+    extensionBridge = extensionBridgeModule.createExtensionBridge({
+        appVersion: app.getVersion(),
+        getDatabase,
+        accountService,
+        monthlyBudgetService,
+        userService,
+        updateService,
+        requestPairingApproval: async (payload = {}) => {
+            const source = payload.browser || payload.clientName || 'a browser extension';
+            const detail = payload.extensionId ? `\n\nExtension ID: ${payload.extensionId}` : '';
+            const result = await dialog.showMessageBox(mainWindow, {
+                type: 'question',
+                buttons: ['Allow', 'Deny'],
+                defaultId: 0,
+                cancelId: 1,
+                title: 'Pair IntentFlow Browser Extension',
+                message: 'Allow this browser extension to connect to IntentFlow?',
+                detail: `${source} wants to read dashboard summaries and save captured pages to IntentFlow.${detail}`,
+                normalizeAccessKeys: true,
+            });
+            return result.response === 0;
+        },
+    });
+
+    try {
+        await extensionBridge.start();
+    } catch (error) {
+        console.warn('⚠️ IntentFlow extension bridge disabled:', error.message);
+        extensionBridge = null;
+    }
+}
+
 // ==================== APP INITIALIZATION ====================
 app.whenReady().then(async () => {
     const plaidEnvLoad = loadPlaidEnvFromUserData(() => app.getPath('userData'));
@@ -779,6 +818,8 @@ app.whenReady().then(async () => {
 
         setupIpcHandlers();
         console.log('✅ All IPC handlers registered');
+
+        await startExtensionBridge();
 
         ipcMain.removeAllListeners('navigate-to');
         ipcMain.on('navigate-to', (_event, routePath) => {
@@ -832,11 +873,63 @@ function createWindow() {
 
     win.on('focus', () => scheduleFocusPlaidSync());
 
+    win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+        const levels = ['log', 'warn', 'error', 'debug'];
+        const label = levels[level] || 'log';
+        const location = sourceId ? ` (${sourceId}:${line})` : '';
+        console[label === 'error' ? 'error' : label === 'warn' ? 'warn' : 'log'](
+            `🖥️ Renderer ${label}: ${message}${location}`
+        );
+    });
+
+    win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+        console.error('❌ Renderer did-fail-load:', { errorCode, errorDescription, validatedURL });
+    });
+
+    win.webContents.on('did-start-loading', () => {
+        console.log('🌐 Renderer did-start-loading:', win.webContents.getURL());
+    });
+
+    win.webContents.on('did-frame-finish-load', (_event, isMainFrame, frameProcessId, frameRoutingId) => {
+        if (isMainFrame) {
+            console.log('🌐 Renderer main frame finished:', {
+                url: win.webContents.getURL(),
+                frameProcessId,
+                frameRoutingId,
+            });
+        }
+    });
+
+    win.webContents.on('render-process-gone', (_event, details) => {
+        console.error('❌ Renderer process gone:', details);
+    });
+
     if (isDev) {
         const devPort = process.env.PORT || 3000;
-        const devUrl = `http://localhost:${devPort}`;
+        const devUrl = `http://127.0.0.1:${devPort}/`;
         console.log('🛠️ Loading development frontend from:', devUrl);
-        mainWindow.loadURL(devUrl);
+        const requestFilter = { urls: [`http://127.0.0.1:${devPort}/*`, `http://localhost:${devPort}/*`] };
+        win.webContents.session.webRequest.onCompleted(requestFilter, (details) => {
+            if (details.type === 'mainFrame' || details.url === devUrl) {
+                console.log('🌐 Renderer request completed:', {
+                    url: details.url,
+                    type: details.type,
+                    statusCode: details.statusCode,
+                    fromCache: details.fromCache,
+                    error: details.error,
+                });
+            }
+        });
+        win.webContents.session.webRequest.onErrorOccurred(requestFilter, (details) => {
+            console.error('❌ Renderer request failed:', {
+                url: details.url,
+                type: details.type,
+                error: details.error,
+            });
+        });
+        mainWindow.loadURL(devUrl).catch((err) => {
+            console.error('❌ Failed to load development frontend:', err.message);
+        });
         win.webContents.openDevTools({ mode: 'detach' });
     } else {
         const indexPath = getProductionFilePath('index.html');
@@ -879,6 +972,43 @@ function createWindow() {
 
     win.webContents.on('did-finish-load', () => {
         console.log('✅ Page loaded successfully');
+
+        win.webContents.executeJavaScript(`
+            (() => {
+                const next = document.getElementById('__next');
+                const bodyStyle = window.getComputedStyle(document.body);
+                const nextStyle = next ? window.getComputedStyle(next) : null;
+                const snapshot = {
+                    href: window.location.href,
+                    title: document.title,
+                    readyState: document.readyState,
+                    bodyDisplay: bodyStyle.display,
+                    bodyVisibility: bodyStyle.visibility,
+                    bodyBg: bodyStyle.backgroundColor,
+                    bodyTextLength: document.body.innerText.length,
+                    bodyHtmlLength: document.body.innerHTML.length,
+                    nextExists: !!next,
+                    nextChildCount: next ? next.children.length : 0,
+                    nextDisplay: nextStyle ? nextStyle.display : null,
+                    nextHtmlLength: next ? next.innerHTML.length : 0,
+                    bootEvents: window.__INTENTFLOW_BOOT_EVENTS__ || [],
+                    electronApiKeys: window.electronAPI ? Object.keys(window.electronAPI).slice(0, 12) : []
+                };
+                document.body.style.display = 'block';
+                document.body.style.visibility = 'visible';
+                if (next) {
+                    next.style.display = 'block';
+                    next.style.visibility = 'visible';
+                    next.style.minHeight = '100vh';
+                }
+                console.log('[IntentFlow DOM snapshot] ' + JSON.stringify(snapshot));
+                return snapshot;
+            })();
+        `).then((snapshot) => {
+            console.log('🧭 Renderer DOM snapshot:', snapshot);
+        }).catch((err) => {
+            console.error('❌ Renderer DOM snapshot failed:', err.message);
+        });
 
         if (!isDev) {
             win.webContents
@@ -3344,6 +3474,7 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
     if (backgroundSyncInterval) clearInterval(backgroundSyncInterval);
+    if (extensionBridge) extensionBridge.stop();
     if (nativeServer) nativeServer.close();
     if (db && typeof db.close === 'function') db.close();
     else if (db && db.$pool) db.close();

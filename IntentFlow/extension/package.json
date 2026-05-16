@@ -1,0 +1,41 @@
+{
+  "name": "@intentflow/browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "IntentFlow browser extension companion for Chrome, Edge, Firefox, Brave, Arc, and Safari WebExtension builds.",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.12",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "webextension-polyfill": "^0.12.0",
+    "zustand": "^5.0.9"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.34",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@types/webextension-polyfill": "^0.12.5",
+    "@vitejs/plugin-react": "^5.1.2",
+    "@wxt-dev/module-react": "^1.2.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.0",
+    "vitest": "^4.0.15",
+    "wxt": "^0.20.26"
+  },
+  "dependenciesMeta": {
+    "webextension-polyfill": {
+      "injected": false
+    }
+  }
+}

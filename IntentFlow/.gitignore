@@ -114,6 +114,8 @@ jest.setup.js
 *.spec.js
 *.test.ts
 *.spec.ts
+!extension/tests/**/*.test.ts
+!extension/tests/**/*.spec.ts
 /test-results/
 /playwright-report/
 /blob-report/

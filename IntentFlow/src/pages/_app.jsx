@@ -2,6 +2,11 @@ import { useEffect } from 'react';
 import '../styles/globals.css';
 import { AuthProvider } from '../contexts/AuthContext';
 
+if (typeof window !== 'undefined') {
+  window.__intentflowBootLog?.('_app module loaded');
+  console.log('[IntentFlow boot] _app module loaded');
+}
+
 function isElectronUserAgent() {
   if (typeof navigator === 'undefined') return false;
   return navigator.userAgent.includes('Electron');
@@ -138,6 +143,12 @@ function useInitializeElectronAPI() {
 
 export default function MyApp({ Component, pageProps }) {
   useInitializeElectronAPI();
+
+  useEffect(() => {
+    window.__intentflowBootLog?.('_app mounted');
+    const debugEl = document.getElementById('intentflow-boot-debug');
+    if (debugEl) debugEl.remove();
+  }, []);
 
   return (
     <AuthProvider>
