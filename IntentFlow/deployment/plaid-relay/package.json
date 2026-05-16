@@ -1,0 +1,13 @@
+{
+  "name": "intentflow-plaid-relay",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node scripts/plaid-webhook-relay.cjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "jose": "^5.10.0",
+    "plaid": "^41.4.0"
+  }
+}

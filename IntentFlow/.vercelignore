@@ -1,0 +1,43 @@
+# Vercel uploads (CLI / `vercel link`) exclude these — avoids the ~100 MB project limit.
+# See deployment/plaid-oauth-redirect/README.md for deploying only the Plaid OAuth static page.
+
+# Dependencies & caches (reinstalled/built on Vercel)
+node_modules
+.pnp
+.yarn
+
+# Next / local build output (Next on Vercel builds from source)
+.next
+.next/cache
+out
+dist
+build
+.parcel-cache
+.cache
+
+# Electron / desktop artifacts — huge — never ship to Vercel for web
+release
+app-build
+electron-builder-out
+electron-dist
+electron-test-data
+
+# Platform folders (often large; omit unless you deliberately deploy Capacitor)
+android
+ios
+ios.backup*
+ios-backup-*
+
+# Logs & coverage
+coverage
+.nyc_output
+*.log
+npm-debug.log*
+
+# Local / secrets (should also be in .gitignore)
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store

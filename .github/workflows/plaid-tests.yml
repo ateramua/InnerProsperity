@@ -1,0 +1,29 @@
+name: Plaid unit tests
+
+on:
+  push:
+    paths:
+      - 'IntentFlow/**'
+      - 'package.json'
+      - '.github/workflows/plaid-tests.yml'
+  pull_request:
+    paths:
+      - 'IntentFlow/**'
+      - 'package.json'
+      - '.github/workflows/plaid-tests.yml'
+
+jobs:
+  plaid:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: IntentFlow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: IntentFlow/package-lock.json
+      - run: npm ci
+      - run: npm run test:plaid

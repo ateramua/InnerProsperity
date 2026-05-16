@@ -17,13 +17,13 @@ Development still uses **`IntentFlow/.env`** (`PLAID_*` vars); packaged builds p
 
 ## 2. Production OAuth redirect (`PLAID_REDIRECT_URI`)
 
-**Step-by-step (host file + Dashboard + env):** see [`deployment/plaid-oauth-redirect/README.md`](../deployment/plaid-oauth-redirect/README.md).
+**Host file:** `IntentFlow/public/plaid-oauth-redirect/oauth-callback.html` is copied into the site root as **`/plaid-oauth-redirect/oauth-callback.html`** (Next `public/` or static export `out/`). Extra hosting notes: [`deployment/plaid-oauth-redirect/README.md`](../deployment/plaid-oauth-redirect/README.md).
 
-1. In **[Plaid Dashboard](https://dashboard.plaid.com/)** → **Team settings** → **API** → **Allowed redirect URIs**, add exactly the HTTPS URL where you host **`oauth-callback.html`** (no `?` query of your own — Plaid appends `oauth_state_id`).
-2. Set in `.env` or `plaid.env.json`:
+1. In **[Plaid Dashboard](https://dashboard.plaid.com/)** → **Team settings** → **API** → **Allowed redirect URIs**, add exactly the HTTPS URL where that file is served (no `?` query of your own — Plaid appends `oauth_state_id`).
+2. Set in **`IntentFlow/.env`** (development) **or** `plaid.env.json` in userData (packaged app) — same string as the allowlist:
    - `PLAID_ENV=production`
    - `PLAID_REDIRECT_URI=<same URL as allowlist, character-for-character>`
-3. Restart the app; IntentFlow passes `redirect_uri` on Link token create in production only.
+3. Restart the app. IntentFlow adds `redirect_uri` to `/link/token/create` **only when `PLAID_ENV=production`** and `PLAID_REDIRECT_URI` is set. Use **production** Client ID and Secret with `PLAID_ENV=production`.
 
 ## 3. Webhook relay (HTTPS + JWT verification)
 
@@ -35,7 +35,9 @@ The desktop app **cannot** receive Plaid webhooks. Use a small HTTPS service tha
 
 ### Run the production relay (Node)
 
-From `IntentFlow/`:
+**Deploy on Fly / Docker:** see [`deployment/plaid-relay/README.md`](../deployment/plaid-relay/README.md) (slim image, HTTPS via the platform).
+
+From `IntentFlow/` (local process):
 
 ```bash
 npm run plaid:relay

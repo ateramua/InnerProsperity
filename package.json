@@ -5,6 +5,11 @@
   "scripts": {
     "dev": "npm run dev --prefix IntentFlow",
     "build": "npm run build --prefix IntentFlow",
-    "start": "npm run start --prefix IntentFlow"
+    "start": "npm run start --prefix IntentFlow",
+    "dist:install-mac": "npm run dist:install-mac --prefix IntentFlow",
+    "test:plaid": "npm run test:plaid --prefix IntentFlow",
+    "plaid:relay": "npm run plaid:relay --prefix IntentFlow",
+    "plaid:relay-example": "npm run plaid:relay-example --prefix IntentFlow",
+    "plaid:report-duplicates": "npm run plaid:report-duplicates --prefix IntentFlow"
   }
 }
