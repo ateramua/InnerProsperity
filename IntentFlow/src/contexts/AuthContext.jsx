@@ -14,7 +14,7 @@ export function AuthProvider({ children }) {
     if (typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')) {
       return true;
     }
-    return typeof window.electronAPI !== 'undefined';
+    return typeof window.electronAPI !== 'undefined' && !window.electronAPI.__isBrowserMock;
   };
 
   const hasElectronAPI = () => {
@@ -22,7 +22,7 @@ export function AuthProvider({ children }) {
     if (typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')) {
       return !window.electronAPI.__isBrowserMock;
     }
-    return true;
+    return !window.electronAPI.__isBrowserMock;
   };
 
   const waitForElectronAPI = async (timeoutMs = 5000) => {

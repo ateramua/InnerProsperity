@@ -20,6 +20,13 @@ import AccountModal from './AccountModal';
 import LinkedBanksView from './LinkedBanksView';
 import AppToastHost from '../components/AppToast';
 
+const getAccountApi = () => {
+  if (typeof window === 'undefined') return null;
+  const electronAPI = window.electronAPI;
+  if (!electronAPI?.getCurrentUser || !electronAPI?.getAccountsSummary) return null;
+  return electronAPI;
+};
+
 const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavigate }) => {
   console.log('🔍 ViewContainer received currentView:', currentView);
   console.log('🔍 Available views: "accounts", "allAccounts", "creditCards", etc.');
@@ -42,16 +49,22 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Load credit cards
   const loadCreditCards = async () => {
     console.log('🔍 Loading credit cards from database...');
+    const accountApi = getAccountApi();
+    if (!accountApi) {
+      setCreditCards([]);
+      return;
+    }
+
     setIsLoadingCards(true);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
+      const userResult = await accountApi.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
         setCreditCards([]);
         return;
       }
 
       const userId = userResult.data.id;
-      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+      const accountsResult = await accountApi.getAccountsSummary(userId);
 
       if (accountsResult?.success) {
         const allAccounts = accountsResult.data || [];
@@ -73,9 +86,15 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // In ViewContainer.jsx, update the loadLoans function
   const loadLoans = async () => {
     console.log('📥 loadLoans started');
+    const accountApi = getAccountApi();
+    if (!accountApi) {
+      setLoans([]);
+      return;
+    }
+
     setIsLoadingLoans(true);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
+      const userResult = await accountApi.getCurrentUser();
       if (!userResult?.success || !userResult?.data?.id) {
         console.log('❌ No user logged in');
         setLoans([]);
@@ -83,7 +102,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
       }
 
       const userId = userResult.data.id;
-      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+      const accountsResult = await accountApi.getAccountsSummary(userId);
 
       let loanAccounts = [];
       if (accountsResult?.success && Array.isArray(accountsResult.data)) {

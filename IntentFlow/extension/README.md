@@ -39,6 +39,10 @@ npm run ext:build:firefox
 - `src/storage`: encrypted local storage and preferences.
 - `src/sync`: durable extension-side offline queue.
 
+## Docs
+
+Release, privacy, QA, store listing, and publishing notes live in `docs/`.
+
 ## Production Notes
 
 The Electron desktop app exposes a localhost-only bridge on `127.0.0.1:37631-37633`.

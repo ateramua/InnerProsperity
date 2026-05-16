@@ -64,9 +64,7 @@ function useInitializeElectronAPI() {
       };
     }
 
-    const timeoutId = setTimeout(() => {
-      if (isRealElectronAPI()) return;
-
+    if (!isRealElectronAPI()) {
       console.warn('⚠️ Real electronAPI not available - using browser mock (Chrome only)');
       const browserUser = { id: 3, username: 'user', email: 'user@example.com', role: 'user' };
 
@@ -132,10 +130,9 @@ function useInitializeElectronAPI() {
         restoreDatabase: async (password) => ({ success: false, error: 'Not available in browser' }),
         ping: async () => ({ success: true, message: 'pong' }),
       };
-    }, 2000);
+    }
 
     return () => {
-      clearTimeout(timeoutId);
       window.removeEventListener('electronAPI-ready', handleReady);
     };
   }, []);

@@ -53,13 +53,17 @@ export default function HomePage() {
 
   // Function to load accounts
   const loadAccounts = async () => {
-    if (!window.electronAPI) return;
+    const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
+    if (!electronAPI?.getCurrentUser || !electronAPI?.getAccountsSummary) {
+      setAccounts([]);
+      return;
+    }
 
     setLoadingAccounts(true);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
+      const userResult = await electronAPI.getCurrentUser();
       if (userResult?.success && userResult?.data) {
-        const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+        const accountsResult = await electronAPI.getAccountsSummary(userResult.data.id);
         if (accountsResult?.success) {
           setAccounts(accountsResult.data || []);
           console.log('💰 HomePage loaded accounts:', accountsResult.data.length);
