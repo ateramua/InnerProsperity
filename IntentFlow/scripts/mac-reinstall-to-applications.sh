@@ -5,10 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
+export CSC_IDENTITY_AUTO_DISCOVERY=false
+
 echo "🧹 Thorough clean (clean:deep)…"
 npm run clean:deep
 
-echo "📦 Full distribution build (includes clean + build + electron-builder)…"
+echo "📦 Full local distribution build (ad-hoc signing, no Apple Developer credentials)…"
 npm run dist
 
 APP="$(find release -maxdepth 4 -name '*.app' 2>/dev/null | head -1)"

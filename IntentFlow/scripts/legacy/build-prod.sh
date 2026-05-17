@@ -2,6 +2,8 @@
 
 echo "🔧 Building production app..."
 
+export CSC_IDENTITY_AUTO_DISCOVERY=false
+
 # Clean
 rm -rf .next out release
 

@@ -76,6 +76,7 @@
           ]
         }
       ],
+      "identity": "-",
       "category": "public.app-category.finance",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
