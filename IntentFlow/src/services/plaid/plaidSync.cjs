@@ -11,7 +11,9 @@ const {
   getPlaidCategoryKey,
   buildAccountDisplayName,
   accountFingerprint,
+  extractPlaidRawBalance,
   isPlaidTransferTransaction,
+  redactPlaidLogMessage,
 } = require('./plaidService.cjs');
 const { findManualAccountCandidates } = require('./plaidAccountMatch.cjs');
 const { logPlaidSyncRun } = require('./plaidSyncAudit.cjs');
@@ -72,11 +74,19 @@ async function syncPlaidAccounts(itemId, deps) {
   const mergeOffers = [];
 
   for (const plaidAccount of plaidAccounts) {
+    const dismissed = await db.get(
+      `SELECT 1 FROM plaid_account_dismissals
+       WHERE plaid_account_id = ? AND user_id = ?`,
+      [plaidAccount.account_id, item.user_id]
+    ).catch(() => null);
+    if (dismissed) {
+      continue;
+    }
+
     const fingerprint = accountFingerprint(institutionId, plaidAccount);
     const internalType = mapPlaidTypeToInternal(plaidAccount);
     const category = mapInternalAccountTypeCategory(internalType);
-    const rawBalance =
-      plaidAccount.balances?.current ?? plaidAccount.balances?.available ?? 0;
+    const rawBalance = extractPlaidRawBalance(plaidAccount);
     const balance = plaidBalanceToAppBalance(plaidAccount, rawBalance);
     const displayName = buildAccountDisplayName(plaidAccount, institutionName);
 
@@ -87,9 +97,14 @@ async function syncPlaidAccounts(itemId, deps) {
 
     if (existingLink?.account_id) {
       const acctRow = await db.get(
-        `SELECT sync_enabled, balance_locked FROM accounts WHERE id = ? AND user_id = ?`,
+        `SELECT sync_enabled, balance_locked, IFNULL(is_active, 1) AS is_active
+         FROM accounts WHERE id = ? AND user_id = ?`,
         [existingLink.account_id, item.user_id]
       );
+      // User removed account from Cash Accounts — do not re-create or update it on sync
+      if (!acctRow || acctRow.is_active === 0) {
+        continue;
+      }
       const skipBalance =
         acctRow?.sync_enabled === 0 || acctRow?.balance_locked === 1;
       if (skipBalance) {
@@ -110,11 +125,16 @@ async function syncPlaidAccounts(itemId, deps) {
           ]
         );
       } else {
+        const creditLimit =
+          internalType === 'credit' && plaidAccount.balances?.limit != null
+            ? Number(plaidAccount.balances.limit)
+            : null;
         await db.run(
           `UPDATE accounts SET
             name = ?, type = ?, account_type_category = ?, balance = ?,
             cleared_balance = ?, working_balance = ?,
             institution = ?, external_mask = ?, source = 'plaid',
+            credit_limit = COALESCE(?, credit_limit),
             last_balance_sync_at = datetime('now'), updated_at = datetime('now')
            WHERE id = ? AND user_id = ?`,
           [
@@ -126,6 +146,7 @@ async function syncPlaidAccounts(itemId, deps) {
             balance,
             institutionName || plaidAccount.official_name || null,
             plaidAccount.mask || null,
+            creditLimit,
             existingLink.account_id,
             item.user_id,
           ]
@@ -178,11 +199,16 @@ async function syncPlaidAccounts(itemId, deps) {
 
     if (!internalAccountId) {
       internalAccountId = uuidv4();
+      const creditLimit =
+        internalType === 'credit' && plaidAccount.balances?.limit != null
+          ? Number(plaidAccount.balances.limit)
+          : null;
       await db.run(
         `INSERT INTO accounts (
           id, user_id, name, type, account_type_category, balance, cleared_balance, working_balance,
-          currency, institution, external_mask, source, last_balance_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, 'plaid', datetime('now'), datetime('now'), datetime('now'))`,
+          currency, institution, external_mask, source, credit_limit,
+          last_balance_sync_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, 'plaid', ?, datetime('now'), datetime('now'), datetime('now'))`,
         [
           internalAccountId,
           item.user_id,
@@ -194,6 +220,7 @@ async function syncPlaidAccounts(itemId, deps) {
           balance,
           institutionName,
           plaidAccount.mask || null,
+          creditLimit,
         ]
       );
     } else {
@@ -205,12 +232,13 @@ async function syncPlaidAccounts(itemId, deps) {
       if (skipBal) {
         await db.run(
           `UPDATE accounts SET
-            name = ?, account_type_category = ?,
+            name = ?, type = ?, account_type_category = ?,
             institution = ?, external_mask = ?, source = 'plaid', sync_enabled = 1,
             last_balance_sync_at = datetime('now'), updated_at = datetime('now')
            WHERE id = ?`,
           [
             displayName,
+            internalType,
             category,
             institutionName,
             plaidAccount.mask || null,
@@ -218,20 +246,27 @@ async function syncPlaidAccounts(itemId, deps) {
           ]
         );
       } else {
+        const creditLimit =
+          internalType === 'credit' && plaidAccount.balances?.limit != null
+            ? Number(plaidAccount.balances.limit)
+            : null;
         await db.run(
           `UPDATE accounts SET
-            name = ?, account_type_category = ?, balance = ?, cleared_balance = ?, working_balance = ?,
+            name = ?, type = ?, account_type_category = ?, balance = ?, cleared_balance = ?, working_balance = ?,
             institution = ?, external_mask = ?, source = 'plaid', sync_enabled = 1,
+            credit_limit = COALESCE(?, credit_limit),
             last_balance_sync_at = datetime('now'), updated_at = datetime('now')
            WHERE id = ?`,
           [
             displayName,
+            internalType,
             category,
             balance,
             balance,
             balance,
             institutionName,
             plaidAccount.mask || null,
+            creditLimit,
             internalAccountId,
           ]
         );
@@ -335,13 +370,12 @@ async function syncLiabilitiesForItem(itemId, deps) {
     await db.run(
       `UPDATE accounts SET
         credit_limit = COALESCE(?, credit_limit),
-        limit = COALESCE(?, limit),
         interest_rate = COALESCE(?, interest_rate),
         minimum_payment = COALESCE(?, minimum_payment),
         due_date = COALESCE(?, due_date),
         updated_at = datetime('now')
        WHERE id = ?`,
-      [limit, limit, apr, minimum, due, link.account_id]
+      [limit, apr, minimum, due, link.account_id]
     );
     updated++;
   }
@@ -820,7 +854,11 @@ async function pollPlaidWebhookRelay(userId, onSyncItem, deps = {}) {
       synced.push(entry.itemId);
       if (entry.eventId) acknowledgedEventIds.push(entry.eventId);
     } catch (err) {
-      console.warn('Webhook relay sync skipped for item', entry.itemId, err.message);
+      console.warn(
+        'Webhook relay sync skipped for item',
+        entry.itemId,
+        redactPlaidLogMessage(err.message)
+      );
     }
   }
 
@@ -835,7 +873,7 @@ async function pollPlaidWebhookRelay(userId, onSyncItem, deps = {}) {
         body: JSON.stringify({ eventIds: acknowledgedEventIds }),
       });
     } catch (err) {
-      console.warn('Webhook relay ack failed:', err.message);
+      console.warn('Webhook relay ack failed:', redactPlaidLogMessage(err.message));
     }
   }
   return { polled: true, synced };

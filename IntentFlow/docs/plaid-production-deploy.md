@@ -23,7 +23,8 @@ Development still uses **`IntentFlow/.env`** (`PLAID_*` vars); packaged builds p
 2. Set in **`IntentFlow/.env`** (development) **or** `plaid.env.json` in userData (packaged app) — same string as the allowlist:
    - `PLAID_ENV=production`
    - `PLAID_REDIRECT_URI=<same URL as allowlist, character-for-character>`
-3. Restart the app. IntentFlow adds `redirect_uri` to `/link/token/create` **only when `PLAID_ENV=production`** and `PLAID_REDIRECT_URI` is set. Use **production** Client ID and Secret with `PLAID_ENV=production`.
+3. Restart the app. IntentFlow adds `redirect_uri` to `/link/token/create` when **`PLAID_ENV` is `production` or `development`** and `PLAID_REDIRECT_URI` is set.
+4. **Desktop OAuth resume:** the hosted callback redirects to `intentflow://plaid-oauth?oauth_state_id=…`. Register the `intentflow` URL scheme in packaged builds (see `package.json` → `protocols`). Keep IntentFlow open on Linked Banks while completing OAuth at an institution like Chase.
 
 ## 3. Webhook relay (HTTPS + JWT verification)
 
@@ -79,6 +80,14 @@ Set:
 - `PLAID_WEBHOOK_RELAY_API_KEY=<same as RELAY_API_KEY>` if you enabled auth on `/pending`
 
 The main process polls `GET {PLAID_WEBHOOK_RELAY_URL}/pending?userId=…` during sync and acknowledges successfully processed events with `POST {PLAID_WEBHOOK_RELAY_URL}/pending/ack`.
+
+### Item → user registration (required for webhooks)
+
+Plaid ITEM webhooks include `item_id` but not your app user id. After each bank connect (and on login / startup), the desktop app calls:
+
+`POST {PLAID_WEBHOOK_RELAY_URL}/items/register` with body `{ "itemId": "…", "userId": "…" }` (same Bearer key as `/pending` when `RELAY_API_KEY` is set).
+
+On disconnect, the app calls `POST /items/unregister`. The relay stores mappings in `itemUsers` inside the webhook store file.
 
 ### TLS termination
 

@@ -24,6 +24,15 @@ const crypto = require('crypto');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
 const { verifyPlaidWebhook } = require('./lib/plaidWebhookVerify.cjs');
 
+/** Plaid "development" uses the production API host (matches desktop app). */
+function resolveRelayPlaidBasePath(env) {
+  const normalized = String(env || 'sandbox').toLowerCase();
+  if (normalized === 'development') {
+    return PlaidEnvironments.production;
+  }
+  return PlaidEnvironments[normalized];
+}
+
 const DEFAULT_STORE_PATH = path.resolve(__dirname, '../data/plaid-webhooks.json');
 const webhookStorePath = process.env.PLAID_WEBHOOK_STORE_PATH || DEFAULT_STORE_PATH;
 const DELIVERY_RETRY_AFTER_MS = Number(process.env.PLAID_WEBHOOK_DELIVERY_RETRY_MS) || 5 * 60 * 1000;
@@ -40,17 +49,25 @@ function safeJsonParse(raw, fallback) {
 function ensureStoreFile(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify({ version: 1, events: [] }, null, 2));
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, events: [], itemUsers: {} }, null, 2));
   }
 }
 
 function loadWebhookStore(filePath) {
   ensureStoreFile(filePath);
-  const parsed = safeJsonParse(fs.readFileSync(filePath, 'utf8'), { version: 1, events: [] });
-  if (!Array.isArray(parsed.events)) return { version: 1, events: [] };
+  const parsed = safeJsonParse(fs.readFileSync(filePath, 'utf8'), {
+    version: 1,
+    events: [],
+    itemUsers: {},
+  });
+  if (!Array.isArray(parsed.events)) {
+    return { version: 1, events: [], itemUsers: parsed.itemUsers || {} };
+  }
   return {
     version: 1,
     events: parsed.events.filter((event) => event && event.id && event.status),
+    itemUsers:
+      parsed.itemUsers && typeof parsed.itemUsers === 'object' ? parsed.itemUsers : {},
   };
 }
 
@@ -65,6 +82,7 @@ function writeWebhookStore(filePath, store) {
   const compacted = {
     version: 1,
     events: [...active, ...delivered.slice(0, MAX_COMPLETED_EVENTS)],
+    itemUsers: store.itemUsers || {},
   };
   const tmpPath = `${filePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(compacted, null, 2));
@@ -76,7 +94,34 @@ function createWebhookStore(filePath) {
   let store = loadWebhookStore(filePath);
 
   function persist() {
+    if (!store.itemUsers || typeof store.itemUsers !== 'object') {
+      store.itemUsers = {};
+    }
     store = writeWebhookStore(filePath, store);
+  }
+
+  function resolveUserIdForItem(itemId, payloadUserId) {
+    if (payloadUserId != null) return String(payloadUserId);
+    if (!itemId) return null;
+    const mapped = store.itemUsers?.[itemId];
+    return mapped == null ? null : String(mapped);
+  }
+
+  function registerItemUser(itemId, userId) {
+    if (!itemId || userId == null) return false;
+    if (!store.itemUsers) store.itemUsers = {};
+    store.itemUsers[String(itemId)] = String(userId);
+    persist();
+    return true;
+  }
+
+  function unregisterItemUser(itemId) {
+    if (!itemId || !store.itemUsers) return false;
+    const key = String(itemId);
+    if (!store.itemUsers[key]) return false;
+    delete store.itemUsers[key];
+    persist();
+    return true;
   }
 
   function getEventId(payload, rawBuf) {
@@ -97,7 +142,8 @@ function createWebhookStore(filePath) {
     }
 
     const itemId = payload.item_id || null;
-    const userId = payload.client_user_id ?? payload.clientUserId ?? payload.user_id;
+    const payloadUserId = payload.client_user_id ?? payload.clientUserId ?? payload.user_id;
+    const userId = resolveUserIdForItem(itemId, payloadUserId);
     const webhookCode = payload.webhook_code ?? payload.webhook_type ?? null;
     const event = {
       id,
@@ -166,10 +212,19 @@ function createWebhookStore(filePath) {
       deliveryAttempted: counts.delivery_attempted || 0,
       delivered: counts.delivered || 0,
       ignored: counts.ignored || 0,
+      itemMappings: Object.keys(store.itemUsers || {}).length,
     };
   }
 
-  return { add, pendingForUser, markDeliveryAttempted, markDelivered, stats };
+  return {
+    add,
+    pendingForUser,
+    markDeliveryAttempted,
+    markDelivered,
+    registerItemUser,
+    unregisterItemUser,
+    stats,
+  };
 }
 
 const webhookStore = createWebhookStore(webhookStorePath);
@@ -178,11 +233,14 @@ function createRelayPlaidClient() {
   const env = process.env.PLAID_ENV || 'sandbox';
   const clientId = process.env.PLAID_CLIENT_ID;
   const secret = process.env.PLAID_SECRET;
-  if (!clientId || !secret || !PlaidEnvironments[env]) {
-    throw new Error(`Relay needs PLAID_CLIENT_ID, PLAID_SECRET, and valid PLAID_ENV (got "${env}")`);
+  const basePath = resolveRelayPlaidBasePath(env);
+  if (!clientId || !secret || !basePath) {
+    throw new Error(
+      `Relay needs PLAID_CLIENT_ID, PLAID_SECRET, and valid PLAID_ENV (sandbox, development, or production; got "${env}")`
+    );
   }
   const configuration = new Configuration({
-    basePath: PlaidEnvironments[env],
+    basePath,
     baseOptions: {
       headers: {
         'PLAID-CLIENT-ID': clientId,
@@ -307,6 +365,51 @@ async function main() {
       webhookStore.markDeliveryAttempted(events.map((event) => event.id));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ items }));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/items/register') {
+      if (!authPending(req, res)) return;
+
+      readJsonRequest(req)
+        .then((body) => {
+          const itemId = body?.itemId != null ? String(body.itemId) : '';
+          const userId = body?.userId != null ? String(body.userId) : '';
+          if (!itemId || !userId) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('itemId and userId required');
+            return;
+          }
+          webhookStore.registerItemUser(itemId, userId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, itemId, userId }));
+        })
+        .catch(() => {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('invalid json');
+        });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/items/unregister') {
+      if (!authPending(req, res)) return;
+
+      readJsonRequest(req)
+        .then((body) => {
+          const itemId = body?.itemId != null ? String(body.itemId) : '';
+          if (!itemId) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('itemId required');
+            return;
+          }
+          webhookStore.unregisterItemUser(itemId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, itemId }));
+        })
+        .catch(() => {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('invalid json');
+        });
       return;
     }
 

@@ -41,6 +41,11 @@ try {
       ipcRenderer.on('accounts-updated', listener);
       return () => ipcRenderer.removeListener('accounts-updated', listener);
     },
+    onPlaidOAuthRedirect: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('plaid-oauth-redirect', listener);
+      return () => ipcRenderer.removeListener('plaid-oauth-redirect', listener);
+    },
 
     // ==================== AUTH ====================
     createUser: (userData) => ipcRenderer.invoke('create-user', userData),
@@ -99,6 +104,10 @@ try {
       ipcRenderer.invoke('accounts:update', id, userId, updates),
     deleteAccount: (id, userId) =>
       ipcRenderer.invoke('accounts:delete', id, userId),
+    permanentlyDeleteCreditAccount: (id, userId) =>
+      ipcRenderer.invoke('accounts:permanentDeleteCredit', id, userId),
+    permanentlyDeleteLoanAccount: (id, userId) =>
+      ipcRenderer.invoke('accounts:permanentDeleteLoan', id, userId),
 
     getAccountBalances: (accountId, userId) =>
       ipcRenderer.invoke('accounts:getBalances', accountId, userId),

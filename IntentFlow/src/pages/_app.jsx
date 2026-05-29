@@ -82,6 +82,8 @@ function useInitializeElectronAPI() {
         getAccountById: async (id) => ({ success: true, data: null }),
         updateAccount: async (id, userId, updates) => ({ success: true }),
         deleteAccount: async (id, userId) => ({ success: true }),
+        permanentlyDeleteCreditAccount: async (id, userId) => ({ success: true }),
+        permanentlyDeleteLoanAccount: async (id, userId) => ({ success: true }),
         getCategories: async (userId) => ({ success: true, data: [] }),
         getBudgetMonthSnapshot: async (userId, monthKey) => ({
           success: true,

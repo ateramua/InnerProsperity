@@ -21,6 +21,7 @@ function loadPlaidEnvFromUserData(getUserDataPath) {
       'PLAID_REDIRECT_URI',
       'PLAID_WEBHOOK_RELAY_URL',
       'PLAID_WEBHOOK_RELAY_API_KEY',
+      'PLAID_LINK_PRODUCTS',
     ];
     let count = 0;
     for (const key of keys) {

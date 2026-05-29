@@ -216,6 +216,23 @@ class TransactionService {
     async updateAccountBalances(accountId) {
         const db = await this.getDb();
         try {
+            const account = await db.get(
+                `SELECT source, sync_enabled, balance_locked FROM accounts WHERE id = ?`,
+                [accountId]
+            );
+            if (!account) return;
+
+            const isPlaidLinked =
+                String(account.source || '').toLowerCase() === 'plaid' &&
+                account.sync_enabled !== 0 &&
+                account.balance_locked !== 1;
+
+            if (isPlaidLinked) {
+                // Bank-reported balance from Plaid sync is authoritative for linked accounts.
+                console.log(`⏭️ Skipping ledger balance recompute for Plaid account ${accountId}`);
+                return;
+            }
+
             // Ledger is source of truth: working + display balance match sum of rows.
             // Cleared/reconciled rows (is_cleared 1 or 2) feed cleared_balance.
             await db.run(

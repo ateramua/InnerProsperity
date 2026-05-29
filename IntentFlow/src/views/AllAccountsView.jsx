@@ -1,8 +1,22 @@
 // src/views/AllAccountsView.jsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { showAppToast } from '../components/AppToast';
 import ConnectBankCTA from '../components/ConnectBankCTA';
 import EditAccountModal from './EditAccountModal';
 import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
+import {
+  deleteAccountViaApi,
+  formatAccountDeleteError,
+  getAccountDeleteConfirmMessage,
+  loadAllAccountsViaApi,
+  normalizeAccountId,
+} from '../utils/cashAccountUtils';
+import {
+  formatCreditDeleteError,
+  getCreditAccountDeleteConfirmMessage,
+  isCreditAccountType,
+  permanentlyDeleteCreditAccountViaApi,
+} from '../utils/creditAccountUtils.jsx';
 
 const AllAccountsView = () => {
   const [accounts, setAccounts] = useState([]);
@@ -11,6 +25,7 @@ const AllAccountsView = () => {
   const [editingAccount, setEditingAccount] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedType, setSelectedType] = useState('all');
+  const [deletingAccountId, setDeletingAccountId] = useState(null);
 
   // Add style injection
   useEffect(() => {
@@ -38,64 +53,48 @@ const AllAccountsView = () => {
     };
   }, []);
 
-  // Fetch all accounts
-  const fetchAccounts = async () => {
-    try {
+  const fetchAccounts = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) {
       setLoading(true);
       setError(null);
-      
-      console.log('📊 Fetching accounts...');
-      
-      // First get current user
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        console.error('❌ No user logged in');
-        setError('Please log in to view accounts');
-        setLoading(false);
-        return;
-      }
-      
-      const userId = userResult.data.id;
-      console.log('👤 User ID:', userId);
-      
-      // Get accounts summary
-      const result = await window.electronAPI.getAccountsSummary(userId);
-      console.log('📊 Accounts result:', result);
-      
+    }
+
+    try {
+      const result = await loadAllAccountsViaApi();
       if (result.success) {
-        const allAccounts = result.data || [];
-        console.log('✅ Loaded accounts:', allAccounts.length);
-        console.table(allAccounts.map(a => ({ id: a.id, name: a.name, type: a.type, balance: a.balance })));
-        setAccounts(allAccounts);
-      } else {
-        console.error('❌ Failed to load accounts:', result.error);
+        setAccounts(result.data || []);
+        if (!quiet) setError(null);
+      } else if (!quiet) {
         setError(result.error || 'Failed to load accounts');
       }
     } catch (err) {
       console.error('❌ Error fetching accounts:', err);
-      setError('Failed to load accounts: ' + err.message);
+      if (!quiet) setError('Failed to load accounts: ' + err.message);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
-  };
+  }, []);
+
+  const fetchAccountsRef = useRef(fetchAccounts);
+  fetchAccountsRef.current = fetchAccounts;
 
   useEffect(() => {
     fetchAccounts();
-    
-    // Listen for account changes
+
     const handleAccountsChanged = () => {
-      console.log('🔄 Accounts changed, refreshing...');
-      fetchAccounts();
+      fetchAccountsRef.current({ quiet: true });
     };
-    
+
     window.addEventListener('accounts-changed', handleAccountsChanged);
     window.addEventListener('accounts-updated', handleAccountsChanged);
-    
+    const unsubIpc = window.electronAPI?.onAccountsUpdated?.(handleAccountsChanged);
+
     return () => {
       window.removeEventListener('accounts-changed', handleAccountsChanged);
       window.removeEventListener('accounts-updated', handleAccountsChanged);
+      if (typeof unsubIpc === 'function') unsubIpc();
     };
-  }, []);
+  }, [fetchAccounts]);
 
   // Handle update account
   const handleUpdateAccount = async (accountId, updates) => {
@@ -116,7 +115,7 @@ const AllAccountsView = () => {
         console.log('✅ Account updated successfully');
         await fetchAccounts();
         setEditingAccount(null);
-        window.dispatchEvent(new Event('accounts-updated'));
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
         alert('✅ Account updated successfully!');
       } else {
         throw new Error(result.error);
@@ -127,36 +126,52 @@ const AllAccountsView = () => {
     }
   };
 
-  // Handle delete account
-  const handleDeleteAccount = async (accountId) => {
-    if (!confirm('Are you sure you want to delete this account? This will also delete all associated transactions.')) {
+  const resolveAccount = useCallback(
+    (accountOrId) => {
+      if (accountOrId && typeof accountOrId === 'object') return accountOrId;
+      const id = normalizeAccountId(accountOrId);
+      return accounts.find((a) => normalizeAccountId(a.id) === id) || null;
+    },
+    [accounts]
+  );
+
+  /** Cash/loan soft-delete; credit cards permanent delete (manual + Plaid). */
+  const handleDeleteAccount = async (accountOrId) => {
+    const account = resolveAccount(accountOrId);
+    const id = normalizeAccountId(account?.id ?? accountOrId);
+    if (!id || deletingAccountId) return;
+
+    const isCredit = isCreditAccountType(account);
+    const confirmMessage = isCredit
+      ? getCreditAccountDeleteConfirmMessage(account)
+      : getAccountDeleteConfirmMessage(account);
+    if (!window.confirm(confirmMessage)) {
       return;
     }
 
+    setDeletingAccountId(id);
     try {
-      console.log('🗑️ Deleting account:', accountId);
-      
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return;
-      }
-      
-      const userId = userResult.data.id;
-      
-      const result = await window.electronAPI.deleteAccount(accountId, userId);
-      
-      if (result.success) {
-        console.log('✅ Account deleted successfully');
-        await fetchAccounts();
-        window.dispatchEvent(new Event('accounts-changed'));
-        alert('✅ Account deleted successfully');
+      const result = isCredit
+        ? await permanentlyDeleteCreditAccountViaApi(account || id)
+        : await deleteAccountViaApi(account || id);
+
+      if (result?.success) {
+        setAccounts((prev) => prev.filter((a) => normalizeAccountId(a.id) !== id));
+        setShowEditModal(false);
+        setEditingAccount(null);
+        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        await fetchAccounts({ quiet: true });
+        showAppToast(isCredit ? 'Credit card deleted' : 'Account removed', 'success');
       } else {
-        throw new Error(result.error);
+        const err = isCredit ? formatCreditDeleteError(result) : formatAccountDeleteError(result);
+        alert('Failed to delete account: ' + err);
+        await fetchAccounts({ quiet: true });
       }
     } catch (error) {
       console.error('❌ Error deleting account:', error);
-      alert('Failed to delete account: ' + error.message);
+      alert('Failed to delete account: ' + (error.message || 'Delete failed'));
+    } finally {
+      setDeletingAccountId(null);
     }
   };
 
@@ -479,10 +494,14 @@ const AllAccountsView = () => {
                         Edit
                       </button>
                       <button
-                        onClick={() => handleDeleteAccount(account.id)}
+                        type="button"
+                        onClick={() => handleDeleteAccount(account)}
                         style={styles.deleteButton}
+                        disabled={deletingAccountId === normalizeAccountId(account.id)}
                       >
-                        Delete
+                        {deletingAccountId === normalizeAccountId(account.id)
+                          ? 'Removing…'
+                          : 'Delete'}
                       </button>
                     </div>
                   </td>
@@ -505,6 +524,12 @@ const AllAccountsView = () => {
         onSave={handleSaveEdit}
         onDelete={handleDeleteAccount}
         account={editingAccount}
+        allowDeleteWhenPlaidLinked={isCreditAccountType(editingAccount)}
+        deleteButtonLabel={
+          isCreditAccountType(editingAccount)
+            ? 'Delete Credit Card Account'
+            : 'Delete Account'
+        }
       />
     </div>
   );

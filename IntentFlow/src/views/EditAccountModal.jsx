@@ -2,7 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { isPlaidLinkedAccount, hasPlaidAccountBridge } from '../utils/plaidAccountUtils';
 import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
 
-const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = 'edit', onNavigate }) => {
+const EditAccountModal = ({
+  isOpen,
+  onClose,
+  onSave,
+  onDelete,
+  account,
+  mode = 'edit',
+  onNavigate,
+  allowDeleteWhenPlaidLinked = false,
+  deleteButtonLabel = 'Delete Account',
+}) => {
   const [formData, setFormData] = useState({
     name: '',
     type: '',
@@ -831,9 +841,9 @@ const EditAccountModal = ({ isOpen, onClose, onSave, onDelete, account, mode = '
             <button type="submit" style={styles.saveButton}>
               {isNewCard ? 'Create Account' : 'Save Changes'}
             </button>
-            {!isNewCard && onDelete && !plaidLinked && (
+            {!isNewCard && onDelete && (!plaidLinked || allowDeleteWhenPlaidLinked) && (
               <button type="button" onClick={handleDelete} style={styles.deleteButton}>
-                Delete Account
+                {deleteButtonLabel}
               </button>
             )}
             <button type="button" onClick={onClose} style={styles.cancelButton}>

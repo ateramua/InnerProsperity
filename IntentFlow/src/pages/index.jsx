@@ -51,15 +51,15 @@ export default function HomePage() {
     }
   );
 
-  // Function to load accounts
-  const loadAccounts = async () => {
+  // Function to load accounts (silent=true skips full-page loading overlay)
+  const loadAccounts = async (silent = false) => {
     const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
     if (!electronAPI?.getCurrentUser || !electronAPI?.getAccountsSummary) {
       setAccounts([]);
       return;
     }
 
-    setLoadingAccounts(true);
+    if (!silent) setLoadingAccounts(true);
     try {
       const userResult = await electronAPI.getCurrentUser();
       if (userResult?.success && userResult?.data) {
@@ -72,7 +72,7 @@ export default function HomePage() {
     } catch (error) {
       console.error('Error loading accounts:', error);
     } finally {
-      setLoadingAccounts(false);
+      if (!silent) setLoadingAccounts(false);
     }
   };
 
@@ -90,10 +90,10 @@ export default function HomePage() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // ✅ Listen for "accounts-updated" events and refresh accounts
+  // Refresh account list without unmounting the main view (e.g. after delete on Cash Accounts)
   useEffect(() => {
     const handleAccountsUpdated = () => {
-      loadAccounts();
+      loadAccounts(true);
     };
 
     window.addEventListener('accounts-updated', handleAccountsUpdated);

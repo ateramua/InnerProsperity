@@ -1,6 +1,12 @@
 // src/main/index.cjs
 require('dotenv').config();
 const { loadPlaidEnvFromUserData } = require('../services/plaid/loadPlaidEnv.cjs');
+const {
+  PLAID_OAUTH_SCHEME,
+  isPlaidOAuthDeepLink,
+  findPlaidOAuthArgv,
+} = require('../services/plaid/plaidOAuth.cjs');
+const plaidRelayClient = require('../services/plaid/plaidRelayClient.cjs') || {};
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -341,6 +347,7 @@ const splashModule = requireModule('./splash.cjs') || {
 const { createSplashWindow, closeSplashWindow } = splashModule;
 
 const AccountService = requireModule('../services/accounts/accountService.cjs');
+const accountDeleteService = requireModule('../services/accounts/accountDeleteService.cjs') || {};
 let accountService = null;
 if (AccountService) {
     accountService = new AccountService(getDatabase);
@@ -755,6 +762,9 @@ const {
     createPlaidClient,
     sanitizeLinkedItemRow,
     buildLinkTokenCreatePayload,
+    formatPlaidApiError,
+    redactPlaidLogMessage,
+    getLinkTokenProducts,
 } = requireModule('../services/plaid/plaidService.cjs') || {};
 const plaidSync = requireModule('../services/plaid/plaidSync.cjs') || {};
 const plaidAccountMatch = requireModule('../services/plaid/plaidAccountMatch.cjs') || {};
@@ -778,6 +788,59 @@ let backgroundSyncInterval = null;
 let focusSyncTimeout = null;
 let lastFocusPlaidSyncAt = 0;
 const FOCUS_SYNC_COOLDOWN_MS = 60_000;
+let pendingPlaidOAuthUrl = null;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+    app.quit();
+}
+
+function logPlaidError(context, error) {
+    const message = formatPlaidApiError ? formatPlaidApiError(error) : error?.message || String(error);
+    const safe = redactPlaidLogMessage ? redactPlaidLogMessage(message) : message;
+    console.error(`[Plaid] ${context}:`, safe);
+    return safe;
+}
+
+function sendPlaidOAuthRedirectToRenderer(url) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('plaid-oauth-redirect', { url });
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+    } else {
+        pendingPlaidOAuthUrl = url;
+    }
+}
+
+function handlePlaidOAuthDeepLink(url) {
+    if (!isPlaidOAuthDeepLink(url)) return;
+    sendPlaidOAuthRedirectToRenderer(url);
+}
+
+if (gotSingleInstanceLock) {
+    app.on('second-instance', (_event, argv) => {
+        const url = findPlaidOAuthArgv(argv);
+        if (url) handlePlaidOAuthDeepLink(url);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.focus();
+        }
+    });
+
+    app.on('open-url', (event, url) => {
+        event.preventDefault();
+        handlePlaidOAuthDeepLink(url);
+    });
+}
+
+async function registerPlaidItemsWithRelayForUser(userId) {
+    if (!plaidRelayClient.registerAllPlaidItemsWithRelay) return;
+    const db = await getDatabase();
+    const rows = await db.all(`SELECT id, user_id FROM plaid_items WHERE user_id = ?`, [userId]);
+    await plaidRelayClient.registerAllPlaidItemsWithRelay(() =>
+        rows.map((row) => ({ itemId: row.id, userId: row.user_id }))
+    );
+}
 
 // ==================== DATABASE PATH HELPER (UPDATED) ====================
 // This function now delegates to the centralized database configuration
@@ -1095,6 +1158,8 @@ async function runPlaidBackgroundSync(source = 'background') {
 
     console.log(`🔄 Running Plaid sync (${source})...`);
     try {
+        await registerPlaidItemsWithRelayForUser(currentUser.id);
+
         if (plaidSync.pollPlaidWebhookRelay && process.env.PLAID_WEBHOOK_RELAY_URL) {
             const relayResult = await plaidSync.pollPlaidWebhookRelay(
                 currentUser.id,
@@ -1111,6 +1176,9 @@ async function runPlaidBackgroundSync(source = 'background') {
             if (relayResult?.synced?.length) {
                 console.log(`📡 Webhook relay triggered sync for ${relayResult.synced.length} item(s)`);
             }
+            if (relayResult?.error) {
+                logPlaidError(`webhook relay poll (${source})`, new Error(relayResult.error));
+            }
         }
 
         const items = await getLinkedItemsSafe();
@@ -1124,12 +1192,12 @@ async function runPlaidBackgroundSync(source = 'background') {
                     );
                 }
             } catch (err) {
-                console.error(`❌ Plaid sync (${source}) failed for ${item.id}:`, err.message);
+                logPlaidError(`sync item ${item.id} (${source})`, err);
             }
         }
         notifyAccountsUpdated(`plaid-${source}`);
     } catch (error) {
-        console.error(`Plaid sync (${source}) error:`, error);
+        logPlaidError(`sync (${source})`, error);
     }
 }
 
@@ -1148,7 +1216,7 @@ async function getLinkedItemsSafe() {
     if (!currentUser) return [];
     const db = await getDatabase();
     const rows = await db.all(
-        `SELECT id, user_id, institution_id, institution_name, created_at, updated_at, last_sync, status, last_error
+        `SELECT id, user_id, institution_id, institution_name, created_at, updated_at, last_sync, status, last_error, consent_expires_at
          FROM plaid_items WHERE user_id = ? ORDER BY created_at DESC`,
         [currentUser.id]
     );
@@ -1208,7 +1276,21 @@ async function startExtensionBridge() {
 }
 
 // ==================== APP INITIALIZATION ====================
+if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
+    if (process.defaultApp) {
+        if (process.argv.length >= 2) {
+            app.setAsDefaultProtocolClient(PLAID_OAUTH_SCHEME, process.execPath, [
+                path.resolve(process.argv[1]),
+            ]);
+        }
+    } else {
+        app.setAsDefaultProtocolClient(PLAID_OAUTH_SCHEME);
+    }
+
+    const launchOAuthUrl = findPlaidOAuthArgv(process.argv);
+    if (launchOAuthUrl) pendingPlaidOAuthUrl = launchOAuthUrl;
+
     const plaidEnvLoad = loadPlaidEnvFromUserData(() => app.getPath('userData'));
     if (plaidEnvLoad.loaded) {
         console.log(`✅ Plaid env loaded from userData (${plaidEnvLoad.keysSet} keys)`);
@@ -1253,6 +1335,18 @@ app.whenReady().then(async () => {
 
         await createWindow();
 
+        if (pendingPlaidOAuthUrl) {
+            handlePlaidOAuthDeepLink(pendingPlaidOAuthUrl);
+            pendingPlaidOAuthUrl = null;
+        }
+
+        const currentUser = userService.getCurrentUser();
+        if (currentUser?.id) {
+            registerPlaidItemsWithRelayForUser(currentUser.id).catch((err) => {
+                logPlaidError('relay registration on startup', err);
+            });
+        }
+
         backgroundSyncInterval = setInterval(() => runPlaidBackgroundSync('background'), 3600000);
     } catch (error) {
         console.error('❌ Failed to initialize database:', error);
@@ -1263,6 +1357,7 @@ app.whenReady().then(async () => {
         app.quit();
     }
 });
+}
 
 // ==================== WINDOW CREATION ====================
 function createWindow() {
@@ -1593,7 +1688,7 @@ function setupIpcHandlers() {
         'optimizeProsperityMap', 'categoryGroups:getAll', 'categoryGroups:getWithCategories',
         'categoryGroups:create', 'categoryGroups:update', 'categoryGroups:delete',
         'accounts:getAll', 'accounts:getById', 'accounts:create', 'accounts:update',
-        'accounts:delete', 'accounts:getBalances', 'accounts:getSummary', 'accounts:getTotals',
+        'accounts:delete', 'accounts:permanentDeleteCredit', 'accounts:permanentDeleteLoan', 'accounts:getBalances', 'accounts:getSummary', 'accounts:getTotals',
         'accounts:startReconciliation', 'accounts:getCreditCardDetails', 'getTransactions',
         'addTransaction', 'updateTransaction', 'deleteTransaction', 'getAccountTransactions',
         'toggleTransactionCleared', 'reconcileAccount', 'get-accounts', 'getAccounts',
@@ -1785,6 +1880,11 @@ function setupIpcHandlers() {
     ipcMain.handle('login-user', async (event, { username, password }) => {
         try {
             const user = await userService.login(username, password);
+            if (user?.id) {
+                registerPlaidItemsWithRelayForUser(user.id).catch((err) => {
+                    logPlaidError('relay registration on login', err);
+                });
+            }
             return { success: true, data: user };
         } catch (error) {
             return { success: false, error: error.message };
@@ -2800,23 +2900,106 @@ function setupIpcHandlers() {
             if (ownerId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
             if (!ownerId) return { success: false, error: 'No user logged in' };
             const db = await getDatabase();
-            const account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [id, ownerId]);
+            const account = await db.get(
+                'SELECT * FROM accounts WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?',
+                [id, ownerId]
+            );
+            if (!account) {
+                return { success: false, error: 'Account not found or already deleted' };
+            }
+
+            if (String(account.type || '').toLowerCase() === 'credit') {
+                if (!accountDeleteService.permanentlyDeleteCreditAccount) {
+                    return { success: false, error: 'Account delete service not loaded' };
+                }
+                const result = await accountDeleteService.permanentlyDeleteCreditAccount(
+                    db,
+                    id,
+                    ownerId
+                );
+                if (result.success) {
+                    notifyAccountsUpdated('credit-permanent-delete');
+                    notifyBudgetStateChanged('category:deleted', { source: 'credit-account-delete' });
+                }
+                return result;
+            }
+
+            if (String(account.type || '').toLowerCase() === 'loan') {
+                if (!accountDeleteService.permanentlyDeleteLoanAccount) {
+                    return { success: false, error: 'Account delete service not loaded' };
+                }
+                const result = await accountDeleteService.permanentlyDeleteLoanAccount(
+                    db,
+                    id,
+                    ownerId
+                );
+                if (result.success) {
+                    notifyAccountsUpdated('loan-permanent-delete');
+                    notifyBudgetStateChanged('category:deleted', { source: 'loan-account-delete' });
+                }
+                return result;
+            }
+
             const deleted = await accountService.deleteAccount(id, ownerId);
             if (deleted) {
-                if (account?.type === 'credit' && account?.paired_category_id) {
-                    await db.run(
-                        'UPDATE transactions SET category_id = NULL WHERE category_id = ? AND user_id = ?',
-                        [account.paired_category_id, ownerId]
-                    );
-                    await db.run(
-                        'DELETE FROM categories WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ? AND is_credit_card_payment_category = 1',
-                        [account.paired_category_id, ownerId]
-                    );
-                }
                 notifyAccountsUpdated('manual');
                 return { success: true };
             }
             return { success: false, error: 'Account not found or already deleted' };
+        } catch (error) {
+            return { success: false, error: error.message, code: error.code };
+        }
+    });
+
+    ipcMain.handle('accounts:permanentDeleteCredit', async (event, id, userId) => {
+        try {
+            if (!id) return { success: false, error: 'Account id required' };
+            const ownerId = resolveBudgetOwnerId(null, userId);
+            if (ownerId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!ownerId) return { success: false, error: 'No user logged in' };
+            if (!accountDeleteService.permanentlyDeleteCreditAccount) {
+                return { success: false, error: 'Account delete service not loaded' };
+            }
+            const db = await getDatabase();
+            const result = await accountDeleteService.permanentlyDeleteCreditAccount(
+                db,
+                id,
+                ownerId
+            );
+            if (result.success) {
+                notifyAccountsUpdated('credit-permanent-delete');
+                notifyBudgetStateChanged('category:deleted', { source: 'credit-account-delete' });
+            }
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message, code: error.code };
+        }
+    });
+
+    ipcMain.handle('accounts:permanentDeleteLoan', async (event, id, userId) => {
+        try {
+            if (!id) return { success: false, error: 'Account id required' };
+            const ownerId = resolveBudgetOwnerId(null, userId);
+            if (ownerId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!ownerId) return { success: false, error: 'No user logged in' };
+            if (!accountDeleteService.permanentlyDeleteLoanAccount) {
+                return { success: false, error: 'Account delete service not loaded' };
+            }
+            const db = await getDatabase();
+            const result = await accountDeleteService.permanentlyDeleteLoanAccount(
+                db,
+                id,
+                ownerId
+            );
+            if (result.success) {
+                notifyAccountsUpdated('loan-permanent-delete');
+                notifyBudgetStateChanged('category:deleted', { source: 'loan-account-delete' });
+            }
+            return result;
         } catch (error) {
             return { success: false, error: error.message, code: error.code };
         }
@@ -2839,14 +3022,22 @@ function setupIpcHandlers() {
                 return { success: true, data: [] };
             }
             let result;
-            try { result = await accountService.getAccountsSummary(effectiveUserId); } catch (serviceError) { result = []; }
-            if (!result || result.length === 0) {
+            let summaryFailed = false;
+            try {
+                result = await accountService.getAccountsSummary(effectiveUserId);
+            } catch (serviceError) {
+                console.error('accounts:getSummary service error:', serviceError);
+                summaryFailed = true;
+                result = [];
+            }
+            // Only use DB fallback when the service threw — not when the user truly has zero accounts
+            if (summaryFailed) {
                 const db = await getDatabase();
                 const directAccounts = await db.all(
                     'SELECT * FROM accounts WHERE user_id = ? AND IFNULL(is_active, 1) = 1',
                     [effectiveUserId]
                 );
-                result = directAccounts.map(account => ({ id: account.id, name: account.name, type: account.type, balance: account.balance || 0, institution: account.institution || '', account_type_category: account.account_type_category || 'budget', cleared_balance: account.cleared_balance || account.balance || 0, working_balance: account.working_balance || account.balance || 0, currency: account.currency || 'USD', is_active: account.is_active !== 0 }));
+                result = directAccounts.map(account => ({ id: account.id, name: account.name, type: account.type, balance: account.balance || 0, institution: account.institution || '', account_type_category: account.account_type_category || 'budget', cleared_balance: account.cleared_balance || account.balance || 0, working_balance: account.working_balance || account.balance || 0, currency: account.currency || 'USD', is_active: account.is_active !== 0, source: account.source || 'manual' }));
             }
             return { success: true, data: result || [] };
         } catch (error) {
@@ -2884,7 +3075,17 @@ function setupIpcHandlers() {
     // ==================== PLAID HANDLERS ====================
     ipcMain.handle('plaid-get-config-status', async () => {
         const cfg = getPlaidConfig ? getPlaidConfig() : { configured: false, env: process.env.PLAID_ENV || 'sandbox' };
-        return { success: true, data: cfg };
+        return {
+            success: true,
+            data: {
+                ...cfg,
+                linkProducts: getLinkTokenProducts ? getLinkTokenProducts() : ['transactions'],
+                redirectUriConfigured: Boolean(process.env.PLAID_REDIRECT_URI),
+                redirectUri: process.env.PLAID_REDIRECT_URI || null,
+                webhookRelayConfigured: Boolean(process.env.PLAID_WEBHOOK_RELAY_URL),
+                oauthDeepLinkScheme: `${PLAID_OAUTH_SCHEME}://`,
+            },
+        };
     });
 
     ipcMain.handle('plaid-create-link-token', async () => {
@@ -2897,14 +3098,15 @@ function setupIpcHandlers() {
                 : {
                       user: { client_user_id: currentUser.id.toString() },
                       client_name: 'IntentFlow',
-                      products: ['transactions', 'liabilities'],
+                      products: ['transactions'],
                       country_codes: ['US'],
                       language: 'en',
                   };
             const response = await plaidClient.linkTokenCreate(payload);
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
-            return { success: false, error: error.message };
+            const message = logPlaidError('create link token', error);
+            return { success: false, error: message };
         }
     });
 
@@ -2920,7 +3122,7 @@ function setupIpcHandlers() {
                 : {
                       user: { client_user_id: currentUser.id.toString() },
                       client_name: 'IntentFlow',
-                      products: ['transactions', 'liabilities'],
+                      products: ['transactions'],
                       country_codes: ['US'],
                       language: 'en',
                       access_token: accessToken,
@@ -2928,7 +3130,8 @@ function setupIpcHandlers() {
             const response = await plaidClient.linkTokenCreate(payload);
             return { success: true, link_token: response.data.link_token };
         } catch (error) {
-            return { success: false, error: error.message };
+            const message = logPlaidError('create update link token', error);
+            return { success: false, error: message };
         }
     });
 
@@ -2967,7 +3170,17 @@ function setupIpcHandlers() {
                 );
             }
             const accountSync = await syncPlaidAccounts(itemId);
+            if (!accountSync?.success) {
+                const message =
+                    accountSync?.error === 'ITEM_LOGIN_REQUIRED'
+                        ? 'Bank connected, but login is required before accounts can sync. Use Reconnect on Linked Banks.'
+                        : accountSync?.error || 'Connected to Plaid, but account sync failed.';
+                return { success: false, error: message, item_id: itemId, mergeOffers: [] };
+            }
             const txResult = await syncTransactionsForItem(itemId);
+            if (plaidRelayClient.registerPlaidItemWithRelay) {
+                await plaidRelayClient.registerPlaidItemWithRelay(itemId, currentUser.id);
+            }
             notifyAccountsUpdated('plaid-connect');
             return {
                 success: true,
@@ -2976,7 +3189,8 @@ function setupIpcHandlers() {
                 mergeOffers: accountSync?.mergeOffers || [],
             };
         } catch (error) {
-            return { success: false, error: error.message };
+            const message = logPlaidError('exchange public token', error);
+            return { success: false, error: message };
         }
     });
 
@@ -3208,6 +3422,9 @@ function setupIpcHandlers() {
                 getPlaidSyncDeps(),
                 options
             );
+            if (plaidRelayClient.unregisterPlaidItemFromRelay) {
+                await plaidRelayClient.unregisterPlaidItemFromRelay(itemId);
+            }
             notifyAccountsUpdated('plaid-remove');
             return result;
         } catch (error) {
@@ -4072,12 +4289,19 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('delete-account', async (event, accountId) => {
+    ipcMain.handle('delete-account', async (event, accountId, userId) => {
         try {
-            const result = await accountService.deleteAccount(accountId);
-            return { success: true, data: result };
+            const ownerId = resolveBudgetOwnerId(null, userId);
+            if (ownerId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
+            if (!ownerId) return { success: false, error: 'No user logged in' };
+            const deleted = await accountService.deleteAccount(accountId, ownerId);
+            if (deleted) {
+                notifyAccountsUpdated('manual');
+                return { success: true, data: { deleted: true } };
+            }
+            return { success: false, error: 'Account not found or already deleted' };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, code: error.code };
         }
     });
 

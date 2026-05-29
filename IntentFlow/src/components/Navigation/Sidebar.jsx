@@ -8,6 +8,61 @@ import {
     maskFromAccountNumber,
 } from '../../utils/plaidDuplicateCheck';
 
+function sidebarHeaderStyle(isCollapsed) {
+    return {
+        paddingTop: '24px',
+        paddingBottom: '24px',
+        paddingLeft: isCollapsed ? '12px' : '20px',
+        paddingRight: isCollapsed ? '12px' : '20px',
+        borderBottom: `2px solid ${APP_FG}`,
+    };
+}
+
+function sidebarNavItemStyle(isCollapsed, isActive) {
+    return {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: isCollapsed ? 'center' : 'flex-start',
+        paddingTop: '12px',
+        paddingBottom: '12px',
+        paddingLeft: isCollapsed ? 0 : '20px',
+        paddingRight: isCollapsed ? 0 : '20px',
+        cursor: 'pointer',
+        transition: 'background 0.2s',
+        background: isActive ? APP_FG : undefined,
+    };
+}
+
+function sidebarFooterItemStyle(isCollapsed) {
+    return {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: isCollapsed ? 'center' : 'flex-start',
+        paddingTop: isCollapsed ? '12px' : '8px',
+        paddingBottom: isCollapsed ? '12px' : '8px',
+        paddingLeft: 0,
+        paddingRight: 0,
+        cursor: 'pointer',
+        color: 'rgba(255,255,255,0.85)',
+    };
+}
+
+function sidebarFooterLogoutStyle(isCollapsed) {
+    return {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: isCollapsed ? 'center' : 'flex-start',
+        paddingTop: '12px',
+        paddingBottom: isCollapsed ? '12px' : '8px',
+        paddingLeft: 0,
+        paddingRight: 0,
+        cursor: 'pointer',
+        color: 'rgba(255,255,255,0.85)',
+        borderTop: '1px solid #374151',
+        marginTop: '8px',
+    };
+}
+
 const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse }) => {
     const [expandedSection, setExpandedSection] = useState(null);
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
@@ -34,7 +89,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
     const [sidebarAccounts, setSidebarAccounts] = useState({
         cash: [],
         credit: [],
-        loans: [],
     });
     const [plaidNav, setPlaidNav] = useState({ enabled: true, needsReconnect: false });
 
@@ -50,7 +104,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
             setSidebarAccounts({
                 cash: all.filter((a) => a.type === 'checking' || a.type === 'savings'),
                 credit: all.filter((a) => a.type === 'credit'),
-                loans: all.filter((a) => a.type === 'loan'),
             });
         } catch (err) {
             console.error('Sidebar: failed to load accounts', err);
@@ -386,21 +439,7 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                     description: 'Add new loan',
                     action: 'add',
                     isAddButton: true
-                },
-                { type: 'divider' },
-                ...(accounts.loans && accounts.loans.length > 0
-                    ? accounts.loans.map(account => ({
-                        id: `account-${account.id}`,
-                        label: account.name,
-                        icon: '🏦',
-                        balance: account.balance,
-                        isAccount: true,
-                        accountId: account.id,
-                        type: 'account',
-                        lender: account.lender,
-                        interestRate: account.interestRate
-                    }))
-                    : [])
+                }
             ]
         }
     ];
@@ -535,13 +574,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                         No credit cards yet. Click "Add Credit Card" to get started.
                     </div>
                 )}
-
-                {/* Show empty state for loans if no accounts */}
-                {item.id === 'loans' && !hasAccounts && (
-                    <div style={styles.emptyState}>
-                        No loans yet. Click "Add Loan" to get started.
-                    </div>
-                )}
             </div>
         );
     };
@@ -550,7 +582,7 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
         <>
             <div style={{ ...styles.sidebar, width: isCollapsed ? '72px' : '280px' }}>
                 {/* Header */}
-                <div style={{ ...styles.header, ...(isCollapsed ? { padding: '24px 12px' } : {}) }}>
+                <div style={sidebarHeaderStyle(isCollapsed)}>
                     <button
                         type="button"
                         onClick={onToggleCollapse}
@@ -571,12 +603,10 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                         <div key={item.id}>
                             {/* Main Navigation Item */}
                             <div
-                                style={{
-                                    ...styles.navItem,
-                                    ...(isCollapsed ? styles.collapsedNavItem : {}),
-                                    ...(currentView === item.id ? styles.activeNavItem : {}),
-                                    ...(item.hasSubItems ? styles.navItemWithSubItems : {})
-                                }}
+                                style={sidebarNavItemStyle(
+                                    isCollapsed,
+                                    currentView === item.id
+                                )}
                                 onClick={() => {
                                     if ((item.hasSubItems || (item.accounts && item.accounts.length > 0)) && !isCollapsed) {
                                         toggleSection(item.id);
@@ -622,15 +652,21 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                             <span>Bank connection needs reconnect</span>
                         </div>
                     )}
-                    <div style={{ ...styles.footerItem, ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={() => router.push('/settings')}>
+                    <div
+                        style={sidebarFooterItemStyle(isCollapsed)}
+                        onClick={() => router.push('/settings')}
+                    >
                         <span style={styles.footerIcon}>⚙️</span>
                         <span style={isCollapsed ? styles.hiddenLabel : undefined}>Settings</span>
                     </div>
-                    <div style={{ ...styles.footerItem, ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={() => router.push('/reports')}>
+                    <div
+                        style={sidebarFooterItemStyle(isCollapsed)}
+                        onClick={() => router.push('/reports')}
+                    >
                         <span style={styles.footerIcon}>📊</span>
                         <span style={isCollapsed ? styles.hiddenLabel : undefined}>Reports</span>
                     </div>
-                    <div style={{ ...styles.footerItem, borderTop: '1px solid #374151', marginTop: '8px', paddingTop: '12px', ...(isCollapsed ? styles.collapsedNavItem : {}) }} onClick={handleLogout}>
+                    <div style={sidebarFooterLogoutStyle(isCollapsed)} onClick={handleLogout}>
                         <span style={styles.footerIcon}>🚪</span>
                         <span style={{ color: '#F87171', ...(isCollapsed ? styles.hiddenLabel : {}) }}>Logout</span>
                     </div>
@@ -833,8 +869,15 @@ const styles = {
         transition: 'width 0.25s ease'
     },
     header: {
-        padding: '24px 20px',
-        borderBottom: `2px solid ${APP_FG}`
+        paddingTop: '24px',
+        paddingBottom: '24px',
+        paddingLeft: '20px',
+        paddingRight: '20px',
+        borderBottom: `2px solid ${APP_FG}`,
+    },
+    headerCollapsed: {
+        paddingLeft: '12px',
+        paddingRight: '12px',
     },
     title: {
         margin: 0,
@@ -850,21 +893,28 @@ const styles = {
     nav: {
         flex: 1,
         overflowY: 'auto',
-        padding: '20px 0'
+        paddingTop: '20px',
+        paddingBottom: '20px',
+        paddingLeft: 0,
+        paddingRight: 0,
     },
     navItem: {
         display: 'flex',
         alignItems: 'center',
-        padding: '12px 20px',
+        paddingTop: '12px',
+        paddingBottom: '12px',
+        paddingLeft: '20px',
+        paddingRight: '20px',
         cursor: 'pointer',
         transition: 'background 0.2s',
         ':hover': {
-            background: '#374151'
-        }
+            background: '#374151',
+        },
     },
     collapsedNavItem: {
         justifyContent: 'center',
-        padding: '12px 0'
+        paddingLeft: 0,
+        paddingRight: 0,
     },
     navItemWithSubItems: {
         borderBottom: '1px solid transparent',
@@ -900,12 +950,18 @@ const styles = {
     },
     subItemsContainer: {
         background: APP_FG,
-        padding: '4px 0'
+        paddingTop: '4px',
+        paddingBottom: '4px',
+        paddingLeft: 0,
+        paddingRight: 0,
     },
     subItem: {
         display: 'flex',
         alignItems: 'center',
-        padding: '10px 20px 10px 52px',
+        paddingTop: '10px',
+        paddingBottom: '10px',
+        paddingLeft: '52px',
+        paddingRight: '20px',
         cursor: 'pointer',
         transition: 'background 0.2s',
         position: 'relative',
@@ -947,8 +1003,11 @@ const styles = {
         color: 'rgba(255,255,255,0.85)',
         marginRight: '4px',
         background: 'rgba(0,0,0,0.2)',
-        padding: '2px 4px',
-        borderRadius: '4px'
+        paddingTop: '2px',
+        paddingBottom: '2px',
+        paddingLeft: '4px',
+        paddingRight: '4px',
+        borderRadius: '4px',
     },
     subItemTooltip: {
         fontSize: '0.8rem',
@@ -962,20 +1021,29 @@ const styles = {
         margin: '8px 20px 8px 52px'
     },
     emptyState: {
-        padding: '10px 20px 10px 52px',
+        paddingTop: '10px',
+        paddingBottom: '10px',
+        paddingLeft: '52px',
+        paddingRight: '20px',
         color: '#6B7280',
         fontSize: '0.85rem',
-        fontStyle: 'italic'
+        fontStyle: 'italic',
     },
     footer: {
-        padding: '20px',
-        borderTop: `2px solid ${APP_FG}`
+        paddingTop: '20px',
+        paddingBottom: '20px',
+        paddingLeft: '20px',
+        paddingRight: '20px',
+        borderTop: `2px solid ${APP_FG}`,
     },
     plaidHealthBanner: {
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
-        padding: '8px 10px',
+        paddingTop: '8px',
+        paddingBottom: '8px',
+        paddingLeft: '10px',
+        paddingRight: '10px',
         marginBottom: '10px',
         background: 'rgba(180, 83, 9, 0.25)',
         border: '1px solid rgba(251, 191, 36, 0.45)',
@@ -987,12 +1055,39 @@ const styles = {
     footerItem: {
         display: 'flex',
         alignItems: 'center',
-        padding: '8px 0',
+        paddingTop: '8px',
+        paddingBottom: '8px',
+        paddingLeft: 0,
+        paddingRight: 0,
         cursor: 'pointer',
         color: 'rgba(255,255,255,0.85)',
         ':hover': {
-            color: 'white'
-        }
+            color: 'white',
+        },
+    },
+    footerItemCollapsed: {
+        justifyContent: 'center',
+        paddingTop: '12px',
+        paddingBottom: '12px',
+    },
+    footerLogoutItem: {
+        display: 'flex',
+        alignItems: 'center',
+        paddingTop: '12px',
+        paddingBottom: '8px',
+        paddingLeft: 0,
+        paddingRight: 0,
+        cursor: 'pointer',
+        color: 'rgba(255,255,255,0.85)',
+        borderTop: '1px solid #374151',
+        marginTop: '8px',
+        ':hover': {
+            color: 'white',
+        },
+    },
+    footerLogoutItemCollapsed: {
+        justifyContent: 'center',
+        paddingBottom: '12px',
     },
     collapseToggle: {
         background: 'transparent',
@@ -1028,7 +1123,10 @@ const styles = {
     },
     modalContent: {
         background: APP_FG,
-        padding: '2rem',
+        paddingTop: '2rem',
+        paddingBottom: '2rem',
+        paddingLeft: '2rem',
+        paddingRight: '2rem',
         borderRadius: '1rem',
         width: '90%',
         maxWidth: '550px',

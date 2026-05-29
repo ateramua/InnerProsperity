@@ -1,9 +1,17 @@
-/** True when account balance/metadata is synced from Plaid (not manual-only). */
+/** True when UI should show bank-linked badge / manage connection. */
 export function isPlaidLinkedAccount(account) {
   if (!account) return false;
   if (account.plaid_linked) return true;
-  return account.source === 'plaid' || account.source === 'Plaid';
+  return String(account.source || 'manual').toLowerCase() === 'plaid';
 }
+
+/** True when balance/metadata is actively synced from Plaid. */
+export function isPlaidSyncedAccount(account) {
+  if (!account) return false;
+  return String(account.source || 'manual').toLowerCase() === 'plaid';
+}
+
+export { isCashAccountType, isSavingsType, isCheckingType } from './cashAccountUtils';
 
 /** Account still has a row in plaid_accounts (can unlink without removing the bank item). */
 export function hasPlaidAccountBridge(account) {

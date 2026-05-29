@@ -54,6 +54,34 @@ void (async () => {
     assert.strictEqual(bal, 1200);
   });
 
+  await test('extractPlaidRawBalance prefers current for credit accounts', () => {
+    const { extractPlaidRawBalance, plaidBalanceToAppBalance } = require('../src/services/plaid/plaidService.cjs');
+    const raw = extractPlaidRawBalance({
+      type: 'credit',
+      balances: { current: 1250.45, available: 8750, limit: 10000 },
+    });
+    assert.strictEqual(raw, 1250.45);
+    assert.strictEqual(
+      plaidBalanceToAppBalance({ type: 'credit' }, raw),
+      -1250.45
+    );
+  });
+
+  await test('mapPlaidTypeToInternal credit card subtype', () => {
+    assert.strictEqual(
+      mapPlaidTypeToInternal({ type: 'credit', subtype: 'credit card' }),
+      'credit'
+    );
+    assert.strictEqual(
+      mapPlaidTypeToInternal({ type: 'credit', subtype: 'credit_card' }),
+      'credit'
+    );
+    assert.strictEqual(
+      mapPlaidTypeToInternal({ type: 'other', subtype: 'credit card' }),
+      'credit'
+    );
+  });
+
   await test('mapPlaidTypeToInternal depository checking', () => {
     assert.strictEqual(
       mapPlaidTypeToInternal({ type: 'depository', subtype: 'checking' }),
@@ -86,11 +114,23 @@ void (async () => {
     );
   });
 
-  await test('buildLinkTokenCreatePayload enables account selection', () => {
+  await test('buildLinkTokenCreatePayload uses transactions and account filters', () => {
+    const prev = process.env.PLAID_LINK_PRODUCTS;
+    process.env.PLAID_LINK_PRODUCTS = 'transactions';
     const payload = buildLinkTokenCreatePayload('user-1');
-    assert.strictEqual(payload.account_selection?.enabled, true);
+    assert.deepStrictEqual(payload.products, ['transactions']);
     assert.ok(payload.account_filters?.depository);
-    assert.ok(payload.products.includes('liabilities'));
+    assert.ok(payload.account_filters?.credit);
+    assert.strictEqual(payload.account_filters?.loan, undefined);
+    assert.strictEqual(payload.account_selection, undefined);
+    if (prev === undefined) delete process.env.PLAID_LINK_PRODUCTS;
+    else process.env.PLAID_LINK_PRODUCTS = prev;
+  });
+
+  await test('buildAccountFiltersForProducts adds loan filters with liabilities', () => {
+    const { buildAccountFiltersForProducts } = require('../src/services/plaid/plaidService.cjs');
+    const filters = buildAccountFiltersForProducts(['transactions', 'liabilities']);
+    assert.ok(filters.loan);
   });
 
   await test('filterPlaidTransactionUpdates blocks amount on plaid txns', () => {
@@ -171,6 +211,39 @@ void (async () => {
     });
     assert.strictEqual(dto.consent_expires_at, '2026-12-01T00:00:00Z');
     assertNoSecrets(dto);
+  });
+
+  await test('getPlaidConfig treats development env as configured with production base path', () => {
+    const prevEnv = process.env.PLAID_ENV;
+    const prevId = process.env.PLAID_CLIENT_ID;
+    const prevSecret = process.env.PLAID_SECRET;
+    process.env.PLAID_ENV = 'development';
+    process.env.PLAID_CLIENT_ID = 'test';
+    process.env.PLAID_SECRET = 'test';
+    const cfg = getPlaidConfig();
+    assert.strictEqual(cfg.configured, true);
+    assert.strictEqual(cfg.env, 'development');
+    assert.ok(cfg.basePath.includes('production.plaid.com'));
+    if (prevEnv === undefined) delete process.env.PLAID_ENV;
+    else process.env.PLAID_ENV = prevEnv;
+    if (prevId === undefined) delete process.env.PLAID_CLIENT_ID;
+    else process.env.PLAID_CLIENT_ID = prevId;
+    if (prevSecret === undefined) delete process.env.PLAID_SECRET;
+    else process.env.PLAID_SECRET = prevSecret;
+  });
+
+  await test('deepLinkToReceivedRedirectUri maps intentflow query to HTTPS redirect', () => {
+    const {
+      deepLinkToReceivedRedirectUri,
+      isPlaidOAuthDeepLink,
+    } = require('../src/services/plaid/plaidOAuth.cjs');
+    const deep =
+      'intentflow://plaid-oauth?oauth_state_id=abc-123';
+    const base = 'https://intentflow-6c9b.vercel.app/oauth-callback.html';
+    assert.strictEqual(isPlaidOAuthDeepLink(deep), true);
+    const received = deepLinkToReceivedRedirectUri(deep, base);
+    assert.ok(received.includes('oauth_state_id=abc-123'));
+    assert.ok(received.startsWith('https://'));
   });
 
   await test('getPlaidConfig respects PLAID_ENABLED=false', () => {

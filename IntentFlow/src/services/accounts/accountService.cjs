@@ -2,6 +2,18 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const {
+    mapPlaidTypeToInternal,
+    mapInternalAccountTypeCategory,
+} = require('../plaid/plaidService.cjs');
+
+function mapPlaidSubtypeToLoanType(subtype) {
+    const sub = String(subtype || '').toLowerCase().replace(/_/g, ' ');
+    if (sub.includes('auto')) return 'auto';
+    if (sub.includes('student')) return 'student';
+    if (sub.includes('mortgage') || sub.includes('home equity')) return 'mortgage';
+    return 'personal';
+}
 
 class AccountService {
     /**
@@ -155,7 +167,7 @@ class AccountService {
         try {
             const account = await db.get(`
                 SELECT * FROM accounts 
-                WHERE id = ? AND user_id = ?
+                WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?
             `, [id, userId]);
             return account;
         } finally {
@@ -173,12 +185,7 @@ class AccountService {
                 return null;
             }
 
-            const isPlaidLinked =
-                existing.source === 'plaid' ||
-                (await db.get(
-                    'SELECT 1 FROM plaid_accounts WHERE account_id = ? LIMIT 1',
-                    [id]
-                ));
+            const isPlaidLinked = String(existing.source || 'manual').toLowerCase() === 'plaid';
 
             if (isPlaidLinked) {
                 const blocked = [
@@ -278,6 +285,11 @@ class AccountService {
         }
     }
 
+    /**
+     * Soft-delete an account (hide from app). Checking/savings may be Plaid-linked;
+     * we unlink the Plaid bridge locally and keep transactions. Non-cash Plaid accounts
+     * must be removed via Linked Banks.
+     */
     async deleteAccount(id, userId) {
         const db = await this.getDb();
         try {
@@ -285,11 +297,17 @@ class AccountService {
             if (!existing) {
                 return false;
             }
-            const plaidLink = await db.get(
-                'SELECT 1 FROM plaid_accounts WHERE account_id = ? LIMIT 1',
-                [id]
-            );
-            if (existing.source === 'plaid' || plaidLink) {
+
+            const source = String(existing.source || 'manual').toLowerCase();
+            const normalizedType = String(existing.type || '').trim().toLowerCase();
+            const isCashType =
+                normalizedType === 'checking' ||
+                normalizedType === 'savings' ||
+                normalizedType === 'money market' ||
+                normalizedType === 'money_market' ||
+                normalizedType === 'cd';
+
+            if (source === 'plaid' && !isCashType) {
                 const err = new Error(
                     'This account is linked via Plaid. Remove the bank connection in Linked Banks instead of deleting the account here.'
                 );
@@ -297,13 +315,44 @@ class AccountService {
                 throw err;
             }
 
-            // Soft delete by setting is_active = 0
-            await db.run(`
-                UPDATE accounts 
-                SET is_active = 0, updated_at = datetime('now')
-                WHERE id = ? AND user_id = ?
-            `, [id, userId]);
-            return true;
+            await db.exec('BEGIN');
+            try {
+                // For cash accounts: keep plaid_accounts row so sync does not recreate the account.
+                // For other types: remove bridge rows when deleting/deactivating.
+                if (!isCashType) {
+                    await db.run(
+                        'DELETE FROM plaid_accounts WHERE CAST(account_id AS TEXT) = CAST(? AS TEXT)',
+                        [id]
+                    );
+                }
+
+                await db.run(
+                    `UPDATE accounts SET linked_savings_account = NULL
+                     WHERE CAST(linked_savings_account AS TEXT) = CAST(? AS TEXT) AND user_id = ?`,
+                    [id, userId]
+                );
+
+                const result = await db.run(
+                    `UPDATE accounts
+                     SET is_active = 0,
+                         sync_enabled = 0,
+                         source = 'manual',
+                         updated_at = datetime('now')
+                     WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?`,
+                    [id, userId]
+                );
+
+                if ((result?.changes ?? 0) === 0) {
+                    await db.exec('ROLLBACK');
+                    return false;
+                }
+
+                await db.exec('COMMIT');
+                return true;
+            } catch (err) {
+                await db.exec('ROLLBACK');
+                throw err;
+            }
         } finally {
             if (!this.dbProvider && db && typeof db.close === 'function') {
                 await db.close();
@@ -401,6 +450,13 @@ class AccountService {
                 account_number: account.account_number,
                 account_holder_name: account.account_holder_name,
                 notes: account.notes,
+                // Loan-specific fields
+                loan_type: account.loan_type,
+                original_balance: account.original_balance,
+                term_months: account.term_months,
+                monthly_payment: account.monthly_payment,
+                payment_amount: account.payment_amount,
+                paired_category_id: account.paired_category_id,
                 source: account.source || 'manual',
                 external_mask: account.external_mask || null,
                 sync_enabled: account.sync_enabled !== 0,
@@ -409,17 +465,58 @@ class AccountService {
             }));
 
             const plaidLinks = await db.all(
-                `SELECT pa.account_id, pi.id AS plaid_item_id
+                `SELECT pa.account_id, pi.id AS plaid_item_id, pa.type AS plaid_type, pa.subtype AS plaid_subtype
                  FROM plaid_accounts pa
                  JOIN plaid_items pi ON pa.item_id = pi.id
                  WHERE pi.user_id = ?`,
                 [userId]
             );
-            const linkByAccount = new Map(plaidLinks.map((r) => [r.account_id, r.plaid_item_id]));
+            const linkByAccount = new Map(
+                plaidLinks.map((r) => [String(r.account_id), r])
+            );
             for (const acc of formattedAccounts) {
-                if (linkByAccount.has(acc.id)) {
-                    acc.plaid_linked = true;
-                    acc.plaid_item_id = linkByAccount.get(acc.id);
+                const linkKey = String(acc.id);
+                const link = linkByAccount.get(linkKey);
+                if (!link) continue;
+
+                acc.plaid_linked = true;
+                acc.plaid_item_id = link.plaid_item_id;
+                acc.plaid_account_type = link.plaid_type || null;
+                acc.plaid_account_subtype = link.plaid_subtype || null;
+
+                const resolvedType = mapPlaidTypeToInternal({
+                    type: link.plaid_type,
+                    subtype: link.plaid_subtype,
+                });
+                if (resolvedType !== 'other' && acc.type !== resolvedType) {
+                    acc.type = resolvedType;
+                    acc.account_type_category = mapInternalAccountTypeCategory(resolvedType);
+                    await db.run(
+                        `UPDATE accounts
+                         SET type = ?, account_type_category = ?, updated_at = datetime('now')
+                         WHERE id = ? AND user_id = ?`,
+                        [resolvedType, acc.account_type_category, acc.id, userId]
+                    );
+                }
+            }
+
+            const linkedLoansMissingType = formattedAccounts.filter(
+                (acc) => acc.type === 'loan' && !acc.loan_type && acc.plaid_linked
+            );
+            if (linkedLoansMissingType.length > 0) {
+                const placeholders = linkedLoansMissingType.map(() => '?').join(', ');
+                const subtypeRows = await db.all(
+                    `SELECT account_id, subtype FROM plaid_accounts
+                     WHERE account_id IN (${placeholders})`,
+                    linkedLoansMissingType.map((acc) => acc.id)
+                );
+                const subtypeByAccount = new Map(
+                    subtypeRows.map((row) => [String(row.account_id), row.subtype])
+                );
+                for (const acc of linkedLoansMissingType) {
+                    acc.loan_type = mapPlaidSubtypeToLoanType(
+                        subtypeByAccount.get(String(acc.id))
+                    );
                 }
             }
 

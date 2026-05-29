@@ -16,6 +16,8 @@ If a production secret was ever pasted into chat or committed, **rotate it in th
 | POST | `/plaid/webhook` | Plaid team / item webhooks (preserve raw body + `Plaid-Verification` header) |
 | GET | `/pending?userId=…` | App polls and clears queued items (optional `Authorization: Bearer <RELAY_API_KEY>`) |
 | POST | `/pending/ack` | App acknowledges successfully processed event ids |
+| POST | `/items/register` | Desktop registers `{ itemId, userId }` after connect (webhooks only include `item_id`) |
+| POST | `/items/unregister` | Desktop removes mapping on disconnect |
 
 **Plaid Dashboard → Webhooks URL:**
 
@@ -36,7 +38,7 @@ If a production secret was ever pasted into chat or committed, **rotate it in th
 |----------|---------|
 | `PLAID_CLIENT_ID` | Same as production app |
 | `PLAID_SECRET` | **Production** secret (not Sandbox) |
-| `PLAID_ENV` | `production` |
+| `PLAID_ENV` | `production` or `development` (development uses production API host) |
 | `HOST` | `0.0.0.0` |
 | `PORT` | `8787` (or whatever the platform maps internally) |
 | `RELAY_API_KEY` or `PLAID_WEBHOOK_RELAY_API_KEY` | Recommended: long random string; protects `GET /pending` |

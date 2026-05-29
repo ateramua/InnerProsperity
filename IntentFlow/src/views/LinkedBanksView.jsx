@@ -2,6 +2,142 @@ import React, { useState, useEffect } from 'react';
 import { showAppToast } from '../components/AppToast';
 
 const PLAID_LINK_SCRIPT_URL = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+let plaidLinkScriptPromise = null;
+
+function ensurePlaidLinkScript() {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Plaid Link is only available in the app window'));
+  }
+  if (window.Plaid) return Promise.resolve();
+  if (plaidLinkScriptPromise) return plaidLinkScriptPromise;
+
+  plaidLinkScriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${PLAID_LINK_SCRIPT_URL}"]`);
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener(
+        'error',
+        () => reject(new Error('Failed to load Plaid Link')),
+        { once: true }
+      );
+      if (window.Plaid) resolve();
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = PLAID_LINK_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Plaid Link. Check your internet connection.'));
+    document.body.appendChild(script);
+  });
+
+  return plaidLinkScriptPromise;
+}
+
+function waitForPlaidLink(maxWaitMs = 15000) {
+  return ensurePlaidLinkScript().then(
+    () =>
+      new Promise((resolve, reject) => {
+        if (window.Plaid) {
+          resolve(window.Plaid);
+          return;
+        }
+        const started = Date.now();
+        const tick = () => {
+          if (window.Plaid) {
+            resolve(window.Plaid);
+            return;
+          }
+          if (Date.now() - started > maxWaitMs) {
+            reject(new Error('Plaid Link timed out while loading. Please try again.'));
+            return;
+          }
+          setTimeout(tick, 100);
+        };
+        tick();
+      })
+  );
+}
+
+function openPlaidLinkSession({ token, onSuccess, receivedRedirectUri }) {
+  return waitForPlaidLink().then(
+    (Plaid) =>
+      new Promise((resolve) => {
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          resolve();
+        };
+
+        const linkOptions = {
+          token,
+          onSuccess: async (publicToken, metadata) => {
+            try {
+              await onSuccess(publicToken, metadata);
+            } finally {
+              handler.destroy();
+              finish();
+            }
+          },
+          onExit: (err) => {
+            if (err) console.error('Plaid Link exit with error:', err);
+            handler.destroy();
+            finish();
+          },
+        };
+
+        if (receivedRedirectUri) {
+          linkOptions.receivedRedirectUri = receivedRedirectUri;
+        }
+
+        const handler = Plaid.create(linkOptions);
+        handler.open();
+      })
+  );
+}
+
+function deepLinkToReceivedRedirectUri(deepLinkUrl, redirectUriBase) {
+  if (!deepLinkUrl || !redirectUriBase) return null;
+  try {
+    const deep = new URL(String(deepLinkUrl));
+    if (!deep.searchParams.has('oauth_state_id')) return null;
+    const base = new URL(String(redirectUriBase));
+    base.search = deep.search;
+    return base.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Pending link token for OAuth resume after bank redirect (intentflow:// deep link). */
+let pendingPlaidLinkToken = null;
+let pendingPlaidLinkMode = null;
+let pendingPlaidLinkItemId = null;
+
+function clearPendingPlaidLinkSession() {
+  pendingPlaidLinkToken = null;
+  pendingPlaidLinkMode = null;
+  pendingPlaidLinkItemId = null;
+}
+
+function formatLinkedAccountBalance(acc) {
+  if (acc?.balance == null || acc.balance === '') return null;
+  const amount = Number(acc.balance);
+  if (!Number.isFinite(amount)) return null;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+  }).format(Math.abs(amount));
+}
+
+function linkedAccountBalanceLabel(acc) {
+  const formatted = formatLinkedAccountBalance(acc);
+  if (!formatted) return 'Balance unavailable';
+  return `Balance: ${formatted}`;
+}
 
 function isConsentExpiringSoon(item) {
   if (!item) return false;
@@ -19,6 +155,7 @@ function formatConsentExpiry(item) {
 
 const LinkedBanksView = ({ onNavigate }) => {
   const [loading, setLoading] = useState(false);
+  const [isConnectingBank, setIsConnectingBank] = useState(false);
   const [connectedItems, setConnectedItems] = useState([]);
   const [error, setError] = useState(null);
   const [syncingItemId, setSyncingItemId] = useState(null);
@@ -29,7 +166,9 @@ const LinkedBanksView = ({ onNavigate }) => {
   const [unmappedCategories, setUnmappedCategories] = useState([]);
   const [categoryMappings, setCategoryMappings] = useState({});
   const [saving, setSaving] = useState(false);
-  const [plaidConfigured, setPlaidConfigured] = useState(true);
+  const [plaidConfigured, setPlaidConfigured] = useState(false);
+  const [plaidConfigReady, setPlaidConfigReady] = useState(false);
+  const [plaidRedirectUri, setPlaidRedirectUri] = useState(null);
   const [itemAccounts, setItemAccounts] = useState({});
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
@@ -45,8 +184,8 @@ const LinkedBanksView = ({ onNavigate }) => {
   const [syncHistory, setSyncHistory] = useState([]);
 
   // Load linked items
-  const loadLinkedItems = async () => {
-    setLoading(true);
+  const loadLinkedItems = async ({ quiet = false } = {}) => {
+    if (!quiet) setLoading(true);
     try {
       const result = await window.electronAPI.getLinkedItems();
       if (result.success) {
@@ -70,7 +209,7 @@ const LinkedBanksView = ({ onNavigate }) => {
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   };
 
@@ -149,67 +288,152 @@ const LinkedBanksView = ({ onNavigate }) => {
     loadLinkedItems();
     loadPlaidSettings();
     (async () => {
-      if (window.electronAPI?.getPlaidConfigStatus) {
-        const cfg = await window.electronAPI.getPlaidConfigStatus();
-        if (cfg?.success) setPlaidConfigured(cfg.data?.configured !== false);
+      try {
+        if (window.electronAPI?.getPlaidConfigStatus) {
+          const cfg = await window.electronAPI.getPlaidConfigStatus();
+          if (cfg?.success) setPlaidConfigured(Boolean(cfg.data?.configured));
+          if (cfg?.success && cfg.data?.redirectUri) setPlaidRedirectUri(cfg.data.redirectUri);
+        }
+      } finally {
+        setPlaidConfigReady(true);
       }
     })();
     const unsub = window.electronAPI?.onAccountsUpdated?.(() => {
-      loadLinkedItems();
+      loadLinkedItems({ quiet: true });
     });
     return () => {
       if (typeof unsub === 'function') unsub();
     };
   }, []);
 
-  // Load Plaid Link script
+  // Resume Plaid Link after OAuth bank redirect (intentflow:// deep link from hosted callback page)
   useEffect(() => {
-    if (window.Plaid) return;
-    const script = document.createElement('script');
-    script.src = PLAID_LINK_SCRIPT_URL;
-    script.async = true;
-    script.onload = () => console.log('✅ Plaid Link script loaded');
-    script.onerror = () => {
-      console.error('❌ Failed to load Plaid Link script');
-      setError('Failed to load Plaid Link. Please check your internet connection.');
+    if (!window.electronAPI?.onPlaidOAuthRedirect) return undefined;
+
+    const resumeOAuth = async (deepLinkUrl) => {
+      if (!pendingPlaidLinkToken) {
+        showAppToast('Open Linked Banks and tap Connect again to finish bank sign-in.', 'info');
+        return;
+      }
+      const receivedRedirectUri = deepLinkToReceivedRedirectUri(deepLinkUrl, plaidRedirectUri);
+      if (!receivedRedirectUri) {
+        showAppToast('OAuth redirect could not be completed. Check PLAID_REDIRECT_URI.', 'error');
+        return;
+      }
+
+      const mode = pendingPlaidLinkMode;
+      const itemId = pendingPlaidLinkItemId;
+      const token = pendingPlaidLinkToken;
+
+      setIsConnectingBank(true);
+      try {
+        await openPlaidLinkSession({
+          token,
+          receivedRedirectUri,
+          onSuccess: async (publicToken) => {
+            const exchangeResult = await window.electronAPI.exchangePublicToken(publicToken);
+            if (exchangeResult?.success) {
+              await loadLinkedItems({ quiet: true });
+              if (mode === 'reconnect' && itemId) {
+                setNeedsReconnect(null);
+                setSyncStatuses((prev) => ({
+                  ...prev,
+                  [itemId]: '✅ Bank reconnected successfully!',
+                }));
+                showAppToast('Bank reconnected successfully');
+                await window.electronAPI.syncItem(itemId);
+                await loadLinkedItems({ quiet: true });
+              } else if (exchangeResult.mergeOffers?.length) {
+                setMergeOffers(exchangeResult.mergeOffers);
+              } else {
+                showAppToast('Bank connected successfully');
+              }
+              window.dispatchEvent(new CustomEvent('accounts-updated'));
+            } else {
+              showAppToast(
+                (mode === 'reconnect' ? 'Failed to reconnect: ' : 'Failed to connect bank: ') +
+                  (exchangeResult?.error || 'Unknown error'),
+                'error'
+              );
+            }
+          },
+        });
+      } catch (err) {
+        showAppToast(err.message || 'OAuth resume failed', 'error');
+      } finally {
+        clearPendingPlaidLinkSession();
+        setIsConnectingBank(false);
+      }
     };
-    document.body.appendChild(script);
+
+    const unsub = window.electronAPI.onPlaidOAuthRedirect(({ url }) => {
+      if (url) resumeOAuth(url);
+    });
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  }, [plaidRedirectUri]);
+
+  // Load Plaid Link script early
+  useEffect(() => {
+    ensurePlaidLinkScript().catch((err) => {
+      console.error('❌ Failed to load Plaid Link script:', err);
+      setError(err.message);
+    });
   }, []);
 
   // Connect new bank
   const handleConnectBank = async () => {
-    setLoading(true);
+    if (isConnectingBank || !plaidConfigured) return;
+    if (!window.electronAPI?.createLinkToken || !window.electronAPI?.exchangePublicToken) {
+      setError('Plaid is not available. Restart the IntentFlow desktop app.');
+      showAppToast('Plaid is not available in this window', 'error');
+      return;
+    }
+
+    setIsConnectingBank(true);
+    setError(null);
     try {
       const tokenResult = await window.electronAPI.createLinkToken();
-      if (!tokenResult.success) throw new Error(tokenResult.error);
+      if (!tokenResult?.success) {
+        throw new Error(tokenResult?.error || 'Failed to create Plaid link token');
+      }
+      if (!tokenResult.link_token) {
+        throw new Error('Plaid did not return a link token');
+      }
 
-      const handler = Plaid.create({
+      pendingPlaidLinkToken = tokenResult.link_token;
+      pendingPlaidLinkMode = 'connect';
+      pendingPlaidLinkItemId = null;
+
+      await openPlaidLinkSession({
         token: tokenResult.link_token,
-        onSuccess: async (public_token, metadata) => {
-          const exchangeResult = await window.electronAPI.exchangePublicToken(public_token);
-          if (exchangeResult.success) {
-            await loadLinkedItems();
+        onSuccess: async (publicToken) => {
+          clearPendingPlaidLinkSession();
+          const exchangeResult = await window.electronAPI.exchangePublicToken(publicToken);
+          if (exchangeResult?.success) {
+            await loadLinkedItems({ quiet: true });
             if (exchangeResult.mergeOffers?.length) {
               setMergeOffers(exchangeResult.mergeOffers);
             } else {
               showAppToast('Bank connected successfully');
             }
+            window.dispatchEvent(new CustomEvent('accounts-updated'));
           } else {
-            showAppToast('Failed to connect bank: ' + exchangeResult.error, 'error');
+            showAppToast(
+              'Failed to connect bank: ' + (exchangeResult?.error || 'Unknown error'),
+              'error'
+            );
           }
-          handler.destroy();
-        },
-        onExit: (err, metadata) => {
-          if (err) console.error('Plaid Link exit with error:', err);
-          handler.destroy();
-          setLoading(false);
         },
       });
-      handler.open();
     } catch (err) {
       console.error('Error connecting bank:', err);
+      clearPendingPlaidLinkSession();
       setError(err.message);
-      setLoading(false);
+      showAppToast(err.message, 'error');
+    } finally {
+      setIsConnectingBank(false);
     }
   };
 
@@ -335,17 +559,24 @@ const LinkedBanksView = ({ onNavigate }) => {
 
   // Reconnect bank (handles ITEM_LOGIN_REQUIRED)
   const handleReconnect = async (itemId) => {
+    if (syncingItemId === itemId) return;
     setSyncingItemId(itemId);
     try {
       const tokenResult = await window.electronAPI.createUpdateLinkToken(itemId);
-      if (!tokenResult.success) throw new Error(tokenResult.error);
+      if (!tokenResult?.success) throw new Error(tokenResult?.error || 'Failed to create update link token');
+      if (!tokenResult.link_token) throw new Error('Plaid did not return a link token');
 
-      const handler = Plaid.create({
+      pendingPlaidLinkToken = tokenResult.link_token;
+      pendingPlaidLinkMode = 'reconnect';
+      pendingPlaidLinkItemId = itemId;
+
+      await openPlaidLinkSession({
         token: tokenResult.link_token,
-        onSuccess: async (public_token, metadata) => {
-          const exchangeResult = await window.electronAPI.exchangePublicToken(public_token);
-          if (exchangeResult.success) {
-            await loadLinkedItems();
+        onSuccess: async (publicToken) => {
+          clearPendingPlaidLinkSession();
+          const exchangeResult = await window.electronAPI.exchangePublicToken(publicToken);
+          if (exchangeResult?.success) {
+            await loadLinkedItems({ quiet: true });
             setNeedsReconnect(null);
             setSyncStatuses(prev => ({ ...prev, [itemId]: '✅ Bank reconnected successfully!' }));
             setTimeout(() => {
@@ -355,22 +586,15 @@ const LinkedBanksView = ({ onNavigate }) => {
                 return newStatus;
               });
             }, 3000);
-            // Optionally sync again
             handleSyncItem(itemId);
           } else {
-            showAppToast('Failed to reconnect: ' + exchangeResult.error, 'error');
+            showAppToast('Failed to reconnect: ' + (exchangeResult?.error || 'Unknown error'), 'error');
           }
-          handler.destroy();
-        },
-        onExit: (err, metadata) => {
-          if (err) console.error('Plaid Link exit with error:', err);
-          handler.destroy();
-          setSyncingItemId(null);
         },
       });
-      handler.open();
     } catch (err) {
       console.error('Error reconnecting bank:', err);
+      clearPendingPlaidLinkSession();
       showAppToast('Reconnect failed: ' + err.message, 'error');
     } finally {
       setSyncingItemId(null);
@@ -464,23 +688,43 @@ const LinkedBanksView = ({ onNavigate }) => {
           <button
             onClick={handleSyncAll}
             style={styles.syncAllButton}
-            disabled={loading || syncingItemId !== null}
+            disabled={loading || syncingItemId !== null || isConnectingBank}
           >
             Sync All
           </button>
           <button
+            type="button"
             onClick={handleConnectBank}
-            style={styles.connectButton}
-            disabled={loading || !plaidConfigured}
+            style={{
+              ...styles.connectButton,
+              ...((!plaidConfigReady || isConnectingBank || !plaidConfigured) && styles.connectButtonDisabled),
+            }}
+            disabled={!plaidConfigReady || isConnectingBank || !plaidConfigured}
+            title={
+              !plaidConfigReady
+                ? 'Checking Plaid configuration…'
+                : !plaidConfigured
+                  ? 'Plaid is not configured — check .env and restart the app'
+                  : 'Connect a bank via Plaid'
+            }
           >
-            {loading ? 'Connecting...' : '+ Connect New Bank'}
+            {!plaidConfigReady
+              ? 'Loading…'
+              : isConnectingBank
+                ? 'Connecting...'
+                : '+ Connect New Bank'}
           </button>
         </div>
       </div>
 
-      {!plaidConfigured && (
+      {!plaidConfigReady && (
+        <div style={styles.infoBanner}>Checking Plaid configuration…</div>
+      )}
+
+      {plaidConfigReady && !plaidConfigured && (
         <div style={styles.error}>
-          Plaid is not configured. Set PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV, then restart the app.
+          Plaid is not configured. Set PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV
+          (sandbox, development, or production) in .env, then restart the IntentFlow desktop app.
         </div>
       )}
 
@@ -634,6 +878,11 @@ const LinkedBanksView = ({ onNavigate }) => {
                       </button>
                     )}
                   </div>
+                  {acc.account_id && (
+                    <div style={styles.accountBalanceMeta}>
+                      {linkedAccountBalanceLabel(acc)}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
@@ -840,6 +1089,12 @@ const styles = {
     cursor: 'pointer',
     transition: 'transform 0.2s, box-shadow 0.2s',
   },
+  connectButtonDisabled: {
+    opacity: 0.55,
+    cursor: 'not-allowed',
+    transform: 'none',
+    boxShadow: 'none',
+  },
   syncAllButton: {
     padding: '0.75rem 1.5rem',
     background: '#10B981',
@@ -857,6 +1112,14 @@ const styles = {
     borderRadius: '0.5rem',
     marginBottom: '1rem',
     color: '#FECACA',
+  },
+  infoBanner: {
+    background: '#1E3A5F',
+    padding: '0.75rem 1rem',
+    borderRadius: '0.5rem',
+    marginBottom: '1rem',
+    color: '#BFDBFE',
+    fontSize: '0.9rem',
   },
   complianceNote: {
     fontSize: '0.8rem',
@@ -1077,6 +1340,12 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '0.5rem',
+  },
+  accountBalanceMeta: {
+    marginTop: '0.35rem',
+    fontSize: '0.82rem',
+    color: 'rgba(255,255,255,0.75)',
+    paddingLeft: '0.15rem',
   },
   unlinkAccountBtn: {
     padding: '0.2rem 0.5rem',

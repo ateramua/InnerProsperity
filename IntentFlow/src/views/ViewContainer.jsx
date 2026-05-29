@@ -19,6 +19,19 @@ import ForecastPage from '../pages/forecast';
 import AccountModal from './AccountModal';
 import LinkedBanksView from './LinkedBanksView';
 import AppToastHost from '../components/AppToast';
+import {
+  getCreditAccountDeleteConfirmMessage,
+  permanentlyDeleteCreditAccountViaApi,
+  formatCreditDeleteError,
+  loadCreditCardsViaApi,
+} from '../utils/creditAccountUtils.jsx';
+import { normalizeAccountId } from '../utils/cashAccountUtils.jsx';
+import {
+  getLoanAccountDeleteConfirmMessage,
+  permanentlyDeleteLoanAccountViaApi,
+  formatLoanDeleteError,
+  loadLoansViaApi,
+} from '../utils/loanAccountUtils.jsx';
 
 const getAccountApi = () => {
   if (typeof window === 'undefined') return null;
@@ -49,29 +62,14 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // Load credit cards
   const loadCreditCards = async () => {
     console.log('🔍 Loading credit cards from database...');
-    const accountApi = getAccountApi();
-    if (!accountApi) {
-      setCreditCards([]);
-      return;
-    }
-
     setIsLoadingCards(true);
     try {
-      const userResult = await accountApi.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        setCreditCards([]);
-        return;
-      }
-
-      const userId = userResult.data.id;
-      const accountsResult = await accountApi.getAccountsSummary(userId);
-
-      if (accountsResult?.success) {
-        const allAccounts = accountsResult.data || [];
-        const creditCardsOnly = allAccounts.filter(acc => acc.type === 'credit');
-        console.log(`💰 Found ${creditCardsOnly.length} credit cards`);
-        setCreditCards(creditCardsOnly);
+      const result = await loadCreditCardsViaApi();
+      if (result.success) {
+        console.log(`💰 Found ${result.data.length} credit cards`);
+        setCreditCards(result.data || []);
       } else {
+        console.warn('Failed to load credit cards:', result.error);
         setCreditCards([]);
       }
     } catch (error) {
@@ -86,36 +84,22 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
   // In ViewContainer.jsx, update the loadLoans function
   const loadLoans = async () => {
     console.log('📥 loadLoans started');
-    const accountApi = getAccountApi();
-    if (!accountApi) {
-      setLoans([]);
-      return;
-    }
-
     setIsLoadingLoans(true);
     try {
-      const userResult = await accountApi.getCurrentUser();
-      if (!userResult?.success || !userResult?.data?.id) {
-        console.log('❌ No user logged in');
+      const result = await loadLoansViaApi();
+      if (!result.success) {
+        console.error('❌ Failed to load loans:', result.error);
         setLoans([]);
         return;
       }
 
-      const userId = userResult.data.id;
-      const accountsResult = await accountApi.getAccountsSummary(userId);
-
-      let loanAccounts = [];
-      if (accountsResult?.success && Array.isArray(accountsResult.data)) {
-        loanAccounts = accountsResult.data.filter(acc => acc && acc.type === 'loan');
-        console.log(`💰 Found ${loanAccounts.length} loans`);
-      } else {
-        console.error('❌ Failed to load accounts:', accountsResult?.error);
-        setLoans([]);
-        return;
-      }
+      const loanAccounts = result.data || [];
+      console.log(`💰 Found ${loanAccounts.length} loans`);
 
       const mappedLoans = loanAccounts.map(acc => {
         if (!acc || typeof acc !== 'object') return null;
+
+        const loanType = acc.loan_type || 'personal';
 
         return {
           id: acc.id,
@@ -131,11 +115,17 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
           due_date: acc.due_date || null,
           institution: acc.institution || '',
           lender: acc.institution || '',
-          account_number: acc.account_number || '',  // ← Include account number
-          account_holder_name: acc.account_holder_name || '',  // ← Include account holder name
+          account_number: acc.account_number || acc.external_mask || '',
+          account_holder_name: acc.account_holder_name || '',
           notes: acc.notes || '',
-          loan_type: acc.loan_type || 'personal',
-          userId: acc.user_id
+          loan_type: loanType,
+          paired_category_id: acc.paired_category_id || null,
+          source: acc.source || 'manual',
+          external_mask: acc.external_mask || null,
+          plaid_linked: Boolean(acc.plaid_linked),
+          plaid_item_id: acc.plaid_item_id || null,
+          sync_enabled: acc.sync_enabled !== false,
+          userId: acc.user_id,
         };
       }).filter(loan => loan !== null);
 
@@ -298,13 +288,16 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
 
   const handleDeleteAccount = async (account) => {
     if (!account || !account.id) return;
+    if (account.type === 'credit') {
+      await handleDeleteCard(account.id);
+      return;
+    }
+
     const confirmDelete = window.confirm(`Are you sure you want to delete "${account.name}"? This action cannot be undone.`);
     if (!confirmDelete) return;
 
     try {
-      if (account.type === 'credit') {
-        await handleDeleteCard(account.id);
-      } else if (account.type === 'loan') {
+      if (account.type === 'loan') {
         await handleDeleteLoan(account.id);
       } else {
         // checking, savings, or other
@@ -561,28 +554,28 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
     }
   };
 
-  // Delete credit card
+  // Delete credit card (permanent — manual and Plaid-linked)
   const handleDeleteCard = async (cardId) => {
-    console.log('🗑️ Deleting credit card:', cardId);
+    const normalizedId = normalizeAccountId(cardId);
+    const card = creditCards.find((c) => normalizeAccountId(c.id) === normalizedId);
+    if (card && !window.confirm(getCreditAccountDeleteConfirmMessage(card))) {
+      return { success: false };
+    }
+    if (!card && !window.confirm('Permanently delete this credit card? This cannot be undone.')) {
+      return { success: false };
+    }
+
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return { success: false };
-      }
-      const userId = userResult.data.id;
+      const result = await permanentlyDeleteCreditAccountViaApi(card || normalizedId);
 
-      const result = await window.electronAPI.deleteAccount(cardId, userId);
-
-      if (result.success) {
+      if (result?.success) {
         await loadCreditCards();
         window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Credit card deleted successfully');
         return { success: true };
-      } else {
-        alert('Failed to delete credit card: ' + result.error);
-        return { success: false };
       }
+
+      alert('Failed to delete credit card: ' + formatCreditDeleteError(result));
+      return { success: false };
     } catch (error) {
       console.error('Error deleting credit card:', error);
       alert('Error: ' + error.message);
@@ -592,26 +585,26 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
 
   // Delete loan
   const handleDeleteLoan = async (loanId) => {
-    console.log('🗑️ Deleting loan:', loanId);
+    const normalizedId = normalizeAccountId(loanId);
+    const loan = loans.find((l) => normalizeAccountId(l.id) === normalizedId);
+    if (loan && !window.confirm(getLoanAccountDeleteConfirmMessage(loan))) {
+      return { success: false };
+    }
+    if (!loan && !window.confirm('Permanently delete this loan? This cannot be undone.')) {
+      return { success: false };
+    }
+
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return { success: false };
-      }
-      const userId = userResult.data.id;
+      const result = await permanentlyDeleteLoanAccountViaApi(loan || normalizedId);
 
-      const result = await window.electronAPI.deleteAccount(loanId, userId);
-
-      if (result.success) {
+      if (result?.success) {
         await refreshLoans();
         window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Loan deleted successfully');
         return { success: true };
-      } else {
-        alert('Failed to delete loan: ' + result.error);
-        return { success: false };
       }
+
+      alert('Failed to delete loan: ' + formatLoanDeleteError(result));
+      return { success: false };
     } catch (error) {
       console.error('Error deleting loan:', error);
       alert('Error: ' + error.message);
@@ -691,9 +684,6 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
             cards={creditCards}
             transactions={transactions}
             onMakePayment={handleMakePayment}
-            onUpdateCard={handleEditCard}
-            onDeleteCard={handleDeleteCard}
-            onAddCard={() => onNavigate('credit-add')}
             onViewTransactions={handleViewTransactions}
             onOpenPlanner={handleOpenPlanner}
           />

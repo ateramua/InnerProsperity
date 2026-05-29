@@ -5,11 +5,16 @@ import { QRCodeCanvas } from 'qrcode.react';
 import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
 import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
 import ConnectBankCTA from '../components/ConnectBankCTA';
-import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
 import {
   confirmNoDuplicateAccount,
   maskFromAccountNumber,
 } from '../utils/plaidDuplicateCheck';
+import {
+  getCreditAccountDeleteConfirmMessage,
+  permanentlyDeleteCreditAccountViaApi,
+  formatCreditDeleteError,
+} from '../utils/creditAccountUtils.jsx';
+import { normalizeAccountId } from '../utils/cashAccountUtils.jsx';
 
 function CreditCardManager({
   onNavigate,
@@ -25,6 +30,7 @@ function CreditCardManager({
   const [filter, setFilter] = useState('all');
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
+  const [deletingCardId, setDeletingCardId] = useState(null);
 
   // State for Zero Interest Accelerator
   const [showAccelerator, setShowAccelerator] = useState(false);
@@ -494,38 +500,34 @@ function CreditCardManager({
   };
 
   const handleDeleteCard = async (cardId) => {
-    const card = cards.find((c) => c.id === cardId) || editingCard;
-    if (card && isPlaidLinkedAccount(card)) {
-      alert(
-        'This card is linked via Plaid. Open Linked Banks and remove the bank connection to disconnect it.'
-      );
+    const normalizedId = normalizeAccountId(cardId);
+    const card = cards.find((c) => normalizeAccountId(c.id) === normalizedId);
+    if (!card) {
+      alert('Credit card not found');
       return;
     }
-    if (!window.confirm('Are you sure you want to delete this credit card? This action cannot be undone.')) {
+    if (deletingCardId) return;
+    if (!window.confirm(getCreditAccountDeleteConfirmMessage(card))) {
       return;
     }
 
+    setDeletingCardId(normalizedId);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return;
-      }
-      const userId = userResult.data.id;
+      const result = await permanentlyDeleteCreditAccountViaApi(card);
 
-      const result = await window.electronAPI.deleteAccount(cardId, userId);
-
-      if (result && result.success) {
-        setShowEditModal(false);
-        setEditingCard(null);
+      if (result?.success) {
+        if (selectedCard === normalizedId || normalizeAccountId(selectedCard) === normalizedId) {
+          setSelectedCard(null);
+        }
         window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Credit card deleted successfully!');
       } else {
-        alert('Failed to delete credit card: ' + (result?.error || 'Unknown error'));
+        alert('Failed to delete credit card: ' + formatCreditDeleteError(result));
       }
     } catch (error) {
       console.error('Error deleting credit card:', error);
       alert('Error: ' + error.message);
+    } finally {
+      setDeletingCardId(null);
     }
   };
 
@@ -650,15 +652,6 @@ function CreditCardManager({
                 }}
                 onClick={() => handleCardSelect(card)}
               >
-                {/* Edit Button - Positioned at top right */}
-                <button
-                  onClick={(e) => handleEditClick(e, card)}
-                  style={styles.editButton}
-                  title="Edit Card"
-                >
-                  ✏️
-                </button>
-
                 {/* Card Header */}
                 <div style={styles.cardHeader}>
                   <div>
@@ -770,14 +763,35 @@ function CreditCardManager({
                   <button
                     onClick={(e) => { e.stopPropagation(); onViewTransactions(card.id); }}
                     style={styles.transactionsButton}
+                    title="View account transactions"
                   >
-                    📋 Transactions
+                    Transactions
+                  </button>
+                </div>
+
+                <div style={styles.cardManagementActions}>
+                  <button
+                    onClick={(e) => handleEditClick(e, card)}
+                    style={styles.editButtonInline}
+                    title="Edit card details"
+                  >
+                    ✏️ Edit Card
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleEditClick(e, card); }}
-                    style={styles.editButtonInline}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteCard(card.id);
+                    }}
+                    style={{
+                      ...styles.deleteButtonInline,
+                      opacity: deletingCardId === normalizeAccountId(card.id) ? 0.6 : 1,
+                    }}
+                    disabled={deletingCardId === normalizeAccountId(card.id)}
+                    title="Permanently delete this credit card"
                   >
-                    ✏️ Edit
+                    {deletingCardId === normalizeAccountId(card.id)
+                      ? 'Deleting…'
+                      : '🗑️ Delete Card'}
                   </button>
                 </div>
 
@@ -1007,8 +1021,8 @@ function CreditCardManager({
           setEditingCard(null);
         }}
         onSave={handleSaveEdit}
-        onDelete={handleDeleteCard}
         account={editingCard}
+        onNavigate={onNavigate}
       />
     </div>
   );
@@ -1149,22 +1163,12 @@ const styles = {
   selectedCard: {
     border: '2px solid #0047AB'
   },
-  editButton: {
-    position: 'absolute',
-    top: '1rem',
-    right: '1rem',
-    background: 'none',
-    border: 'none',
-    color: '#9CA3AF',
-    fontSize: '1rem',
-    cursor: 'pointer',
-    padding: '0.25rem',
-    borderRadius: '0.25rem',
-    zIndex: 2,
-    ':hover': {
-      background: '#374151',
-      color: 'white'
-    }
+  cardManagementActions: {
+    display: 'flex',
+    gap: '0.5rem',
+    marginTop: '0.5rem',
+    paddingTop: '0.75rem',
+    borderTop: '1px solid #374151'
   },
   editButtonInline: {
     flex: 1,
@@ -1172,6 +1176,20 @@ const styles = {
     background: 'transparent',
     border: '1px solid #F59E0B',
     color: '#F59E0B',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.25rem'
+  },
+  deleteButtonInline: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'transparent',
+    border: '1px solid #EF4444',
+    color: '#EF4444',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
     cursor: 'pointer',
@@ -1318,11 +1336,15 @@ const styles = {
     flex: 1,
     padding: '0.5rem',
     background: 'transparent',
-    border: '1px solid #0047AB',
-    color: '#0047AB',
+    border: '1px solid #9CA3AF',
+    color: '#F3F4F6',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
-    cursor: 'pointer'
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   expandedDetails: {
     marginTop: '1rem',

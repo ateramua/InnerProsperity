@@ -1,10 +1,17 @@
 // src/views/CashAccountsView.jsx
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/router';
-import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
+import { showAppToast } from '../components/AppToast';
 import ConnectBankCTA from '../components/ConnectBankCTA';
-import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
-import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
+import CashAccountRow from '../components/accounts/CashAccountRow';
+import {
+  deleteCashAccountViaApi,
+  getCashAccountDeleteConfirmMessage,
+  isCashAccountType,
+  loadCashAccountsViaApi,
+  normalizeAccountId,
+  partitionCashAccounts,
+} from '../utils/cashAccountUtils';
 import {
   confirmNoDuplicateAccount,
   maskFromAccountNumber,
@@ -19,7 +26,7 @@ const parseNumber = (value, fallback = null) => {
 const cleanString = (value) => value?.trim() || null;
 const cleanNumberString = (value) => value?.replace(/\s/g, '') || null;
 
-const CashAccountsView = ({ accounts: propAccounts }) => {
+const CashAccountsView = () => {
   const router = useRouter();
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -60,6 +67,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   });
   const [editErrors, setEditErrors] = useState({});
   const [isEditing, setIsEditing] = useState(false);
+  const [deletingAccountId, setDeletingAccountId] = useState(null);
 
   // For masked display in edit modal
   const [displayAccountNumber, setDisplayAccountNumber] = useState('');
@@ -83,10 +91,6 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     }
   }, []);
 
-  useEffect(() => {
-    loadAccounts();
-  }, [propAccounts]);
-
   // Reset inline form when modal opens
   useEffect(() => {
     if (showInlineModal) {
@@ -100,22 +104,6 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       loadEditingAccountData();
     }
   }, [showEditModal, editingAccount]);
-
-  // Listen for accounts-updated events
-  useEffect(() => {
-    const handleAccountsUpdated = () => {
-      console.log('📢📢📢 [EVENT] accounts-updated event received!');
-      console.log('[EVENT] Calling loadAccounts(true)...');
-      loadAccounts(true);
-    };
-    
-    console.log('[EVENT] Registering accounts-updated event listener');
-    window.addEventListener('accounts-updated', handleAccountsUpdated);
-    return () => {
-      console.log('[EVENT] Removing accounts-updated event listener');
-      window.removeEventListener('accounts-updated', handleAccountsUpdated);
-    };
-  }, []);
 
   const resetInlineForm = () => {
     setInlineFormData({
@@ -161,55 +149,46 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     setEditErrors({});
   };
 
-  // ✅ FIXED: loadAccounts with error reset + safer flow
-  const loadAccounts = async (force = false) => {
-    console.log('💰💰💰 [DEBUG] loadAccounts called with force:', force);
-    console.log('[DEBUG] Current accounts.length:', accounts.length);
-    console.log('[DEBUG] propAccounts:', propAccounts ? propAccounts.length : 'null');
-    setLoading(true);
-    setError(null);
+  const loadAccounts = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
 
     try {
-      if (
-        !force &&
-        Array.isArray(propAccounts) &&
-        propAccounts.length > 0 &&
-        accounts.length === 0
-      ) {
-        console.log('💰 Using propAccounts:', propAccounts.length);
-        const cashAccounts = propAccounts.filter(a =>
-          a.type === 'checking' || a.type === 'savings'
-        );
-        setAccounts(cashAccounts);
-        setLoading(false);
-        return;
-      }
-
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        console.error('❌ No user logged in');
-        setError('Please log in to view accounts');
-        setLoading(false);
-        return;
-      }
-      const userId = userResult.data.id;
-      const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-      if (accountsResult?.success) {
-        const allAccounts = accountsResult.data || [];
-        const cashAccounts = allAccounts.filter(a =>
-          a.type === 'checking' || a.type === 'savings'
-        );
-        setAccounts(cashAccounts);
-      } else {
-        setError(accountsResult?.error || 'Failed to load accounts');
+      const result = await loadCashAccountsViaApi();
+      if (result.success) {
+        setAccounts(result.data || []);
+        if (!quiet) setError(null);
+      } else if (!quiet) {
+        setError(result.error || 'Failed to load accounts');
       }
     } catch (error) {
       console.error('❌ Error loading accounts:', error);
-      setError(error.message);
+      if (!quiet) setError(error.message);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
-  };
+  }, []);
+
+  const loadAccountsRef = useRef(loadAccounts);
+  loadAccountsRef.current = loadAccounts;
+
+  useEffect(() => {
+    loadAccounts();
+  }, [loadAccounts]);
+
+  useEffect(() => {
+    const handleAccountsUpdated = () => {
+      loadAccountsRef.current();
+    };
+    window.addEventListener('accounts-updated', handleAccountsUpdated);
+    const unsubIpc = window.electronAPI?.onAccountsUpdated?.(handleAccountsUpdated);
+    return () => {
+      window.removeEventListener('accounts-updated', handleAccountsUpdated);
+      if (typeof unsubIpc === 'function') unsubIpc();
+    };
+  }, []);
 
   // ✅ FIXED: safer masking helper
   const maskNumber = (number) => {
@@ -383,8 +362,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       console.log('✅ Account created successfully:', createdAccount || result);
       setShowInlineModal(false);
       resetInlineForm();
-      await loadAccounts(true);
       window.dispatchEvent(new CustomEvent('accounts-updated'));
+      await loadAccounts();
       alert('✅ Account created successfully!');
     } catch (error) {
       console.error('❌ Error creating account:', error);
@@ -443,8 +422,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
         alert('✅ Account updated successfully');
         setShowEditModal(false);
         setEditingAccount(null);
-        await loadAccounts(true);
         window.dispatchEvent(new CustomEvent('accounts-updated'));
+        await loadAccounts();
       } else {
         alert('❌ Error updating account: ' + (result.error || 'Unknown error'));
       }
@@ -456,40 +435,45 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
     }
   };
 
-  // ✅ FIXED: handleDeleteAccount with unified event name
-  const handleDeleteAccount = async (accountId, accountName, account) => {
-    if (account && isPlaidLinkedAccount(account)) {
-      alert(
-        'This account is linked via Plaid. Open Linked Banks and remove the bank connection to disconnect it.'
-      );
-      return;
-    }
-    if (!window.confirm(`Are you sure you want to delete "${accountName}"? This action cannot be undone.`)) {
+  /** Single delete path for checking and savings (same API, same handlers). */
+  const handleDeleteCashAccount = async (account) => {
+    if (!account) return;
+    const id = normalizeAccountId(account.id);
+    if (!id || deletingAccountId) return;
+
+    if (!isCashAccountType(account)) {
+      alert('Only checking and savings accounts can be deleted from this page.');
       return;
     }
 
+    if (!window.confirm(getCashAccountDeleteConfirmMessage(account.name, account))) {
+      return;
+    }
+
+    setDeletingAccountId(id);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return;
-      }
+      const result = await deleteCashAccountViaApi(account);
 
-      const userId = userResult.data.id;
-      const result = await window.electronAPI.deleteAccount(accountId, userId);
-
-      if (result.success) {
-        alert('✅ Account deleted successfully');
+      if (result?.success) {
+        setAccounts((prev) => prev.filter((a) => normalizeAccountId(a.id) !== id));
         setShowEditModal(false);
         setEditingAccount(null);
-        await loadAccounts(true);
         window.dispatchEvent(new CustomEvent('accounts-updated'));
+        await loadAccounts({ quiet: true });
+        showAppToast('Account removed', 'success');
       } else {
-        alert('Failed to delete account: ' + result.error);
+        const msg =
+          result?.code === 'PLAID_ACCOUNT_DELETE_BLOCKED'
+            ? 'This account is linked via Plaid. Use Linked Banks to manage the connection.'
+            : result?.error || 'Unknown error';
+        alert('Failed to delete account: ' + msg);
+        await loadAccounts({ quiet: true });
       }
     } catch (error) {
       console.error('Error deleting account:', error);
-      alert('Error: ' + error.message);
+      alert('Error: ' + (error.message || 'Delete failed'));
+    } finally {
+      setDeletingAccountId(null);
     }
   };
 
@@ -512,18 +496,39 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
   };
 
   const getAccountIcon = (type) => {
-    return type === 'checking' ? '🏦' : '💰';
+    const t = String(type || '').toLowerCase();
+    return t === 'checking' ? '🏦' : '💰';
   };
 
-  // ✅ Memoized filtered accounts for performance
-  const checkingAccounts = useMemo(() => 
-    accounts.filter(a => a.type === 'checking'),
+  const { checking: checkingAccounts, savings: savingsAccounts } = useMemo(
+    () => partitionCashAccounts(accounts),
     [accounts]
   );
 
-  const savingsAccounts = useMemo(() => 
-    accounts.filter(a => a.type === 'savings'),
-    [accounts]
+  const renderCashAccountSection = (title, sectionAccounts, emptyLabel) => (
+    <div style={styles.section}>
+      <h2 style={styles.sectionHeaderTitle}>{title}</h2>
+      <div style={styles.accountList}>
+        {sectionAccounts.map((account) => (
+          <CashAccountRow
+            key={normalizeAccountId(account.id)}
+            account={account}
+            styles={styles}
+            deletingAccountId={deletingAccountId}
+            onAccountClick={handleAccountClick}
+            onEdit={handleEditClick}
+            onDelete={handleDeleteCashAccount}
+            formatCurrency={formatCurrency}
+            getAccountIcon={getAccountIcon}
+          />
+        ))}
+        {sectionAccounts.length === 0 && (
+          <div style={styles.emptyState}>
+            <ConnectBankCTA label={emptyLabel} />
+          </div>
+        )}
+      </div>
+    </div>
   );
 
   // Determine if showing bank fields
@@ -552,7 +557,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       <div style={styles.container}>
         <div style={styles.errorState}>
           <p>❌ {error}</p>
-          <button onClick={() => loadAccounts(true)} style={styles.retryButton}>
+          <button type="button" onClick={() => loadAccounts()} style={styles.retryButton}>
             Retry
           </button>
         </div>
@@ -568,6 +573,7 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           <p style={styles.description}>Manage your checking and savings accounts</p>
         </div>
         <button
+          type="button"
           onClick={() => setShowInlineModal(true)}
           style={styles.addButton}
         >
@@ -576,111 +582,8 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
       </div>
 
       <div style={styles.accountsContainer}>
-        <div style={styles.section}>
-          <h2 style={styles.sectionHeaderTitle}>CHECKING ACCOUNTS</h2>
-          <div style={styles.accountList}>
-            {checkingAccounts.map(account => (
-              <div
-                key={account.id}
-                style={styles.accountRow}
-              >
-                <div style={styles.accountInfo} onClick={() => handleAccountClick(account.id)}>
-                  <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
-                  <div>
-                    <div style={styles.accountName}>
-                      {account.name}
-                      <PlaidLinkedBadge account={account} />
-                      <PlaidManageConnectionLink account={account} />
-                    </div>
-                    <div style={styles.accountMeta}>
-                      {account.institution || 'No institution'}
-                      {account.account_number && ` • •••• ${account.account_number.slice(-4)}`}
-                    </div>
-                  </div>
-                </div>
-                <div style={styles.accountActions}>
-                  <div style={styles.accountBalance}>
-                    <div style={styles.balanceAmount}>
-                      {formatCurrency(account.balance)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleEditClick(account); }}
-                    style={styles.editButton}
-                    title="Edit Account"
-                  >
-                    ✏️
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteAccount(account.id, account.name, account); }}
-                    style={styles.deleteButton}
-                    title="Delete Account"
-                  >
-                    🗑️
-                  </button>
-                </div>
-              </div>
-            ))}
-            {checkingAccounts.length === 0 && (
-              <div style={styles.emptyState}>
-                <ConnectBankCTA label="checking accounts" />
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div style={styles.section}>
-          <h2 style={styles.sectionHeaderTitle}>SAVINGS ACCOUNTS</h2>
-          <div style={styles.accountList}>
-            {savingsAccounts.map(account => (
-              <div
-                key={account.id}
-                style={styles.accountRow}
-              >
-                <div style={styles.accountInfo} onClick={() => handleAccountClick(account.id)}>
-                  <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
-                  <div>
-                    <div style={styles.accountName}>
-                      {account.name}
-                      <PlaidLinkedBadge account={account} />
-                      <PlaidManageConnectionLink account={account} />
-                    </div>
-                    <div style={styles.accountMeta}>
-                      {account.institution || 'No institution'}
-                      {account.account_number && ` • •••• ${account.account_number.slice(-4)}`}
-                    </div>
-                  </div>
-                </div>
-                <div style={styles.accountActions}>
-                  <div style={styles.accountBalance}>
-                    <div style={styles.balanceAmount}>
-                      {formatCurrency(account.balance)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleEditClick(account); }}
-                    style={styles.editButton}
-                    title="Edit Account"
-                  >
-                    ✏️
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteAccount(account.id, account.name, account); }}
-                    style={styles.deleteButton}
-                    title="Delete Account"
-                  >
-                    🗑️
-                  </button>
-                </div>
-              </div>
-            ))}
-            {savingsAccounts.length === 0 && (
-              <div style={styles.emptyState}>
-                <ConnectBankCTA label="savings accounts" />
-              </div>
-            )}
-          </div>
-        </div>
+        {renderCashAccountSection('CHECKING ACCOUNTS', checkingAccounts, 'checking accounts')}
+        {renderCashAccountSection('SAVINGS ACCOUNTS', savingsAccounts, 'savings accounts')}
       </div>
 
       {/* INLINE ADD ACCOUNT MODAL */}
@@ -1065,11 +968,16 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
                 <button type="submit" style={styles.saveButton} disabled={isEditing}>
                   {isEditing ? 'Saving...' : 'Save Changes'}
                 </button>
-                {!isPlaidLinkedAccount(editingAccount) && (
-                  <button type="button" onClick={() => handleDeleteAccount(editingAccount.id, editingAccount.name, editingAccount)} style={styles.modalDeleteButton}>
-                    Delete Account
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => handleDeleteCashAccount(editingAccount)}
+                  style={styles.modalDeleteButton}
+                  disabled={deletingAccountId === normalizeAccountId(editingAccount.id)}
+                >
+                  {deletingAccountId === normalizeAccountId(editingAccount.id)
+                    ? 'Removing…'
+                    : 'Delete Account'}
+                </button>
                 <button type="button" onClick={() => setShowEditModal(false)} style={styles.cancelButton}>
                   Cancel
                 </button>
@@ -1078,15 +986,6 @@ const CashAccountsView = ({ accounts: propAccounts }) => {
           </div>
         </div>
       )}
-      <button 
-        onClick={() => {
-          console.log('🔴 TEST BUTTON CLICKED - calling handleCreateInlineAccount directly');
-          handleCreateInlineAccount();
-        }}
-        style={{ position: 'fixed', bottom: 10, right: 10, zIndex: 9999, background: 'red', padding: 10, color: 'white', borderRadius: 5 }}
-      >
-        TEST CREATE ACCOUNT
-      </button>
     </div>
   );
 };
@@ -1162,7 +1061,10 @@ const styles = {
   accountActions: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.75rem'
+    gap: '0.75rem',
+    position: 'relative',
+    zIndex: 1,
+    flexShrink: 0,
   },
   accountIcon: {
     fontSize: '1.5rem'

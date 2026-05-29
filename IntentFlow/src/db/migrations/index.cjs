@@ -119,6 +119,7 @@ async function runMigrations(existingDb) {
             '018_credit_card_payment_system.cjs',
             '019_preserve_archived_category_group.cjs',
             '020_category_goal_frequency.cjs',
+            '021_plaid_account_dismissals.cjs',
         ];
 
         for (const migration of migrations) {

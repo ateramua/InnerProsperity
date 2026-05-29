@@ -4,11 +4,16 @@ import EditAccountModal from './EditAccountModal';
 import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
 import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
 import ConnectBankCTA from '../components/ConnectBankCTA';
-import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
 import {
   confirmNoDuplicateAccount,
   maskFromAccountNumber,
 } from '../utils/plaidDuplicateCheck';
+import {
+  getLoanAccountDeleteConfirmMessage,
+  permanentlyDeleteLoanAccountViaApi,
+  formatLoanDeleteError,
+} from '../utils/loanAccountUtils.jsx';
+import { normalizeAccountId } from '../utils/cashAccountUtils.jsx';
 
 function LoanManager({
   onNavigate,
@@ -25,6 +30,7 @@ function LoanManager({
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingLoan, setEditingLoan] = useState(null);
+  const [deletingLoanId, setDeletingLoanId] = useState(null);
   
   // ===================== LOAN PAYMENT MODAL STATE =====================
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -600,40 +606,36 @@ function LoanManager({
     }
   };
 
-  const handleDeleteLoanAccount = async (accountId) => {
-    const loan = loans.find((l) => l.id === accountId) || editingLoan;
-    if (loan && isPlaidLinkedAccount(loan)) {
-      alert(
-        'This loan is linked via Plaid. Open Linked Banks and remove the bank connection to disconnect it.'
-      );
+  const handleDeleteLoanAccount = async (loanId) => {
+    const normalizedId = normalizeAccountId(loanId);
+    const loan = loans.find((l) => normalizeAccountId(l.id) === normalizedId);
+    if (!loan) {
+      alert('Loan not found');
       return;
     }
-    if (!window.confirm('Are you sure you want to delete this loan? This action cannot be undone.')) {
+    if (deletingLoanId) return;
+    if (!window.confirm(getLoanAccountDeleteConfirmMessage(loan))) {
       return;
     }
 
+    setDeletingLoanId(normalizedId);
     try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
-        return;
-      }
+      const result = await permanentlyDeleteLoanAccountViaApi(loan);
 
-      const userId = userResult.data.id;
-      const result = await window.electronAPI.deleteAccount(accountId, userId);
-
-      if (result && result.success) {
-        setShowEditModal(false);
-        setEditingLoan(null);
+      if (result?.success) {
+        if (selectedLoan === normalizedId || normalizeAccountId(selectedLoan) === normalizedId) {
+          setSelectedLoan(null);
+        }
         window.dispatchEvent(new CustomEvent('accounts-updated'));
         window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-        alert('✅ Loan deleted successfully!');
       } else {
-        alert('Failed to delete loan: ' + (result?.error || 'Unknown error'));
+        alert('Failed to delete loan: ' + formatLoanDeleteError(result));
       }
     } catch (error) {
       console.error('Error deleting loan:', error);
       alert('Error: ' + error.message);
+    } finally {
+      setDeletingLoanId(null);
     }
   };
 
@@ -848,14 +850,34 @@ function LoanManager({
                   >
                     ✏️ Edit
                   </button>
+                </div>
+
+                <div style={styles.loanManagementActions}>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onViewDetails && onViewDetails(loan.id);
                     }}
                     style={styles.transactionsButton}
+                    title="View account transactions"
                   >
-                    📋 Transactions
+                    Transactions
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteLoanAccount(loan.id);
+                    }}
+                    style={{
+                      ...styles.deleteButtonInline,
+                      opacity: deletingLoanId === normalizeAccountId(loan.id) ? 0.6 : 1,
+                    }}
+                    disabled={deletingLoanId === normalizeAccountId(loan.id)}
+                    title="Permanently delete this loan"
+                  >
+                    {deletingLoanId === normalizeAccountId(loan.id)
+                      ? 'Deleting…'
+                      : 'Delete Loan'}
                   </button>
                 </div>
                 
@@ -1324,8 +1346,8 @@ function LoanManager({
           setEditingLoan(null);
         }}
         onSave={handleSaveEdit}
-        onDelete={handleDeleteLoanAccount}
         account={editingLoan}
+        onNavigate={onNavigate}
       />
     </div>
   );
@@ -1418,11 +1440,36 @@ const styles = {
     flex: 1,
     padding: '0.5rem',
     background: 'transparent',
-    border: '1px solid #0047AB',
-    color: '#0047AB',
+    border: '1px solid #9CA3AF',
+    color: '#F3F4F6',
     borderRadius: '0.375rem',
     fontSize: '0.75rem',
-    cursor: 'pointer'
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  loanManagementActions: {
+    display: 'flex',
+    gap: '0.5rem',
+    marginTop: '0.5rem',
+    paddingTop: '0.75rem',
+    borderTop: '1px solid #374151'
+  },
+  deleteButtonInline: {
+    flex: 1,
+    padding: '0.5rem',
+    background: 'transparent',
+    border: '1px solid #EF4444',
+    color: '#EF4444',
+    borderRadius: '0.375rem',
+    fontSize: '0.75rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   filterTabs: {
     display: 'flex',
