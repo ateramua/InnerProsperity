@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "roots": [
+    {
+      "name": "InnerProsperity",
+      "path": "/Users/abditeramu/Documents/repos/InnerProsperity"
+    },
+    {
+      "name": "FocusForge",
+      "path": "/Users/abditeramu/Documents/repos/StillnessCompiler"
+    },
+    {
+      "name": "PasswordManager",
+      "path": "/Users/abditeramu/Documents/repos/aurasafe-repo"
+    },
+    {
+      "name": "RadiantRoof",
+      "path": "/Users/abditeramu/Documents/repos/radiantroof-desktop-repo"
+    },
+    {
+      "name": "E2E-TestSuite",
+      "path": "/Users/abditeramu/Documents/repos/desktop-playwright-suite-repo"
+    },
+    {
+      "name": "GmailAPI",
+      "path": "/Users/abditeramu/Documents/repos/gmail-management-engine"
+    }
+  ]
+}

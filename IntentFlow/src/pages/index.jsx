@@ -118,6 +118,7 @@ export default function HomePage() {
   if (loading || loadingAccounts) {
     return (
       <div
+        data-testid="app-overlay"
         className="flex min-h-screen flex-col items-center justify-center"
         style={{ backgroundColor: APP_BG, color: APP_ON_FG }}
       >

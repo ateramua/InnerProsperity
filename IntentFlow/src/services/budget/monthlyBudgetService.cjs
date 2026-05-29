@@ -1,9 +1,14 @@
 /**
  * Month-scoped budget rows (monthly_budgets) + transaction-derived activity.
- * Keeps envelope math: available = previous_month_available + budgeted - activity.
+ * Available is derived via categoryAvailableEngine (envelope budgeting).
  */
 
 const crypto = require('crypto');
+const { sqlCategoryNotArchived } = require('../../shared/categoryArchiveFlags.cjs');
+const {
+  roundMoney,
+  buildCategoryEnvelopeRow,
+} = require('../../shared/categoryAvailableEngine.cjs');
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -28,10 +33,7 @@ function addCalendarMonths(monthKey, delta) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01`;
 }
 
-/**
- * Activity = spending as a positive number (outflows stored negative on accounts).
- * Inflows (positive amounts) reduce activity. Transfers excluded.
- */
+/** @deprecated Use per-category totals from categoryAvailableEngine; kept for callers expecting a map. */
 async function getActivityTotalsByCategoryForMonth(db, userId, monthKey) {
   const ym = monthKey.slice(0, 7);
   const rows = await db.all(
@@ -111,13 +113,12 @@ async function getBudgetMonthSnapshot(db, userId, monthKey) {
        ON CAST(cg.id AS TEXT) = CAST(COALESCE(c.group_id, '') AS TEXT)
       AND cg.user_id = c.user_id
      WHERE c.user_id = ?
-       AND (c.archived IS NULL OR c.archived = 0)
+       AND ${sqlCategoryNotArchived('c')}
      ORDER BY cg.sort_order ASC, c.name ASC`,
     [userId]
   );
 
   const categoryIds = categories.map((c) => c.id);
-  const activityById = await getActivityTotalsByCategoryForMonth(db, userId, normalizedMonth);
   const [rowThisMonth, rowPrevMonth] = await Promise.all([
     getMonthlyRowMap(db, normalizedMonth, categoryIds),
     getMonthlyRowMap(db, prevMonthKey, categoryIds)
@@ -132,8 +133,6 @@ async function getBudgetMonthSnapshot(db, userId, monthKey) {
       const prevRow = rowPrevMonth.get(cat.id);
       const previousAvailable = prevRow ? Number(prevRow.available_amount) || 0 : 0;
 
-      const activity = activityById[cat.id] ?? 0;
-
       let budgeted;
       if (isCurrentCalendarMonth) {
         budgeted = Number(cat.assigned) || 0;
@@ -141,22 +140,33 @@ async function getBudgetMonthSnapshot(db, userId, monthKey) {
         budgeted = mb != null ? Number(mb.budgeted_amount) || 0 : 0;
       }
 
-      let available = previousAvailable + budgeted - activity;
+      const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
+        monthKey: normalizedMonth,
+        previousAvailable,
+        budgeted,
+        isCurrentCalendarMonth,
+      });
 
       await upsertMonthlyRow(db, {
         category_id: cat.id,
         month: normalizedMonth,
-        budgeted_amount: budgeted,
-        activity_amount: activity,
-        available_amount: available
+        budgeted_amount: envelope.assigned,
+        activity_amount: envelope.activity,
+        available_amount: envelope.available
       });
 
       mapped.push({
         ...cat,
-        assigned: budgeted,
-        activity,
-        available,
-        previous_available: previousAvailable
+        assigned: envelope.assigned,
+        activity: envelope.activity,
+        available: envelope.available,
+        previous_available: envelope.previous_available,
+        spending: envelope.spending,
+        inflows: envelope.inflows,
+        adjustments: envelope.adjustments,
+        card_payments: envelope.card_payments,
+        overspent: envelope.overspent,
+        overspending_type: envelope.overspending_type,
       });
     }
     await db.exec('COMMIT');
@@ -208,72 +218,110 @@ async function applyMonthBudgetedAmount(db, userId, categoryId, monthKey, budget
   );
   const previousAvailable = prevRow ? Number(prevRow.available_amount) || 0 : 0;
 
-  const activityRows = await getActivityTotalsByCategoryForMonth(db, userId, normalizedMonth);
-  const activity = activityRows[categoryId] ?? 0;
+  const cat = await db.get(
+    'SELECT * FROM categories WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?',
+    [categoryId, userId]
+  );
+  if (!cat) {
+    throw new Error('Category not found');
+  }
 
   const assigned = Number(budgetedAmount) || 0;
-  const available = previousAvailable + assigned - activity;
+  const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
+    monthKey: normalizedMonth,
+    previousAvailable,
+    budgeted: assigned,
+    isCurrentCalendarMonth,
+  });
 
   await upsertMonthlyRow(db, {
     category_id: categoryId,
     month: normalizedMonth,
-    budgeted_amount: assigned,
-    activity_amount: activity,
-    available_amount: available
+    budgeted_amount: envelope.assigned,
+    activity_amount: envelope.activity,
+    available_amount: envelope.available
   });
 
   if (isCurrentCalendarMonth) {
     await db.run(
       'UPDATE categories SET assigned = ?, available = ?, activity = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?',
-      [assigned, available, activity, categoryId, userId]
+      [envelope.assigned, envelope.available, envelope.activity, categoryId, userId]
     );
   }
 
-  return { assigned, activity, available, previous_available: previousAvailable, monthKey: normalizedMonth };
+  return {
+    assigned: envelope.assigned,
+    activity: envelope.activity,
+    available: envelope.available,
+    previous_available: envelope.previous_available,
+    monthKey: normalizedMonth,
+    overspent: envelope.overspent,
+    overspending_type: envelope.overspending_type,
+  };
 }
 
 /**
  * Apply client-provided assigned + available (e.g. credit card envelope moves) for a month.
  */
-async function applyMonthAssignedAndAvailable(db, userId, categoryId, monthKey, assigned, available) {
+async function applyMonthAssignedAndAvailable(db, userId, categoryId, monthKey, assigned, available, opts = {}) {
   const normalizedMonth = toLocalMonthKey(monthKey);
   const todayKey = toLocalMonthKey(new Date());
   const isCurrentCalendarMonth = normalizedMonth === todayKey;
 
-  const activityRows = await getActivityTotalsByCategoryForMonth(db, userId, normalizedMonth);
-  const activity = activityRows[categoryId] ?? 0;
+  const prevMonthKey = addCalendarMonths(normalizedMonth, -1);
+  const prevRow = await db.get(
+    'SELECT available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    [categoryId, prevMonthKey]
+  );
+  const previousAvailable = prevRow ? Number(prevRow.available_amount) || 0 : 0;
+
+  const cat = await db.get(
+    'SELECT * FROM categories WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?',
+    [categoryId, userId]
+  );
+  if (!cat) {
+    throw new Error('Category not found');
+  }
 
   const a = Number(assigned) || 0;
-  const v = Number(available);
-  let useAvailable;
-  if (Number.isFinite(v)) {
-    useAvailable = v;
-  } else {
-    const prevMonthKey = addCalendarMonths(normalizedMonth, -1);
-    const prevRow = await db.get(
-      'SELECT available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
-      [categoryId, prevMonthKey]
-    );
-    const previousAvailable = prevRow ? Number(prevRow.available_amount) || 0 : 0;
-    useAvailable = previousAvailable + a - activity;
+  const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
+    monthKey: normalizedMonth,
+    previousAvailable,
+    budgeted: a,
+    isCurrentCalendarMonth,
+  });
+
+  let useAvailable = envelope.available;
+  let useActivity = envelope.activity;
+  if (opts.allowManualAvailableOverride && Number.isFinite(Number(available))) {
+    useAvailable = roundMoney(available);
+    if (cat.is_credit_card_payment_category === 1) {
+      useActivity = useAvailable;
+    }
   }
 
   await upsertMonthlyRow(db, {
     category_id: categoryId,
     month: normalizedMonth,
     budgeted_amount: a,
-    activity_amount: activity,
+    activity_amount: useActivity,
     available_amount: useAvailable
   });
 
   if (isCurrentCalendarMonth) {
     await db.run(
       'UPDATE categories SET assigned = ?, available = ?, activity = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?',
-      [a, useAvailable, activity, categoryId, userId]
+      [a, useAvailable, useActivity, categoryId, userId]
     );
   }
 
-  return { assigned: a, activity, available: useAvailable, monthKey: normalizedMonth };
+  return {
+    assigned: a,
+    activity: useActivity,
+    available: useAvailable,
+    monthKey: normalizedMonth,
+    previous_available: previousAvailable,
+  };
 }
 
 module.exports = {

@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import PM from '../constants/pmTheme.jsx';
+import {
+  CATEGORY_GOAL_TYPE_OPTIONS,
+  CATEGORY_GOAL_FREQUENCY_OPTIONS,
+  normalizeGoalFrequencyForSelect,
+} from '../constants/categoryGoalTypes.jsx';
+import { formatDateForInput } from '../utils/budgetMonthUtils.jsx';
+import { parseMoneyInput, formatMoneyInput } from '../utils/categoryMoneyInput.jsx';
 
 const CategoryTargetModal = ({ 
   isOpen, 
@@ -8,26 +15,31 @@ const CategoryTargetModal = ({
   onSave,
   currentTargetAmount = 0,
   currentTargetType = 'monthly',
-  currentTargetDate = null
+  currentTargetDate = null,
+  currentTargetFrequency = 'monthly'
 }) => {
   const [targetType, setTargetType] = useState(currentTargetType);
-  const [targetAmount, setTargetAmount] = useState(currentTargetAmount);
-  const [targetDate, setTargetDate] = useState(currentTargetDate || '');
+  const [targetFrequency, setTargetFrequency] = useState(
+    normalizeGoalFrequencyForSelect(currentTargetFrequency),
+  );
+  const [targetAmountInput, setTargetAmountInput] = useState('');
+  const [targetDate, setTargetDate] = useState(formatDateForInput(currentTargetDate));
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (isOpen) {
       setTargetType(currentTargetType);
-      setTargetAmount(currentTargetAmount);
-      setTargetDate(currentTargetDate || '');
+      setTargetFrequency(normalizeGoalFrequencyForSelect(currentTargetFrequency));
+      setTargetAmountInput(formatMoneyInput(currentTargetAmount));
+      setTargetDate(formatDateForInput(currentTargetDate));
       setError('');
     }
-  }, [isOpen, currentTargetType, currentTargetAmount, currentTargetDate]);
+  }, [isOpen, currentTargetType, currentTargetAmount, currentTargetDate, currentTargetFrequency]);
 
   const handleSave = () => {
-    // Validation
-    if (targetAmount <= 0) {
-      setError('Please enter a valid target amount greater than 0');
+    const targetAmount = parseMoneyInput(targetAmountInput);
+    if (!Number.isFinite(targetAmount) || targetAmount < 0) {
+      setError('Please enter a valid target amount (0 or greater)');
       return;
     }
 
@@ -37,10 +49,13 @@ const CategoryTargetModal = ({
     }
 
     if (targetType === 'by_date') {
-      const selectedDate = new Date(targetDate);
+      const [y, m, d] = targetDate.split('-').map(Number);
+      const selectedDate = new Date(y, m - 1, d);
       const today = new Date();
-      if (selectedDate <= today) {
-        setError('Target date must be in the future');
+      today.setHours(0, 0, 0, 0);
+      selectedDate.setHours(0, 0, 0, 0);
+      if (selectedDate < today) {
+        setError('Target date cannot be in the past');
         return;
       }
     }
@@ -48,18 +63,19 @@ const CategoryTargetModal = ({
     onSave({
       target_amount: targetAmount,
       target_type: targetType,
-      target_date: targetType === 'by_date' ? targetDate : null
+      target_date: targetType === 'by_date' ? targetDate : null,
+      target_frequency: targetFrequency,
     });
   };
 
   const getTargetDescription = () => {
     switch (targetType) {
       case 'monthly':
-        return "Set a monthly amount to assign to this category each month.";
+        return 'Set how much you want to fund this category each month.';
       case 'balance':
-        return "Save toward a specific balance goal. The progress bar shows how close you are to your target.";
+        return 'Save toward a target balance in this category. Progress is based on available balance.';
       case 'by_date':
-        return "Set a target amount to save by a specific date. We'll calculate how much you need to set aside each month.";
+        return 'Save toward a target category balance by a specific date.';
       default:
         return "";
     }
@@ -76,39 +92,77 @@ const CategoryTargetModal = ({
         </div>
 
         <div style={styles.formGroup}>
-          <label style={styles.label}>Goal Type</label>
-          <select 
+          <label htmlFor="category-goal-type" style={styles.label}>Goal Type</label>
+          <select
+            id="category-goal-type"
             style={styles.select}
             value={targetType}
             onChange={(e) => setTargetType(e.target.value)}
           >
-            <option value="monthly">Monthly Funding Target</option>
-            <option value="balance">Balance Goal (e.g., Emergency Fund)</option>
-            <option value="by_date">Target by Date (e.g., Vacation by July)</option>
+            {CATEGORY_GOAL_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
           </select>
           <p style={styles.helperText}>{getTargetDescription()}</p>
         </div>
 
         <div style={styles.formGroup}>
-          <label style={styles.label}>
-            {targetType === 'monthly' ? 'Monthly Target Amount' : 
-             targetType === 'balance' ? 'Target Balance' : 
-             'Target Amount to Save'}
+          <label htmlFor="category-goal-frequency" style={styles.label}>Frequency</label>
+          <select
+            id="category-goal-frequency"
+            style={styles.select}
+            value={targetFrequency}
+            onChange={(e) => setTargetFrequency(e.target.value)}
+          >
+            {CATEGORY_GOAL_FREQUENCY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <table style={styles.frequencyTable} aria-label="Supported goal frequencies">
+            <thead>
+              <tr>
+                <th style={styles.frequencyTableHeader}>Frequency</th>
+                <th style={styles.frequencyTableHeader}>Supported</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CATEGORY_GOAL_FREQUENCY_OPTIONS.map((opt) => (
+                <tr key={opt.value}>
+                  <td style={styles.frequencyTableCell}>{opt.label}</td>
+                  <td style={styles.frequencyTableCell}>{opt.supported ? 'Yes' : 'No'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={styles.formGroup}>
+          <label htmlFor="category-goal-amount" style={styles.label}>
+            {targetType === 'monthly'
+              ? 'Monthly funding amount'
+              : targetType === 'balance'
+                ? 'Target category balance'
+                : 'Target category balance'}
           </label>
           <div style={styles.amountInputWrapper}>
             <span style={styles.currencySymbol}>$</span>
             <input
-              type="number"
+              id="category-goal-amount"
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              aria-label="Goal target"
               style={styles.amountInput}
-              value={targetAmount === 0 ? '' : targetAmount}
+              value={targetAmountInput}
               onChange={(e) => {
-                const value = e.target.value === '' ? 0 : parseFloat(e.target.value);
-                setTargetAmount(value);
+                setTargetAmountInput(e.target.value);
                 setError('');
               }}
               placeholder="0.00"
-              step="0.01"
-              min="0"
               autoFocus
             />
           </div>
@@ -116,20 +170,21 @@ const CategoryTargetModal = ({
 
         {targetType === 'by_date' && (
           <div style={styles.formGroup}>
-            <label style={styles.label}>Target Date</label>
+            <label htmlFor="category-goal-date" style={styles.label}>Target Date</label>
             <input
+              id="category-goal-date"
               type="date"
-              style={styles.input}
-              value={targetDate}
+              style={{ ...styles.input, colorScheme: 'dark' }}
+              value={targetDate || ''}
               onChange={(e) => {
                 setTargetDate(e.target.value);
                 setError('');
               }}
             />
-            {targetDate && targetAmount > 0 && (
+            {targetDate && parseMoneyInput(targetAmountInput) > 0 && (
               <div style={styles.calculationHint}>
                 💡 You'll need to save approximately $
-                {(targetAmount / Math.max(1, Math.ceil((new Date(targetDate) - new Date()) / (1000 * 60 * 60 * 24 * 30)))).toFixed(2)} 
+                {(parseMoneyInput(targetAmountInput) / Math.max(1, Math.ceil((new Date(targetDate) - new Date()) / (1000 * 60 * 60 * 24 * 30)))).toFixed(2)} 
                 per month to reach your goal by {new Date(targetDate).toLocaleDateString()}
               </div>
             )}
@@ -139,11 +194,11 @@ const CategoryTargetModal = ({
         {targetType === 'balance' && category && (
           <div style={styles.currentBalanceHint}>
             Current balance: ${(category.available || 0).toFixed(2)}
-            {targetAmount > 0 && (
-              <span style={{ color: category.available >= targetAmount ? '#4ADE80' : '#F59E0B' }}>
-                {category.available >= targetAmount 
+            {parseMoneyInput(targetAmountInput) > 0 && (
+              <span style={{ color: category.available >= parseMoneyInput(targetAmountInput) ? '#4ADE80' : '#F59E0B' }}>
+                {category.available >= parseMoneyInput(targetAmountInput)
                   ? ' ✓ Goal achieved!' 
-                  : ` (Need $${(targetAmount - (category.available || 0)).toFixed(2)} more)`}
+                  : ` (Need $${(parseMoneyInput(targetAmountInput) - (category.available || 0)).toFixed(2)} more)`}
               </span>
             )}
           </div>
@@ -168,7 +223,8 @@ const CategoryTargetModal = ({
                 onSave({
                   target_amount: null,
                   target_type: 'monthly',
-                  target_date: null
+                  target_date: null,
+                  target_frequency: 'monthly',
                 });
               }
             }}
@@ -251,6 +307,24 @@ const styles = {
     fontSize: '12px',
     marginTop: '6px',
     lineHeight: '1.4'
+  },
+  frequencyTable: {
+    width: '100%',
+    marginTop: '10px',
+    borderCollapse: 'collapse',
+    fontSize: '12px',
+    color: PM.textMuted,
+  },
+  frequencyTableHeader: {
+    textAlign: 'left',
+    padding: '6px 8px',
+    borderBottom: '1px solid ' + PM.border,
+    fontWeight: '600',
+    color: PM.text,
+  },
+  frequencyTableCell: {
+    padding: '6px 8px',
+    borderBottom: '1px solid ' + PM.border,
   },
   amountInputWrapper: {
     position: 'relative',

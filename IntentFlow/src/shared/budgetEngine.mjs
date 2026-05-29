@@ -214,19 +214,26 @@ export default class BudgetEngine {
     }
 
     const updatedCategories = [...categories];
-
     const category = updatedCategories[categoryIndex];
-
-    const newActivity =
-      (category.activity || 0) + amount;
-
-    const newAvailable =
-      (category.assigned || 0) + newActivity;
+    const spendDelta = amount < 0 ? -amount : 0;
+    const inflowDelta = amount > 0 ? amount : 0;
+    const spending = (category.spending || 0) + spendDelta;
+    const inflows = (category.inflows || 0) + inflowDelta;
+    const activity = spending - inflows;
+    const previousAvailable = category.previous_available || 0;
+    const available =
+      previousAvailable +
+      (category.assigned || 0) -
+      spending +
+      inflows +
+      (category.adjustments || 0);
 
     updatedCategories[categoryIndex] = {
       ...category,
-      activity: newActivity,
-      available: newAvailable
+      spending,
+      inflows,
+      activity,
+      available
     };
 
     return updatedCategories;

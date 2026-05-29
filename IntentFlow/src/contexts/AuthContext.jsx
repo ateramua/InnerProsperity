@@ -125,6 +125,11 @@ export function AuthProvider({ children }) {
 
       setUser(null);
       setIsAuthenticated(false);
+      try {
+        sessionStorage.removeItem('intentflow.prosperityMap.v1');
+      } catch (_) {
+        /* ignore */
+      }
       console.log('✅ Logout complete - isAuthenticated set to false');
 
       return { success: true };

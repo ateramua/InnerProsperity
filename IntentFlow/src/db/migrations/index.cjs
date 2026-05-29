@@ -116,6 +116,9 @@ async function runMigrations(existingDb) {
             '015_plaid_phase3.cjs',
             '016_plaid_consent.cjs',
             '017_plaid_product_gaps.cjs',
+            '018_credit_card_payment_system.cjs',
+            '019_preserve_archived_category_group.cjs',
+            '020_category_goal_frequency.cjs',
         ];
 
         for (const migration of migrations) {

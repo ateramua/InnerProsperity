@@ -128,6 +128,18 @@ try {
     getBudgetMonthSnapshot: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getMonthSnapshot', userId, monthKey),
 
+    exportProsperityTable: (payload) =>
+      ipcRenderer.invoke('budget:exportProsperityTable', payload),
+
+    pickProsperityImportFile: () =>
+      ipcRenderer.invoke('budget:pickProsperityImportFile'),
+
+    previewProsperityImport: (payload) =>
+      ipcRenderer.invoke('budget:previewProsperityImport', payload),
+
+    applyProsperityImport: (payload) =>
+      ipcRenderer.invoke('budget:applyProsperityImport', payload),
+
     createCategory: (categoryData) =>
       ipcRenderer.invoke('createCategory', categoryData),
 
@@ -161,11 +173,11 @@ try {
     toggleHideCategory: (categoryId, userId) =>
       ipcRenderer.invoke('category:toggleHide', categoryId, userId),
 
-    archiveCategory: (categoryId, userId) =>
-      ipcRenderer.invoke('category:archive', categoryId, userId),
+    archiveCategory: (categoryId, userId, archiveHints) =>
+      ipcRenderer.invoke('category:archive', categoryId, userId, archiveHints),
 
-    restoreCategory: (categoryId, userId) =>
-      ipcRenderer.invoke('category:restore', categoryId, userId),
+    restoreCategory: (categoryId, userId, restoreHints) =>
+      ipcRenderer.invoke('category:restore', categoryId, userId, restoreHints),
 
     getArchivedCategories: (userId) =>
       ipcRenderer.invoke('category:getArchived', userId),
@@ -214,8 +226,35 @@ try {
     backupDatabase: (password, options) =>
       ipcRenderer.invoke('backup-database', password, options),
 
-    restoreDatabase: (password) =>
-      ipcRenderer.invoke('restore-database', password),
+    restoreDatabase: (password, mode = 'in-place') =>
+      ipcRenderer.invoke('restore-database', password, mode),
+
+    getBackupHistory: () =>
+      ipcRenderer.invoke('backup-get-history'),
+
+    compareBackupVersions: (firstVersionId, secondVersionId) =>
+      ipcRenderer.invoke('backup-compare-versions', firstVersionId, secondVersionId),
+
+    simulateRestore: (password, backupVersionId) =>
+      ipcRenderer.invoke('backup-simulate-restore', password, backupVersionId),
+
+    queueBackupOperation: (type, payload) =>
+      ipcRenderer.invoke('backup-queue-operation', type, payload),
+
+    getBackupQueue: () =>
+      ipcRenderer.invoke('backup-get-queue'),
+
+    processBackupQueue: (password) =>
+      ipcRenderer.invoke('backup-process-queue', password),
+
+    rewindBackupVersion: (password, versionId) =>
+      ipcRenderer.invoke('backup-rewind-version', password, versionId),
+
+    generateRecoveryKit: () =>
+      ipcRenderer.invoke('backup-generate-recovery-kit'),
+
+    getRecoveryKitStatus: () =>
+      ipcRenderer.invoke('backup-get-recovery-kit-status'),
 
     openExternal: (url) =>
       ipcRenderer.invoke('open-external', url),

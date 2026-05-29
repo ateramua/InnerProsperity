@@ -1,0 +1,52 @@
+Group,Category,Assigned,Activity,Available,Progress,Goal Target,Goal Type,Month
+Housing,Rent,1500,,,,1500,monthly,2026-05-01
+Housing,Property Tax,300,,,,300,monthly,2026-05-01
+Housing,Home Insurance,150,,,,150,monthly,2026-05-01
+Housing,HOA Fees,100,,,,100,monthly,2026-05-01
+Housing,Maintenance/Repairs,200,,,,200,monthly,2026-05-01
+Utilities,Electricity,120,,,,150,monthly,2026-05-01
+Utilities,Water,70,,,,70,monthly,2026-05-01
+Utilities,Gas/Heating,80,,,,80,monthly,2026-05-01
+Utilities,Trash/Sewer,50,,,,50,monthly,2026-05-01
+Utilities,Internet,70,,,,70,monthly,2026-05-01
+Utilities,Phone/Mobile,80,,,,80,monthly,2026-05-01
+Food,Groceries,500,,,,500,monthly,2026-05-01
+Food,Dining Out,200,,,,200,monthly,2026-05-01
+Food,Coffee Shops,40,,,,40,monthly,2026-05-01
+Transportation,Car Payment,400,,,,400,monthly,2026-05-01
+Transportation,Gas/Fuel,150,,,,150,monthly,2026-05-01
+Transportation,Car Insurance,120,,,,120,monthly,2026-05-01
+Transportation,Maintenance,80,,,,80,monthly,2026-05-01
+Transportation,Public Transit/Rideshare,100,,,,100,monthly,2026-05-01
+Savings,Emergency Fund,300,,,,5000,monthly,2026-05-01
+Savings,Retirement (IRA/401k),800,,,,800,monthly,2026-05-01
+Savings,Vacation Fund,250,,,,3000,monthly,2026-05-01
+Savings,New Car Fund,400,,,,8000,monthly,2026-05-01
+Savings,Home Down Payment,1000,,,,40000,monthly,2026-05-01
+Debt,Credit Card,250,,,,250,monthly_debt_payment,2026-05-01
+Debt,Student Loan,350,,,,350,monthly_debt_payment,2026-05-01
+Debt,Personal Loan,200,,,,200,monthly_debt_payment,2026-05-01
+Debt,Medical Debt,100,,,,100,monthly_debt_payment,2026-05-01
+Lifestyle / Entertainment,Streaming Services,50,,,,50,monthly,2026-05-01
+Lifestyle / Entertainment,Gym/Fitness,60,,,,60,monthly,2026-05-01
+Lifestyle / Entertainment,Hobbies,80,,,,80,monthly,2026-05-01
+Lifestyle / Entertainment,Alcohol/Bars,60,,,,60,monthly,2026-05-01
+Lifestyle / Entertainment,Concerts/Events,100,,,,100,monthly,2026-05-01
+Shopping,Clothing,120,,,,120,monthly,2026-05-01
+Shopping,Electronics/Gadgets,80,,,,80,monthly,2026-05-01
+Shopping,Home Decor,70,,,,70,monthly,2026-05-01
+Health & Wellness,Health Insurance,350,,,,350,monthly,2026-05-01
+Health & Wellness,Doctor/Dentist,80,,,,80,monthly,2026-05-01
+Health & Wellness,Medications,40,,,,40,monthly,2026-05-01
+Health & Wellness,Therapy,150,,,,150,monthly,2026-05-01
+Pets,Pet Food,60,,,,60,monthly,2026-05-01
+Pets,Vet/Medications,50,,,,50,monthly,2026-05-01
+Pets,Pet Insurance,35,,,,35,monthly,2026-05-01
+Giving,Tithes/Charity,200,,,,200,monthly,2026-05-01
+Giving,Gifts (Birthdays/Holidays),100,,,,100,monthly,2026-05-01
+Kids,Daycare/School,900,,,,900,monthly,2026-05-01
+Kids,Allowance,40,,,,40,monthly,2026-05-01
+Kids,Activities/Sports,120,,,,120,monthly,2026-05-01
+Uncategorized,Misc,50,,,,0,monthly,2026-05-01
+Uncategorized,Fees/Interest,20,,,,0,monthly,2026-05-01
+Uncategorized,Cash/ATM,60,,,,60,monthly,2026-05-01

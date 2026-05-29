@@ -92,6 +92,22 @@ function useInitializeElectronAPI() {
             categories: []
           }
         }),
+        exportProsperityTable: async () => ({
+          success: false,
+          error: 'Real electronAPI not available - use Electron app',
+        }),
+        pickProsperityImportFile: async () => ({
+          success: false,
+          error: 'Real electronAPI not available - use Electron app',
+        }),
+        previewProsperityImport: async () => ({
+          success: false,
+          error: 'Real electronAPI not available - use Electron app',
+        }),
+        applyProsperityImport: async () => ({
+          success: false,
+          error: 'Real electronAPI not available - use Electron app',
+        }),
         getCategoryGroups: async (userId) => ({ success: true, data: [] }),
         createCategory: async (data) => ({ success: true, data: { id: Date.now() } }),
         updateCategory: async (id, updates) => ({ success: true }),
