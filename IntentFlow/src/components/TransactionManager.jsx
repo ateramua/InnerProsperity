@@ -1,398 +1,282 @@
-// src/components/TransactionManager.jsx
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
+import {
+  DEFAULT_TRANSACTION_SORT,
+  sortTransactions,
+} from '../utils/transactionSortUtils.jsx';
+import {
+  DEFAULT_TRANSACTION_FILTERS,
+  filterTransactions,
+} from '../utils/transactionFilterUtils.jsx';
+import TransactionToolbar from './transactions/TransactionToolbar.jsx';
+import TransactionTable from './transactions/TransactionTable.jsx';
 
-/**
- * TransactionManager component for managing financial transactions
- * @param {Array} transactions - List of transaction objects
- * @param {Array} categories - Available categories for transactions
- * @param {Array} accounts - Available accounts
- * @param {Function} onAddTransaction - Callback to add a new transaction
- * @param {Function} onUpdateTransaction - Callback to update an existing transaction
- * @param {Function} onDeleteTransaction - Callback to delete a transaction
- * @param {Function} onToggleCleared - Callback to toggle cleared status
- * @param {string|number} accountId - ID of the current account
- */
-const TransactionManager = ({ transactions, categories, accounts, onAddTransaction, onUpdateTransaction, onDeleteTransaction, onToggleCleared, accountId }) => {
-    const [editingId, setEditingId] = useState(null);
-    const [editForm, setEditForm] = useState({});
-
-    const handleEdit = (transaction) => {
-        setEditingId(transaction.id);
-        setEditForm({
-            date: transaction.date,
-            payee: transaction.payee || transaction.description || '',
-            categoryId: transaction.category_id || '',
-            amount: Math.abs(transaction.amount),
-            type: transaction.amount < 0 ? 'outflow' : 'inflow',
-            memo: transaction.memo || '',
-            cleared: transaction.is_cleared === 1
-        });
-    };
-
-    // FIXED: This should update transactions, not accounts
-    const handleSaveEdit = async (transactionId, updatedData) => {
-        console.log('handleSaveEdit called with:', transactionId, updatedData);
-        if (!updatedData) {
-            console.error('❌ updatedData is undefined in handleSaveEdit');
-            return;
-        }
-        if (onUpdateTransaction) {
-            const result = await onUpdateTransaction(transactionId, updatedData);
-            if (result?.success) {
-                setEditingId(null);
-                setEditForm({});
-            }
-            return result;
-        }
-    };
-    const handleDelete = async (id) => {
-        if (confirm('Are you sure you want to delete this transaction?')) {
-            const result = await onDeleteTransaction(id);
-            if (!result || !result.success) {
-                alert('Error deleting transaction');
-            }
-        }
-    };
-
-    const handleToggleCleared = async (id, currentStatus) => {
-        const result = await onToggleCleared(id, currentStatus ? 0 : 1);
-        if (!result || !result.success) {
-            alert('Error toggling cleared status');
-        }
-    };
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-US', {
-            style: 'currency',
-            currency: 'USD'
-        }).format(Math.abs(amount));
-    };
-
-    return (
-        <div style={styles.container}>
-            <h2 style={styles.title}>Transactions</h2>
-
-            {/* Transactions Table */}
-            <div style={styles.tableContainer}>
-                <table style={styles.table}>
-                    <thead style={styles.tableHead}>
-                        <tr>
-                            <th style={styles.tableHeader}>Date</th>
-                            <th style={styles.tableHeader}>Payee</th>
-                            <th style={styles.tableHeader}>Category</th>
-                            <th style={styles.tableHeader}>Memo</th>
-                            <th style={styles.tableHeader}>Outflow</th>
-                            <th style={styles.tableHeader}>Inflow</th>
-                            <th style={styles.tableHeader}>Cleared</th>
-                            <th style={styles.tableHeader}>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {transactions && transactions.length > 0 ? (
-                            transactions.map(transaction => (
-                                <tr key={transaction.id} style={styles.tableRow}>
-                                    <td style={styles.tableCell}>{transaction.date}</td>
-                                    <td style={styles.tableCell}>{transaction.payee || transaction.description || '-'}</td>
-                                    <td style={styles.tableCell}>
-                                        {categories.find(c => c.id === transaction.category_id)?.name || 'Uncategorized'}
-                                    </td>
-                                    <td style={styles.tableCell}>{transaction.memo || '-'}</td>
-                                    <td style={{ ...styles.tableCell, ...styles.outflow }}>
-                                        {transaction.amount < 0 ? formatCurrency(transaction.amount) : ''}
-                                    </td>
-                                    <td style={{ ...styles.tableCell, ...styles.inflow }}>
-                                        {transaction.amount > 0 ? formatCurrency(transaction.amount) : ''}
-                                    </td>
-                                    <td style={styles.tableCell}>
-                                        <input
-                                            type="checkbox"
-                                            checked={transaction.is_cleared === 1}
-                                            onChange={() => handleToggleCleared(transaction.id, transaction.is_cleared)}
-                                            style={styles.checkbox}
-                                        />
-                                    </td>
-                                    <td style={styles.tableCell}>
-                                        <button
-                                            onClick={() => handleEdit(transaction)}
-                                            style={styles.actionButton}
-                                            title="Edit transaction"
-                                        >
-                                            ✏️
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(transaction.id)}
-                                            style={{ ...styles.actionButton, marginLeft: '0.5rem' }}
-                                            title="Delete transaction"
-                                        >
-                                            🗑️
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))
-                        ) : (
-                            <tr>
-                                <td colSpan="8" style={{ ...styles.tableCell, textAlign: 'center', padding: '2rem' }}>
-                                    No transactions found
-                                </td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
-            </div>
-
-            {/* Edit Modal */}
-            {editingId && (
-                <div style={styles.modal} onClick={() => setEditingId(null)}>
-                    <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
-                        <h3 style={styles.modalTitle}>Edit Transaction</h3>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Date</label>
-                            <input
-                                type="date"
-                                value={editForm.date || ''}
-                                onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
-                                style={styles.input}
-                            />
-                        </div>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Payee</label>
-                            <input
-                                type="text"
-                                value={editForm.payee || ''}
-                                onChange={(e) => setEditForm({ ...editForm, payee: e.target.value })}
-                                style={styles.input}
-                                placeholder="e.g., Grocery Store"
-                            />
-                        </div>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Category</label>
-                            <select
-                                value={editForm.categoryId || ''}
-                                onChange={(e) => setEditForm({ ...editForm, categoryId: e.target.value })}
-                                style={styles.select}
-                            >
-                                <option value="">Select Category</option>
-                                {categories.map(cat => (
-                                    <option key={cat.id} value={cat.id}>{cat.name}</option>
-                                ))}
-                            </select>
-                        </div>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Amount</label>
-                            <input
-                                type="number"
-                                value={editForm.amount || ''}
-                                onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
-                                style={styles.input}
-                                step="0.01"
-                                min="0"
-                                placeholder="0.00"
-                            />
-                        </div>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Type</label>
-                            <select
-                                value={editForm.type || 'outflow'}
-                                onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
-                                style={styles.select}
-                            >
-                                <option value="outflow">Outflow (Expense)</option>
-                                <option value="inflow">Inflow (Income)</option>
-                            </select>
-                        </div>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.label}>Memo</label>
-                            <input
-                                type="text"
-                                value={editForm.memo || ''}
-                                onChange={(e) => setEditForm({ ...editForm, memo: e.target.value })}
-                                style={styles.input}
-                                placeholder="Additional notes"
-                            />
-                        </div>
-
-                        <div style={styles.formGroup}>
-                            <label style={styles.checkboxLabel}>
-                                <input
-                                    type="checkbox"
-                                    checked={editForm.cleared || false}
-                                    onChange={(e) => setEditForm({ ...editForm, cleared: e.target.checked })}
-                                />
-                                <span style={{ marginLeft: '0.5rem' }}>Cleared</span>
-                            </label>
-                        </div>
-
-                        <div style={styles.modalActions}>
-                            <button onClick={handleSaveEdit} style={styles.saveButton}>
-                                Save Changes
-                            </button>
-                            <button onClick={() => setEditingId(null)} style={styles.cancelButton}>
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
+const editStyles = {
+  input: {
+    width: '100%',
+    padding: '0.4rem',
+    background: '#111827',
+    border: '1px solid #10B981',
+    borderRadius: '0.375rem',
+    color: 'white',
+    fontSize: '0.875rem',
+  },
+  select: {
+    width: '100%',
+    padding: '0.4rem',
+    background: '#111827',
+    border: '1px solid #10B981',
+    borderRadius: '0.375rem',
+    color: 'white',
+    fontSize: '0.875rem',
+  },
+  td: {
+    padding: '0.75rem 1rem',
+    background: 'rgba(16, 185, 129, 0.08)',
+    borderBottom: '1px solid #374151',
+  },
+  actionBtn: {
+    padding: '0.25rem 0.5rem',
+    borderRadius: '0.375rem',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '0.75rem',
+    marginRight: '0.35rem',
+  },
 };
 
-// Fixed styles with proper colors
-const styles = {
-    container: {
-        width: '100%'
-    },
-    title: {
-        fontSize: '1.5rem',
-        fontWeight: 'bold',
-        marginBottom: '1.5rem',
-        color: 'white'
-    },
-    tableContainer: {
-        background: '#1F2937',
-        borderRadius: '0.75rem',
-        overflow: 'hidden',
-        border: '1px solid #374151'
-    },
-    table: {
-        width: '100%',
-        borderCollapse: 'collapse'
-    },
-    tableHead: {
-        background: '#111827'
-    },
-    tableHeader: {
-        padding: '1rem',
-        textAlign: 'left',
-        color: '#9CA3AF',
-        fontWeight: '500',
-        fontSize: '0.875rem',
-        borderBottom: '2px solid #374151'
-    },
-    tableRow: {
-        borderBottom: '1px solid #374151'
-    },
-    tableCell: {
-        padding: '0.75rem 1rem',
-        color: '#F3F4F6',
-        fontSize: '0.95rem'
-    },
-    outflow: {
-        color: '#F87171'
-    },
-    inflow: {
-        color: '#4ADE80'
-    },
-    checkbox: {
-        width: '18px',
-        height: '18px',
-        cursor: 'pointer'
-    },
-    actionButton: {
-        background: 'none',
-        border: 'none',
-        fontSize: '1.1rem',
-        cursor: 'pointer',
-        padding: '0.25rem',
-        color: '#9CA3AF',
-        ':hover': {
-            color: 'white'
-        }
-    },
-    modal: {
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0,0,0,0.7)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000
-    },
-    modalContent: {
-        background: '#1F2937',
-        padding: '2rem',
-        borderRadius: '1rem',
-        width: '90%',
-        maxWidth: '500px',
-        maxHeight: '80vh',
-        overflowY: 'auto',
-        border: '1px solid #374151'
-    },
-    modalTitle: {
-        fontSize: '1.25rem',
-        fontWeight: 'bold',
-        marginBottom: '1.5rem',
-        color: 'white'
-    },
-    formGroup: {
-        marginBottom: '1rem'
-    },
-    label: {
-        display: 'block',
-        marginBottom: '0.5rem',
-        color: '#9CA3AF',
-        fontSize: '0.875rem'
-    },
-    input: {
-        width: '100%',
-        padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
-        borderRadius: '0.5rem',
-        color: 'white',
-        fontSize: '1rem'
-    },
-    select: {
-        width: '100%',
-        padding: '0.75rem',
-        background: '#111827',
-        border: '1px solid #374151',
-        borderRadius: '0.5rem',
-        color: 'white',
-        fontSize: '1rem'
-    },
-    checkboxLabel: {
-        display: 'flex',
-        alignItems: 'center',
-        color: '#9CA3AF',
-        cursor: 'pointer'
-    },
-    modalActions: {
-        display: 'flex',
-        gap: '1rem',
-        marginTop: '2rem'
-    },
-    saveButton: {
-        flex: 1,
-        padding: '0.75rem',
-        background: '#10B981',
-        color: 'white',
-        border: 'none',
-        borderRadius: '0.5rem',
-        fontSize: '1rem',
-        fontWeight: '600',
-        cursor: 'pointer'
-    },
-    cancelButton: {
-        flex: 1,
-        padding: '0.75rem',
-        background: '#4B5563',
-        color: 'white',
-        border: 'none',
-        borderRadius: '0.5rem',
-        fontSize: '1rem',
-        fontWeight: '600',
-        cursor: 'pointer'
+const TransactionManager = ({
+  transactions,
+  categories,
+  accounts,
+  onUpdateTransaction,
+  onDeleteTransaction,
+  onToggleCleared,
+  showAccountColumn = true,
+  hideAccountFilter = false,
+}) => {
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [sort, setSort] = useState(DEFAULT_TRANSACTION_SORT);
+  const [filters, setFilters] = useState({ ...DEFAULT_TRANSACTION_FILTERS });
+
+  const filtered = useMemo(
+    () => filterTransactions(transactions, filters, { categories, accounts }),
+    [transactions, filters, categories, accounts]
+  );
+
+  const sortedTransactions = useMemo(
+    () => sortTransactions(filtered, sort, { categories }),
+    [filtered, sort, categories]
+  );
+
+  const handleEdit = (transaction) => {
+    setEditingId(transaction.id);
+    setEditForm({
+      date: transaction.date,
+      payee: transaction.payee || transaction.description || '',
+      categoryId: transaction.category_id || '',
+      amount: Math.abs(transaction.amount),
+      type: transaction.amount < 0 ? 'outflow' : 'inflow',
+      memo: transaction.memo || '',
+      cleared: transaction.is_cleared === 1 || transaction.cleared === 1,
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingId) return;
+    const amountMag = parseFloat(editForm.amount);
+    if (!Number.isFinite(amountMag) || amountMag === 0) {
+      alert('Please enter a valid amount');
+      return;
     }
+    const signedAmount = editForm.type === 'outflow' ? -Math.abs(amountMag) : Math.abs(amountMag);
+    const updateData = {
+      date: editForm.date,
+      payee: editForm.payee,
+      description: editForm.payee,
+      amount: signedAmount,
+      category_id:
+        editForm.categoryId === 'inflow_ready_to_assign' ? null : editForm.categoryId || null,
+      memo: editForm.memo || null,
+      cleared: editForm.cleared ? 1 : 0,
+    };
+    if (onUpdateTransaction) {
+      const result = await onUpdateTransaction(editingId, updateData);
+      if (result?.success) {
+        setEditingId(null);
+        setEditForm({});
+      }
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (confirm('Are you sure you want to delete this transaction?')) {
+      const result = await onDeleteTransaction(id);
+      if (!result || !result.success) {
+        alert('Error deleting transaction');
+      }
+    }
+  };
+
+  const handleToggleCleared = async (id, currentStatus) => {
+    const result = await onToggleCleared(id, currentStatus ? 0 : 1);
+    if (!result || !result.success) {
+      alert('Error toggling cleared status');
+    }
+  };
+
+  const renderEditRow = (tx) => (
+    <tr key={tx.id}>
+      {showAccountColumn && (
+        <td style={editStyles.td}>{tx.account_name || '—'}</td>
+      )}
+      <td style={editStyles.td}>
+        <input
+          type="date"
+          value={editForm.date || ''}
+          onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+          style={editStyles.input}
+        />
+      </td>
+      <td style={editStyles.td}>
+        <input
+          type="text"
+          value={editForm.payee || ''}
+          onChange={(e) => setEditForm({ ...editForm, payee: e.target.value })}
+          style={editStyles.input}
+        />
+      </td>
+      <td style={editStyles.td}>
+        <select
+          value={editForm.categoryId || ''}
+          onChange={(e) => setEditForm({ ...editForm, categoryId: e.target.value })}
+          style={editStyles.select}
+        >
+          <option value="">Select category</option>
+          {(categories || []).map((cat) => (
+            <option key={cat.id} value={cat.id}>
+              {cat.name}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td style={editStyles.td}>
+        {editForm.type === 'outflow' ? (
+          <input
+            type="number"
+            value={editForm.amount || ''}
+            onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+            style={editStyles.input}
+            step="0.01"
+            min="0"
+          />
+        ) : null}
+      </td>
+      <td style={editStyles.td}>
+        {editForm.type === 'inflow' ? (
+          <input
+            type="number"
+            value={editForm.amount || ''}
+            onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+            style={editStyles.input}
+            step="0.01"
+            min="0"
+          />
+        ) : null}
+        <select
+          value={editForm.type || 'outflow'}
+          onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
+          style={{ ...editStyles.select, marginTop: editForm.type === 'inflow' ? 0 : '0.35rem' }}
+        >
+          <option value="outflow">Outflow</option>
+          <option value="inflow">Inflow</option>
+        </select>
+      </td>
+      <td style={editStyles.td}>
+        <input
+          type="checkbox"
+          checked={editForm.cleared || false}
+          onChange={(e) => setEditForm({ ...editForm, cleared: e.target.checked })}
+          title="Cleared"
+        />
+        <button
+          type="button"
+          style={{ ...editStyles.actionBtn, background: '#10B981', color: 'white' }}
+          onClick={handleSaveEdit}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          style={{ ...editStyles.actionBtn, background: '#6B7280', color: 'white' }}
+          onClick={() => setEditingId(null)}
+        >
+          Cancel
+        </button>
+      </td>
+    </tr>
+  );
+
+  return (
+    <div style={{ width: '100%' }}>
+      <div
+        style={{
+          background: '#1F2937',
+          borderRadius: '0.75rem',
+          overflow: 'hidden',
+          border: '1px solid #374151',
+        }}
+      >
+        <TransactionToolbar
+          filters={filters}
+          onFiltersChange={setFilters}
+          categories={categories}
+          accounts={accounts}
+          hideAccountFilter={hideAccountFilter}
+          resultCount={sortedTransactions.length}
+          totalCount={(transactions || []).length}
+        />
+        <TransactionTable
+          transactions={sortedTransactions}
+          categories={categories}
+          sort={sort}
+          onSortChange={setSort}
+          showAccountColumn={showAccountColumn}
+          editingId={editingId}
+          renderEditRow={renderEditRow}
+          renderActions={(tx) => (
+            <>
+              <button
+                type="button"
+                onClick={() => handleEdit(tx)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                title="Edit"
+              >
+                ✏️
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDelete(tx.id)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: '0.5rem' }}
+                title="Delete"
+              >
+                🗑️
+              </button>
+              <input
+                type="checkbox"
+                checked={tx.is_cleared === 1 || tx.cleared === 1}
+                onChange={() =>
+                  handleToggleCleared(tx.id, tx.is_cleared === 1 || tx.cleared === 1)
+                }
+                title="Cleared"
+                style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }}
+              />
+            </>
+          )}
+        />
+      </div>
+    </div>
+  );
 };
 
 export default TransactionManager;

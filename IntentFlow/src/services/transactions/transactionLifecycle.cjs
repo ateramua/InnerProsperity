@@ -51,6 +51,8 @@ async function runPostTransactionEffects(userId, opts = {}) {
     startMonth,
     forwardMonths
   );
+
+  return { startMonth, userId };
 }
 
 module.exports = {

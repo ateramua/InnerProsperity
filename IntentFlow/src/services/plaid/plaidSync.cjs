@@ -15,7 +15,12 @@ const {
   isPlaidTransferTransaction,
   redactPlaidLogMessage,
 } = require('./plaidService.cjs');
-const { findManualAccountCandidates } = require('./plaidAccountMatch.cjs');
+const {
+  findScoredManualCandidates,
+  buildPlaidContext,
+  THRESHOLD_AUTO,
+  THRESHOLD_CONFIRM,
+} = require('../accounts/accountIdentityMatch.cjs');
 const { logPlaidSyncRun } = require('./plaidSyncAudit.cjs');
 const {
   reapplyPlaidCategoryMapping,
@@ -173,26 +178,40 @@ async function syncPlaidAccounts(itemId, deps) {
       continue;
     }
 
-    const candidates = await findManualAccountCandidates(db, item.user_id, {
-      internalType,
-      mask: plaidAccount.mask || null,
-      institutionName,
-    });
+    const plaidContext = buildPlaidContext(plaidAccount, institutionName, balance);
+    const scoredCandidates = await findScoredManualCandidates(
+      db,
+      item.user_id,
+      plaidContext
+    );
 
     let internalAccountId = null;
-    if (candidates.length === 1) {
-      internalAccountId = candidates[0].id;
-    } else if (candidates.length > 1) {
+    let createAsPendingMerge = false;
+    const top = scoredCandidates[0];
+
+    if (
+      scoredCandidates.length === 1 &&
+      top &&
+      top.confidence >= THRESHOLD_AUTO
+    ) {
+      internalAccountId = top.id;
+    } else if (scoredCandidates.length >= 1 && top.confidence >= THRESHOLD_CONFIRM) {
+      createAsPendingMerge = true;
       mergeOffers.push({
         plaidAccountId: plaidAccount.account_id,
         plaidDisplayName: displayName,
         mask: plaidAccount.mask,
         type: internalType,
-        candidates: candidates.map((c) => ({
+        confidence: top.confidence,
+        tier: top.tier,
+        recommendedAction: 'confirm_merge',
+        candidates: scoredCandidates.map((c) => ({
           id: c.id,
           name: c.name,
           balance: c.balance,
           institution: c.institution,
+          confidence: c.confidence,
+          tier: c.tier,
         })),
       });
     }
@@ -203,12 +222,16 @@ async function syncPlaidAccounts(itemId, deps) {
         internalType === 'credit' && plaidAccount.balances?.limit != null
           ? Number(plaidAccount.balances.limit)
           : null;
+      const accountStatus = createAsPendingMerge ? 'pending_merge' : 'active';
+      const isActive = createAsPendingMerge ? 0 : 1;
       await db.run(
         `INSERT INTO accounts (
           id, user_id, name, type, account_type_category, balance, cleared_balance, working_balance,
           currency, institution, external_mask, source, credit_limit,
+          account_status, is_active,
           last_balance_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, 'plaid', ?, datetime('now'), datetime('now'), datetime('now'))`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, 'plaid', ?, ?, ?,
+          datetime('now'), datetime('now'), datetime('now'))`,
         [
           internalAccountId,
           item.user_id,
@@ -221,6 +244,8 @@ async function syncPlaidAccounts(itemId, deps) {
           institutionName,
           plaidAccount.mask || null,
           creditLimit,
+          accountStatus,
+          isActive,
         ]
       );
     } else {
@@ -316,6 +341,14 @@ async function syncPlaidAccounts(itemId, deps) {
     await syncItemConsentFromPlaid(itemId, { getDatabase, decryptToken });
   } catch (consentErr) {
     console.warn('Consent refresh skipped:', consentErr.message);
+  }
+
+  if (typeof deps.ensureCreditCardPaymentCategoriesForUser === 'function') {
+    try {
+      await deps.ensureCreditCardPaymentCategoriesForUser(item.user_id);
+    } catch (ccPayErr) {
+      console.warn('Credit card payment category ensure skipped:', ccPayErr.message);
+    }
   }
 
   await logPlaidSyncRun(db, {
@@ -631,6 +664,21 @@ async function syncTransactionsForItem(itemId, deps) {
     transactionsModified,
     transactionsRemoved,
   });
+
+  if (
+    typeof deps.refreshBudgetAfterTransactions === 'function' &&
+    (transactionsAdded > 0 || transactionsModified > 0 || transactionsRemoved > 0)
+  ) {
+    const affectedDates = [
+      ...added.map((t) => t.date),
+      ...modified.map((t) => t.date),
+    ].filter(Boolean);
+    try {
+      await deps.refreshBudgetAfterTransactions(userId, affectedDates);
+    } catch (budgetErr) {
+      console.warn('Budget refresh after Plaid transaction sync skipped:', budgetErr.message);
+    }
+  }
 
   return {
     success: true,

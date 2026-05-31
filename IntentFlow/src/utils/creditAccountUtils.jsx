@@ -1,38 +1,20 @@
 /**
  * Credit card account helpers — permanent delete + shared UI messaging.
+ *
+ * Listing UI: Credit Card Manager only ({@link loadCreditCardsViaApi}).
+ * Sidebar must not enumerate credit accounts — see sidebarAccountUtils.cjs.
  */
-import { normalizeAccountType, normalizeAccountId } from './cashAccountUtils.jsx';
+import { normalizeAccountId } from './cashAccountUtils.jsx';
+
+export {
+  resolveDisplayAccountType,
+  formatAccountTypeLabel,
+} from './accountTypeUtils.cjs';
+
+import { resolveDisplayAccountType } from './accountTypeUtils.cjs';
 
 export function isCreditAccountType(account) {
   return resolveDisplayAccountType(account) === 'credit';
-}
-
-/** Resolve IntentFlow account type, including Plaid metadata fallbacks. */
-export function resolveDisplayAccountType(account) {
-  const stored = normalizeAccountType(account?.type);
-  if (stored === 'credit' || stored === 'credit card' || stored === 'charge card') {
-    return 'credit';
-  }
-  if (stored === 'loan') return 'loan';
-  if (stored === 'checking' || stored === 'savings') return stored;
-
-  const plaidType = normalizeAccountType(account?.plaid_account_type);
-  const plaidSubtype = normalizeAccountType(account?.plaid_account_subtype);
-
-  if (plaidType === 'credit' || plaidSubtype === 'credit card' || plaidSubtype === 'charge card') {
-    return 'credit';
-  }
-  if (plaidType === 'loan' || plaidSubtype.includes('loan') || plaidSubtype === 'mortgage') {
-    return 'loan';
-  }
-  if (plaidType === 'depository') {
-    if (plaidSubtype === 'savings' || plaidSubtype === 'money market' || plaidSubtype === 'cd') {
-      return 'savings';
-    }
-    return 'checking';
-  }
-
-  return stored || 'other';
 }
 
 export function filterCreditAccounts(list) {

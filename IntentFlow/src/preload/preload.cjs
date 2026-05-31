@@ -32,6 +32,14 @@ try {
     getPlaidCategoryMappings: () => ipcRenderer.invoke('plaid-get-category-mappings'),
     mergePlaidAccount: (plaidAccountId, targetAccountId) =>
       ipcRenderer.invoke('plaid-merge-account', plaidAccountId, targetAccountId),
+    getAccountMergePreview: (plaidAccountId, targetAccountId) =>
+      ipcRenderer.invoke('plaid-get-merge-preview', plaidAccountId, targetAccountId),
+    executeAccountMerge: (plaidAccountId, targetAccountId) =>
+      ipcRenderer.invoke('plaid-execute-merge', plaidAccountId, targetAccountId),
+    keepPlaidAccountSeparate: (plaidAccountId) =>
+      ipcRenderer.invoke('plaid-keep-account-separate', plaidAccountId),
+    rollbackAccountMerge: (sessionId) =>
+      ipcRenderer.invoke('plaid-rollback-merge', sessionId),
     linkAccountToPlaid: (plaidAccountId, targetAccountId) =>
       ipcRenderer.invoke('plaid-link-account-to-plaid', plaidAccountId, targetAccountId),
     checkDuplicateAccount: (payload) =>
@@ -86,8 +94,21 @@ try {
     deleteTransaction: (id) =>
       ipcRenderer.invoke('deleteTransaction', id),
 
+    bulkDeleteTransactions: (ids) =>
+      ipcRenderer.invoke('transactions:bulkDelete', ids),
+
     getAccountTransactions: (accountId) =>
       ipcRenderer.invoke('getAccountTransactions', accountId),
+
+    pickTransactionImportFile: () =>
+      ipcRenderer.invoke('transactions:pickImportFile'),
+    previewTransactionImport: (payload) =>
+      ipcRenderer.invoke('transactions:previewImport', payload),
+    executeTransactionImport: (payload) =>
+      ipcRenderer.invoke('transactions:executeImport', payload),
+    getImportCategoryMappings: () => ipcRenderer.invoke('import-get-category-mappings'),
+    saveImportCategoryMappings: (mappings) =>
+      ipcRenderer.invoke('import-save-category-mappings', mappings),
 
     toggleTransactionCleared: (id, clearedStatus) =>
       ipcRenderer.invoke('toggleTransactionCleared', id, clearedStatus),
@@ -104,6 +125,8 @@ try {
       ipcRenderer.invoke('accounts:update', id, userId, updates),
     deleteAccount: (id, userId) =>
       ipcRenderer.invoke('accounts:delete', id, userId),
+    ensureCreditCardPaymentCategories: (userId) =>
+      ipcRenderer.invoke('accounts:ensureCreditCardPaymentCategories', userId),
     permanentlyDeleteCreditAccount: (id, userId) =>
       ipcRenderer.invoke('accounts:permanentDeleteCredit', id, userId),
     permanentlyDeleteLoanAccount: (id, userId) =>
@@ -136,6 +159,21 @@ try {
 
     getBudgetMonthSnapshot: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getMonthSnapshot', userId, monthKey),
+
+    getBudgetUnderfundedSummary: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:getUnderfundedSummary', userId, monthKey),
+
+    bulkAssignMonthBudget: (userId, monthKey, assignments, opts) =>
+      ipcRenderer.invoke('budget:bulkAssignMonth', userId, monthKey, assignments, opts),
+
+    repairBudgetAssignments: (userId, monthKey, opts) =>
+      ipcRenderer.invoke('budget:repairAssignments', userId, monthKey, opts),
+
+    consolidateBudgetAssignments: (userId, monthKey, opts) =>
+      ipcRenderer.invoke('budget:consolidateAssignments', userId, monthKey, opts),
+
+    resetBudgetEnvelopes: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:resetEnvelopes', userId, monthKey),
 
     exportProsperityTable: (payload) =>
       ipcRenderer.invoke('budget:exportProsperityTable', payload),

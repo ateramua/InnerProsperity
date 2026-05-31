@@ -3,6 +3,13 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const {
+    calculateTransactionImpact,
+    computeAccountBalances,
+    computeTransactionsWithRunningBalance,
+    isSystemTransaction,
+    signedStartingBalanceAmount,
+} = require('../../utils/accountBalanceEngine.cjs');
 
 class TransactionService {
     constructor(dbPath = null) {
@@ -94,6 +101,12 @@ class TransactionService {
             const oldTransaction = await this.getTransactionById(id, userId);
             if (!oldTransaction) return null;
 
+            if (isSystemTransaction(oldTransaction) && !updates.is_system) {
+                const err = new Error('Cannot modify system transaction');
+                err.code = 'SYSTEM_TRANSACTION_READONLY';
+                throw err;
+            }
+
             let effectiveUpdates = { ...updates };
             if (oldTransaction.plaid_transaction_id) {
                 const {
@@ -116,7 +129,7 @@ class TransactionService {
             const allowedUpdates = [
                 'date', 'description', 'amount', 'category_id',
                 'payee', 'memo', 'check_number', 'is_cleared',
-                'linked_transaction_id'
+                'linked_transaction_id', 'direction', 'is_reconciled'
             ];
 
             const setClauses = [];
@@ -174,6 +187,12 @@ class TransactionService {
             const transaction = await this.getTransactionById(id, userId);
             if (!transaction) return false;
 
+            if (isSystemTransaction(transaction)) {
+                const err = new Error('Cannot delete system transaction');
+                err.code = 'SYSTEM_TRANSACTION_READONLY';
+                throw err;
+            }
+
             if (transaction.plaid_transaction_id) {
                 await db.run(
                     `UPDATE transactions SET is_deleted = 1, updated_at = datetime('now')
@@ -196,6 +215,114 @@ class TransactionService {
         }
     }
 
+    /**
+     * Delete many transactions in one DB transaction + one balance refresh pass.
+     * Handles linked transfers (both legs) and Plaid soft-delete.
+     * @param {(string|number)[]} ids
+     * @param {string|number} userId
+     */
+    async bulkDeleteTransactions(ids, userId) {
+        const db = await this.getDb();
+        const uniqueIds = [...new Set((ids || []).map((id) => String(id)).filter(Boolean))];
+        if (!uniqueIds.length) {
+            return { deleted: 0, accountIds: [], dates: [] };
+        }
+
+        const rows = [];
+        const chunkSize = 400;
+        for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+            const chunk = uniqueIds.slice(i, i + chunkSize);
+            const placeholders = chunk.map(() => '?').join(', ');
+            const part = await db.all(
+                `SELECT id, account_id, date, plaid_transaction_id, is_transfer, linked_transaction_id
+                 FROM transactions
+                 WHERE user_id = ?
+                   AND id IN (${placeholders})
+                   AND (is_deleted IS NULL OR is_deleted = 0)`,
+                [userId, ...chunk]
+            );
+            rows.push(...part);
+        }
+
+        if (!rows.length) {
+            return { deleted: 0, accountIds: [], dates: [] };
+        }
+
+        const deleteOne = async (row) => {
+            if (row.plaid_transaction_id) {
+                await db.run(
+                    `UPDATE transactions SET is_deleted = 1, updated_at = datetime('now')
+                     WHERE id = ? AND user_id = ?`,
+                    [row.id, userId]
+                );
+            } else {
+                await db.run(
+                    `DELETE FROM transactions WHERE id = ? AND user_id = ?`,
+                    [row.id, userId]
+                );
+            }
+        };
+
+        const processed = new Set();
+        const accountIds = new Set();
+        const dates = [];
+
+        await db.run('BEGIN TRANSACTION');
+        try {
+            for (const row of rows) {
+                if (processed.has(row.id)) continue;
+
+                const fullRow = await db.get(
+                    `SELECT is_system FROM transactions WHERE id = ? AND user_id = ?`,
+                    [row.id, userId]
+                );
+                if (fullRow && (fullRow.is_system === 1)) {
+                    continue;
+                }
+
+                accountIds.add(row.account_id);
+                if (row.date) dates.push(row.date);
+
+                if (row.is_transfer === 1) {
+                    const linkedId = row.linked_transaction_id;
+                    if (linkedId && !processed.has(linkedId)) {
+                        const peer = await db.get(
+                            `SELECT id, account_id, date, plaid_transaction_id
+                             FROM transactions WHERE id = ? AND user_id = ?`,
+                            [linkedId, userId]
+                        );
+                        if (peer) {
+                            accountIds.add(peer.account_id);
+                            if (peer.date) dates.push(peer.date);
+                            await deleteOne(peer);
+                            processed.add(peer.id);
+                        }
+                    }
+                    await deleteOne(row);
+                    processed.add(row.id);
+                    continue;
+                }
+
+                await deleteOne(row);
+                processed.add(row.id);
+            }
+            await db.run('COMMIT');
+        } catch (err) {
+            await db.run('ROLLBACK');
+            throw err;
+        }
+
+        for (const accountId of accountIds) {
+            await this.updateAccountBalances(accountId);
+        }
+
+        return {
+            deleted: processed.size,
+            accountIds: [...accountIds],
+            dates,
+        };
+    }
+
     // Get transaction by ID
     async getTransactionById(id, userId) {
         const db = await this.getDb();
@@ -212,12 +339,13 @@ class TransactionService {
         }
     }
 
-    // Update account balances based on transactions
+    // Update account balances based on transactions (YNAB-style engine)
     async updateAccountBalances(accountId) {
         const db = await this.getDb();
         try {
             const account = await db.get(
-                `SELECT source, sync_enabled, balance_locked FROM accounts WHERE id = ?`,
+                `SELECT id, type, initial_balance, source, sync_enabled, balance_locked, balance
+                 FROM accounts WHERE id = ?`,
                 [accountId]
             );
             if (!account) return;
@@ -227,114 +355,233 @@ class TransactionService {
                 account.sync_enabled !== 0 &&
                 account.balance_locked !== 1;
 
+            const activeFilter = `(is_deleted IS NULL OR is_deleted = 0)`;
+            const transactions = await db.all(
+                `SELECT * FROM transactions WHERE account_id = ? AND ${activeFilter}`,
+                [accountId]
+            );
+
+            const balances = computeAccountBalances(account, transactions);
+
             if (isPlaidLinked) {
-                // Bank-reported balance from Plaid sync is authoritative for linked accounts.
-                console.log(`⏭️ Skipping ledger balance recompute for Plaid account ${accountId}`);
-                return;
+                await db.run(
+                    `
+                    UPDATE accounts
+                    SET working_balance = ?, cleared_balance = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                `,
+                    [balances.working_balance, balances.cleared_balance, accountId]
+                );
+                console.log(`✅ Updated register balances for Plaid account ${accountId}`);
+                return balances;
             }
 
-            // Ledger is source of truth: working + display balance match sum of rows.
-            // Cleared/reconciled rows (is_cleared 1 or 2) feed cleared_balance.
             await db.run(
                 `
                 UPDATE accounts
-                SET
-                  working_balance = (
-                    SELECT COALESCE(SUM(amount), 0)
-                    FROM transactions
-                    WHERE account_id = ?
-                  ),
-                  cleared_balance = (
-                    SELECT COALESCE(SUM(amount), 0)
-                    FROM transactions
-                    WHERE account_id = ? AND IFNULL(is_cleared, 0) IN (1, 2)
-                  ),
-                  balance = (
-                    SELECT COALESCE(SUM(amount), 0)
-                    FROM transactions
-                    WHERE account_id = ?
-                  ),
-                  updated_at = datetime('now')
+                SET working_balance = ?, cleared_balance = ?, balance = ?, updated_at = datetime('now')
                 WHERE id = ?
             `,
-                [accountId, accountId, accountId, accountId]
+                [
+                    balances.working_balance,
+                    balances.cleared_balance,
+                    balances.current_balance,
+                    accountId,
+                ]
             );
 
             console.log(`✅ Updated balances for account ${accountId}`);
+            return balances;
         } finally {
             // Connection management handled similarly
         }
+    }
+
+    /**
+     * Three-tier balance breakdown for an account.
+     */
+    async getAccountBalanceDetails(accountId, userId) {
+        const db = await this.getDb();
+        const account = await db.get(
+            `SELECT * FROM accounts WHERE id = ? AND user_id = ?`,
+            [accountId, userId]
+        );
+        if (!account) return null;
+
+        const transactions = await db.all(
+            `SELECT * FROM transactions
+             WHERE account_id = ? AND user_id = ?
+               AND (is_deleted IS NULL OR is_deleted = 0)
+             ORDER BY date ASC, created_at ASC`,
+            [accountId, userId]
+        );
+
+        const balances = computeAccountBalances(account, transactions);
+        return {
+            ...balances,
+            bank_balance: account.balance,
+            account_id: accountId,
+        };
+    }
+
+    /**
+     * Create a system starting-balance transaction for a new account.
+     */
+    async createStartingBalanceTransaction(db, account, userId, startDate = null) {
+        const initialBalance = Math.abs(Number(account.initial_balance) || 0);
+        if (initialBalance === 0) return null;
+
+        const signedAmount = signedStartingBalanceAmount(account.type, initialBalance);
+        const date = startDate || new Date().toISOString().slice(0, 10);
+
+        const result = await db.run(
+            `
+            INSERT INTO transactions (
+              account_id, user_id, date, description, amount,
+              payee, memo, is_cleared, is_system, is_reconciled, is_adjustment,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, datetime('now'), datetime('now'))
+        `,
+            [
+                account.id,
+                userId,
+                date,
+                'Starting Balance',
+                signedAmount,
+                'Starting Balance',
+                'Initial account balance',
+            ]
+        );
+
+        return { id: result.lastID };
     }
 
     // Get transactions with running balance
     async getAccountTransactionsWithBalance(accountId, userId) {
         const db = await this.getDb();
         try {
-            const transactions = await db.all(`
-            SELECT t.*, c.name as category_name 
-            FROM transactions t
-            LEFT JOIN categories c ON t.category_id = c.id
-            WHERE t.account_id = ? AND t.user_id = ?
-              AND (t.is_deleted IS NULL OR t.is_deleted = 0)
-            ORDER BY t.date ASC, t.created_at ASC
-        `, [accountId, userId]);
+            const account = await db.get(
+                `SELECT * FROM accounts WHERE id = ? AND user_id = ?`,
+                [accountId, userId]
+            );
+            if (!account) return [];
 
-            // Calculate running balance
-            let runningBalance = 0;
-            const transactionsWithBalance = transactions.map(t => {
-                runningBalance += t.amount;
-                return {
-                    ...t,
-                    running_balance: runningBalance
-                };
-            });
+            const transactions = await db.all(
+                `
+                SELECT t.*, c.name as category_name
+                FROM transactions t
+                LEFT JOIN categories c ON t.category_id = c.id
+                WHERE t.account_id = ? AND t.user_id = ?
+                  AND (t.is_deleted IS NULL OR t.is_deleted = 0)
+                ORDER BY t.date ASC, t.created_at ASC
+            `,
+                [accountId, userId]
+            );
 
-            // Return in descending order for display
-            return transactionsWithBalance.reverse();
+            return computeTransactionsWithRunningBalance(account, transactions);
         } finally {
             // Connection management handled similarly
         }
     }
 
-    // Reconcile account
+    // Reconcile account — marks cleared tx reconciled and creates adjustment if needed
     async reconcileAccount(accountId, userId, statementBalance, transactionsToClear) {
         const db = await this.getDb();
         try {
-            // Create reconciliation record
-            const reconciliationId = uuidv4();
             const account = await db.get(
-                'SELECT working_balance FROM accounts WHERE id = ? AND user_id = ?',
+                'SELECT * FROM accounts WHERE id = ? AND user_id = ?',
                 [accountId, userId]
             );
-
-            await db.run(`
-                INSERT INTO reconciliations (
-                    id, account_id, reconciliation_date, 
-                    statement_balance, calculated_balance,
-                    difference, status
-                ) VALUES (?, ?, date('now'), ?, ?, ?, 'completed')
-            `, [
-                reconciliationId, accountId,
-                statementBalance, account.working_balance,
-                statementBalance - account.working_balance
-            ]);
-
-            // Mark transactions as reconciled
-            for (const transactionId of transactionsToClear) {
-                await db.run(`
-                    UPDATE transactions 
-                    SET is_cleared = 2 
-                    WHERE id = ? AND account_id = ?
-                `, [transactionId, accountId]);
-
-                await db.run(`
-                    INSERT INTO reconciliation_entries (id, reconciliation_id, transaction_id)
-                    VALUES (?, ?, ?)
-                `, [uuidv4(), reconciliationId, transactionId]);
+            if (!account) {
+                throw new Error('Account not found');
             }
 
-            console.log(`✅ Reconciled account ${accountId} with ${transactionsToClear.length} transactions`);
-            return { success: true, reconciliationId };
+            const balancesBefore = await this.getAccountBalanceDetails(accountId, userId);
+            const previousBalance = balancesBefore?.working_balance ?? account.working_balance ?? 0;
+            const difference = Number(statementBalance) - Number(previousBalance);
+
+            const reconciliationId = uuidv4();
+            let adjustmentTransactionId = null;
+
+            await db.run('BEGIN TRANSACTION');
+            try {
+                if (Math.abs(difference) > 0.01) {
+                    const adjResult = await db.run(
+                        `
+                        INSERT INTO transactions (
+                          account_id, user_id, date, description, amount,
+                          payee, memo, is_cleared, is_system, is_reconciled, is_adjustment,
+                          created_at, updated_at
+                        ) VALUES (?, ?, date('now'), ?, ?, ?, ?, 1, 0, 1, 1, datetime('now'), datetime('now'))
+                    `,
+                        [
+                            accountId,
+                            userId,
+                            'Reconciliation Adjustment',
+                            difference,
+                            'Reconciliation Adjustment',
+                            `Adjusted to match statement balance of ${statementBalance}`,
+                        ]
+                    );
+                    adjustmentTransactionId = adjResult.lastID;
+                }
+
+                for (const transactionId of transactionsToClear || []) {
+                    await db.run(
+                        `
+                        UPDATE transactions
+                        SET is_cleared = 2, is_reconciled = 1, updated_at = datetime('now')
+                        WHERE id = ? AND account_id = ?
+                    `,
+                        [transactionId, accountId]
+                    );
+
+                    await db.run(
+                        `
+                        INSERT INTO reconciliation_entries (id, reconciliation_id, transaction_id)
+                        VALUES (?, ?, ?)
+                    `,
+                        [uuidv4(), reconciliationId, transactionId]
+                    );
+                }
+
+                const balancesAfter = await this.getAccountBalanceDetails(accountId, userId);
+
+                await db.run(
+                    `
+                    INSERT INTO reconciliations (
+                        id, account_id, reconciliation_date,
+                        statement_balance, calculated_balance,
+                        difference, status
+                    ) VALUES (?, ?, date('now'), ?, ?, ?, 'completed')
+                `,
+                    [
+                        reconciliationId,
+                        accountId,
+                        statementBalance,
+                        balancesAfter?.working_balance ?? previousBalance,
+                        statementBalance - (balancesAfter?.working_balance ?? previousBalance),
+                    ]
+                );
+
+                await db.run('COMMIT');
+            } catch (err) {
+                await db.run('ROLLBACK');
+                throw err;
+            }
+
+            await this.updateAccountBalances(accountId);
+
+            console.log(`✅ Reconciled account ${accountId} with ${(transactionsToClear || []).length} transactions`);
+            return {
+                success: true,
+                reconciliationId,
+                account_id: accountId,
+                previous_balance: previousBalance,
+                statement_balance: statementBalance,
+                difference,
+                adjustment_transaction_id: adjustmentTransactionId,
+            };
         } finally {
             // Connection management handled similarly
         }

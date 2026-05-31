@@ -96,10 +96,13 @@ class AccountService {
             const finalMinPay = minimumPayment ?? minimum_payment;
             const finalPaymentAmt = payment_amount ?? monthly_payment;
 
+            const balanceVal = Number(balance) || 0;
+            const initialBalanceVal = Math.abs(balanceVal);
+
             await db.run(`
                 INSERT INTO accounts (
                     id, user_id, name, type, account_type_category,
-                    balance, cleared_balance, working_balance,
+                    balance, initial_balance, cleared_balance, working_balance,
                     currency, institution,
                     credit_limit, interest_rate, due_date, minimum_payment,
                     account_number, routing_number, debit_card_number,
@@ -113,7 +116,7 @@ class AccountService {
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
             `, [
                 id, finalUserId, name, type, finalAccountTypeCategory,
-                balance, balance, balance,
+                balanceVal, initialBalanceVal, balanceVal, balanceVal,
                 currency, institution,
                 finalCreditLimit, finalInterest, finalDue, finalMinPay,
                 account_number, routing_number, debit_card_number,
@@ -300,14 +303,37 @@ class AccountService {
 
             const source = String(existing.source || 'manual').toLowerCase();
             const normalizedType = String(existing.type || '').trim().toLowerCase();
-            const isCashType =
+            let isCashType =
                 normalizedType === 'checking' ||
                 normalizedType === 'savings' ||
                 normalizedType === 'money market' ||
                 normalizedType === 'money_market' ||
                 normalizedType === 'cd';
 
-            if (source === 'plaid' && !isCashType) {
+            if (!isCashType) {
+                const plaidRow = await db.get(
+                    `SELECT type, subtype FROM plaid_accounts
+                     WHERE CAST(account_id AS TEXT) = CAST(? AS TEXT)`,
+                    [id]
+                );
+                if (plaidRow) {
+                    const mapped = mapPlaidTypeToInternal({
+                        type: plaidRow.type,
+                        subtype: plaidRow.subtype,
+                    });
+                    if (mapped === 'checking' || mapped === 'savings') {
+                        isCashType = true;
+                    }
+                }
+            }
+
+            // Only block soft-delete for Plaid rows explicitly stored as credit/loan.
+            // Other/investment/null types are removable from All Accounts (unlink + hide).
+            if (
+                source === 'plaid' &&
+                !isCashType &&
+                (normalizedType === 'credit' || normalizedType === 'loan')
+            ) {
                 const err = new Error(
                     'This account is linked via Plaid. Remove the bank connection in Linked Banks instead of deleting the account here.'
                 );
@@ -348,6 +374,26 @@ class AccountService {
                 }
 
                 await db.exec('COMMIT');
+
+                if (normalizedType === 'credit') {
+                    try {
+                        const {
+                            archiveCreditCardPaymentCategoryForAccount,
+                        } = require('./creditCardPaymentCategoryService.cjs');
+                        const refreshed = await this.getAccountById(id, userId);
+                        if (refreshed) {
+                            await archiveCreditCardPaymentCategoryForAccount(db, refreshed, {
+                                reason: 'account_soft_delete',
+                            });
+                        }
+                    } catch (archiveErr) {
+                        console.warn(
+                            'Credit card payment category archive on delete:',
+                            archiveErr.message
+                        );
+                    }
+                }
+
                 return true;
             } catch (err) {
                 await db.exec('ROLLBACK');
@@ -385,23 +431,23 @@ class AccountService {
         const db = await this.getDb();
         try {
             // Calculate working balance (sum of all transactions)
+            const activeFilter = `(is_deleted IS NULL OR is_deleted = 0)`;
             await db.run(`
                 UPDATE accounts 
                 SET working_balance = (
                     SELECT COALESCE(SUM(amount), 0) 
                     FROM transactions 
-                    WHERE account_id = ?
+                    WHERE account_id = ? AND ${activeFilter}
                 )
                 WHERE id = ?
             `, [accountId, accountId]);
 
-            // Calculate cleared balance (sum of cleared transactions)
             await db.run(`
                 UPDATE accounts 
                 SET cleared_balance = (
                     SELECT COALESCE(SUM(amount), 0) 
                     FROM transactions 
-                    WHERE account_id = ? AND is_cleared IN (1, 2)
+                    WHERE account_id = ? AND ${activeFilter} AND is_cleared IN (1, 2)
                 )
                 WHERE id = ?
             `, [accountId, accountId]);
@@ -420,7 +466,10 @@ class AccountService {
         const db = await this.getDb();
         try {
             const accounts = await db.all(
-                `SELECT * FROM accounts WHERE user_id = ? AND IFNULL(is_active, 1) = 1`,
+                `SELECT * FROM accounts
+                 WHERE user_id = ?
+                   AND IFNULL(is_active, 1) = 1
+                   AND IFNULL(account_status, 'active') IN ('active')`,
                 [userId]
             );
             console.log(`🔵 Found ${accounts.length} accounts`);
@@ -474,12 +523,15 @@ class AccountService {
             const linkByAccount = new Map(
                 plaidLinks.map((r) => [String(r.account_id), r])
             );
+            const plaidLinkedAccountIds = [];
+
             for (const acc of formattedAccounts) {
                 const linkKey = String(acc.id);
                 const link = linkByAccount.get(linkKey);
                 if (!link) continue;
 
                 acc.plaid_linked = true;
+                plaidLinkedAccountIds.push(acc.id);
                 acc.plaid_item_id = link.plaid_item_id;
                 acc.plaid_account_type = link.plaid_type || null;
                 acc.plaid_account_subtype = link.plaid_subtype || null;
@@ -497,6 +549,28 @@ class AccountService {
                          WHERE id = ? AND user_id = ?`,
                         [resolvedType, acc.account_type_category, acc.id, userId]
                     );
+                }
+            }
+
+            if (plaidLinkedAccountIds.length > 0) {
+                const placeholders = plaidLinkedAccountIds.map(() => '?').join(', ');
+                const registerRows = await db.all(
+                    `SELECT account_id, COALESCE(SUM(amount), 0) AS register_balance
+                     FROM transactions
+                     WHERE account_id IN (${placeholders})
+                       AND (is_deleted IS NULL OR is_deleted = 0)
+                     GROUP BY account_id`,
+                    plaidLinkedAccountIds
+                );
+                const registerByAccount = new Map(
+                    (registerRows || []).map((r) => [String(r.account_id), Number(r.register_balance) || 0])
+                );
+                for (const acc of formattedAccounts) {
+                    if (!acc.plaid_linked) continue;
+                    const reg = registerByAccount.get(String(acc.id));
+                    if (reg != null && Number.isFinite(reg)) {
+                        acc.register_balance = reg;
+                    }
                 }
             }
 

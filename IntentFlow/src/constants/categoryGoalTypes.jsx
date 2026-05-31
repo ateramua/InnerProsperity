@@ -3,6 +3,7 @@ export const CATEGORY_GOAL_TYPE_OPTIONS = [
   { value: 'balance', label: 'Target Category Balance' },
   { value: 'by_date', label: 'Target Category Balance by Date' },
   { value: 'monthly', label: 'Monthly Funding Goal' },
+  { value: 'spending_target', label: 'Needed for Spending' },
 ];
 
 /** Funding frequency for category goals (`categories.target_frequency`). */
@@ -29,6 +30,9 @@ export function getCategoryGoalTypeLabel(targetType) {
   if (targetType === 'monthly_debt_payment') {
     return LABEL_BY_VALUE.monthly;
   }
+  if (targetType === 'needed_for_spending') {
+    return LABEL_BY_VALUE.spending_target;
+  }
   return LABEL_BY_VALUE[targetType] || 'Other';
 }
 
@@ -49,6 +53,7 @@ export function normalizeGoalFrequencyForSelect(targetFrequency) {
 /** Map legacy types to a value present in the dropdown. */
 export function normalizeGoalTypeForSelect(targetType) {
   if (targetType === 'monthly_debt_payment') return 'monthly';
+  if (targetType === 'needed_for_spending') return 'spending_target';
   if (CATEGORY_GOAL_TYPE_OPTIONS.some((o) => o.value === targetType)) return targetType;
   return 'monthly';
 }

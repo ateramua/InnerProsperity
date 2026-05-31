@@ -135,6 +135,8 @@ async function buildDashboardSummary({ getDatabase, accountService, monthlyBudge
         .reduce((sum, account) => sum + Number(account.working_balance ?? account.balance ?? 0), 0);
 
     let monthlyBudgetRemaining = null;
+    let underfundedTotal = null;
+    let underfundedBreakdown = [];
     if (monthlyBudgetService && typeof monthlyBudgetService.getBudgetMonthSnapshot === 'function') {
         try {
             const monthKey = monthlyBudgetService.toLocalMonthKey
@@ -146,6 +148,10 @@ async function buildDashboardSummary({ getDatabase, accountService, monthlyBudge
                     (sum, category) => sum + Number(category.available ?? category.remaining ?? 0),
                     0
                 );
+            }
+            if (snapshot?.underfundedTotal != null) {
+                underfundedTotal = Number(snapshot.underfundedTotal) || 0;
+                underfundedBreakdown = snapshot.underfundedBreakdown || [];
             }
         } catch {
             monthlyBudgetRemaining = null;
@@ -164,6 +170,8 @@ async function buildDashboardSummary({ getDatabase, accountService, monthlyBudge
         netWorth: Number(totals?.netWorth ?? totals?.grandTotal ?? availableCash),
         availableCash,
         monthlyBudgetRemaining: monthlyBudgetRemaining ?? availableCash,
+        underfundedTotal,
+        underfundedBreakdown,
         accountsNeedingAttention: Number(plaidAttention?.count || 0),
         pendingTasks: 0,
         unreadNotifications: Number(plaidAttention?.count || 0),

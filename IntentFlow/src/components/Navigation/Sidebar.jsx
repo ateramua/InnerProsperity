@@ -1,5 +1,5 @@
 // src/components/Navigation/Sidebar.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../../contexts/AuthContext';
 import { APP_BG, APP_FG, APP_ON_FG } from '../../theme/appPalette';
@@ -86,39 +86,7 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
         notes: ''
     });
 
-    const [sidebarAccounts, setSidebarAccounts] = useState({
-        cash: [],
-        credit: [],
-    });
     const [plaidNav, setPlaidNav] = useState({ enabled: true, needsReconnect: false });
-
-    const loadSidebarAccounts = useCallback(async () => {
-        if (!window.electronAPI?.getAccountsSummary) return;
-        try {
-            const userResult = await window.electronAPI.getCurrentUser();
-            if (!userResult?.success || !userResult?.data?.id) return;
-            const userId = userResult.data.id;
-            const result = await window.electronAPI.getAccountsSummary(userId);
-            if (!result?.success || !Array.isArray(result.data)) return;
-            const all = result.data;
-            setSidebarAccounts({
-                cash: all.filter((a) => a.type === 'checking' || a.type === 'savings'),
-                credit: all.filter((a) => a.type === 'credit'),
-            });
-        } catch (err) {
-            console.error('Sidebar: failed to load accounts', err);
-        }
-    }, []);
-
-    useEffect(() => {
-        loadSidebarAccounts();
-        const unsub = window.electronAPI?.onAccountsUpdated?.(() => {
-            loadSidebarAccounts();
-        });
-        return () => {
-            if (typeof unsub === 'function') unsub();
-        };
-    }, [loadSidebarAccounts]);
 
     useEffect(() => {
         (async () => {
@@ -154,8 +122,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
             if (typeof unsub === 'function') unsub();
         };
     }, []);
-
-    const accounts = sidebarAccounts;
 
     const handleAddAccountClick = (type) => {
         setAccountType(type);
@@ -364,6 +330,7 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
             description: 'Track and manage your investment portfolio'
         },
         {
+            // Per-card rows are intentionally omitted — all cards live in Credit Card Manager only.
             id: 'creditCards',
             label: 'Credit Cards',
             icon: '💳',
@@ -394,19 +361,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                     action: 'add',
                     isAddButton: true
                 },
-                { type: 'divider' },
-                ...(accounts.credit && accounts.credit.length > 0
-                    ? accounts.credit.map(account => ({
-                        id: `account-${account.id}`,
-                        label: account.name,
-                        icon: '💳',
-                        balance: account.balance,
-                        isAccount: true,
-                        accountId: account.id,
-                        type: 'account',
-                        institution: account.institution
-                    }))
-                    : [])
             ]
         },
         {
@@ -514,8 +468,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
     const renderSubItems = (item) => {
         if (!item.subItems || expandedSection !== item.id) return null;
 
-        const hasAccounts = item.subItems.some(s => s.isAccount);
-
         return (
             <div style={styles.subItemsContainer}>
                 {item.subItems.map((subItem, index) => {
@@ -567,13 +519,6 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
                         </div>
                     );
                 })}
-
-                {/* Show empty state for credit cards if no accounts */}
-                {item.id === 'creditCards' && !hasAccounts && (
-                    <div style={styles.emptyState}>
-                        No credit cards yet. Click "Add Credit Card" to get started.
-                    </div>
-                )}
             </div>
         );
     };

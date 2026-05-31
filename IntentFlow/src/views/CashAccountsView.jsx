@@ -8,6 +8,7 @@ import {
   deleteCashAccountViaApi,
   getCashAccountDeleteConfirmMessage,
   isCashAccountType,
+  isSavingsType,
   loadCashAccountsViaApi,
   normalizeAccountId,
   partitionCashAccounts,
@@ -16,6 +17,14 @@ import {
   confirmNoDuplicateAccount,
   maskFromAccountNumber,
 } from '../utils/plaidDuplicateCheck';
+import { isPlaidLinkedAccount } from '../utils/plaidAccountUtils';
+import {
+  coerceStoredAccountType,
+  getAccountTypeSelectOptions,
+  isCashAccountTypeValue,
+  mapAccountTypeToCategory,
+  resolveDisplayAccountType,
+} from '../utils/accountTypeOptions.jsx';
 
 // ✅ HELPER FUNCTIONS
 const parseNumber = (value, fallback = null) => {
@@ -55,6 +64,7 @@ const CashAccountsView = () => {
   // Edit modal state
   const [editFormData, setEditFormData] = useState({
     name: '',
+    type: 'checking',
     balance: '',
     institution: '',
     account_number: '',
@@ -68,6 +78,8 @@ const CashAccountsView = () => {
   const [editErrors, setEditErrors] = useState({});
   const [isEditing, setIsEditing] = useState(false);
   const [deletingAccountId, setDeletingAccountId] = useState(null);
+  /** When true, edit modal Account Type lists all canonical DB types (not only cash). */
+  const [editShowAllAccountTypes, setEditShowAllAccountTypes] = useState(false);
 
   // For masked display in edit modal
   const [displayAccountNumber, setDisplayAccountNumber] = useState('');
@@ -125,8 +137,13 @@ const CashAccountsView = () => {
   const loadEditingAccountData = () => {
     if (!editingAccount) return;
 
+    const storedType = coerceStoredAccountType(
+      resolveDisplayAccountType(editingAccount) || editingAccount.type
+    );
+    setEditShowAllAccountTypes(!isCashAccountTypeValue(storedType));
     setEditFormData({
       name: editingAccount.name || '',
+      type: storedType,
       balance: editingAccount.balance !== undefined && editingAccount.balance !== null
         ? editingAccount.balance.toString()
         : '',
@@ -395,10 +412,30 @@ const CashAccountsView = () => {
       const userId = userResult.data.id;
 
       const linked = isPlaidLinkedAccount(editingAccount);
+      const accountType = coerceStoredAccountType(editFormData.type);
+      const wasCash = isCashAccountTypeValue(editingAccount?.type);
+      const willBeCash = isCashAccountTypeValue(accountType);
+
+      if (wasCash && !willBeCash) {
+        const ok = window.confirm(
+          `Change this account to "${accountType}"?\n\nIt will be removed from Cash Accounts and managed under Credit Cards, Loans, or All Accounts instead.`
+        );
+        if (!ok) {
+          setIsEditing(false);
+          return;
+        }
+      }
+
       const updates = {
         ...(linked ? {} : { name: cleanString(editFormData.name) }),
         ...(linked ? {} : { balance: parseNumber(editFormData.balance, 0) }),
         ...(linked ? {} : { institution: cleanString(editFormData.institution) }),
+        ...(linked
+          ? {}
+          : {
+              type: accountType,
+              account_type_category: mapAccountTypeToCategory(accountType),
+            }),
         account_number: cleanNumberString(editFormData.account_number),
         routing_number: cleanString(editFormData.routing_number),
         debit_card_number: cleanNumberString(editFormData.debit_card_number),
@@ -533,7 +570,10 @@ const CashAccountsView = () => {
 
   // Determine if showing bank fields
   const showBankFields = inlineFormData.type === 'checking' || inlineFormData.type === 'savings';
-  const showEditBankFields = editingAccount?.type === 'checking' || editingAccount?.type === 'savings';
+  const showEditBankFields = isCashAccountTypeValue(editFormData.type);
+  const editTypeOptions = getAccountTypeSelectOptions({
+    cashOnly: !editShowAllAccountTypes,
+  });
 
   console.log('🎨🎨🎨 [RENDER] CashAccountsView rendering');
   console.log('[RENDER] accounts.length:', accounts.length);
@@ -807,6 +847,82 @@ const CashAccountsView = () => {
                   disabled={isPlaidLinkedAccount(editingAccount)}
                 />
                 {editErrors.name && <div style={styles.fieldError}>{editErrors.name}</div>}
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Account Type <span style={styles.required}>*</span></label>
+                {!isPlaidLinkedAccount(editingAccount) && (
+                  <label style={styles.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      checked={editShowAllAccountTypes}
+                      onChange={(e) => {
+                        const showAll = e.target.checked;
+                        setEditShowAllAccountTypes(showAll);
+                        if (
+                          !showAll &&
+                          !isCashAccountTypeValue(editFormData.type)
+                        ) {
+                          setEditFormData((prev) => ({ ...prev, type: 'checking' }));
+                        }
+                      }}
+                    />
+                    <span>Show all account types (credit, loan, investment, other)</span>
+                  </label>
+                )}
+                <select
+                  name="type"
+                  value={
+                    editTypeOptions.some((o) => o.value === editFormData.type)
+                      ? editFormData.type
+                      : editTypeOptions[0]?.value || 'checking'
+                  }
+                  onChange={handleEditChange}
+                  style={styles.select}
+                  disabled={isPlaidLinkedAccount(editingAccount)}
+                  title={
+                    isPlaidLinkedAccount(editingAccount)
+                      ? 'Account type is set by your bank connection'
+                      : undefined
+                  }
+                >
+                  {editShowAllAccountTypes ? (
+                    <>
+                      <optgroup label="Cash accounts">
+                        {getAccountTypeSelectOptions({ cashOnly: true }).map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Other account types">
+                        {getAccountTypeSelectOptions({ cashOnly: false })
+                          .filter((opt) => opt.group === 'other')
+                          .map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                      </optgroup>
+                    </>
+                  ) : (
+                    editTypeOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))
+                  )}
+                </select>
+                {isPlaidLinkedAccount(editingAccount) ? (
+                  <div style={styles.fieldHint}>
+                    Type is managed via Linked Banks for bank-connected accounts (
+                    {coerceStoredAccountType(editingAccount?.type)}).
+                  </div>
+                ) : (
+                  <div style={styles.fieldHint}>
+                    Saved to the database <code style={styles.code}>accounts.type</code> column.
+                  </div>
+                )}
               </div>
 
               <div style={styles.formGroup}>
@@ -1232,6 +1348,25 @@ const styles = {
     color: '#EF4444',
     fontSize: '0.7rem',
     marginTop: '0.25rem'
+  },
+  fieldHint: {
+    color: '#9CA3AF',
+    fontSize: '0.75rem',
+    marginTop: '0.35rem',
+    lineHeight: 1.4,
+  },
+  checkboxRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginBottom: '0.5rem',
+    fontSize: '0.8rem',
+    color: '#CBD5E1',
+    cursor: 'pointer',
+  },
+  code: {
+    fontSize: '0.7rem',
+    color: '#93C5FD',
   },
   select: {
     width: '100%',

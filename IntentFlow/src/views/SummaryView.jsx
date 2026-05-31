@@ -1,6 +1,7 @@
 // src/views/SummaryView.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import PM from '../constants/pmTheme.jsx';
+import { computeCategoryUnderfunded } from '../shared/underfundedEngine.mjs';
 
 const SummaryView = ({
   totalAvailable = 0,
@@ -669,64 +670,52 @@ const SummaryView = ({
     }
   };
 
-  // Fix calculateRequiredContribution
   const calculateRequiredContribution = useCallback((category) => {
-    if (!category || !category.target_amount || category.target_amount === 0) {
+    const meta = computeCategoryUnderfunded(category);
+    const needed = meta.underfunded ?? meta.needed ?? 0;
+    if (!category || needed <= 0) {
       return { needed: 0, type: 'none', priority: 0 };
     }
 
-    const assigned = category.assigned || 0;
-    const activity = category.activity || 0;
-    const available = assigned + activity;
-    const targetAmount = category.target_amount;
+    const targetAmount = Number(category.target_amount) || meta.targetAmount || 0;
+    const priority = targetAmount > 0 ? (needed / targetAmount) * 100 : 100;
 
-    switch (category.target_type) {
-      case 'monthly':
-      case 'monthly_savings':
-        const needed = Math.max(0, targetAmount - assigned);
-        const priority = needed > 0 ? (needed / targetAmount) * 100 : 0;
-        return {
-          needed,
-          type: 'monthly',
-          priority: priority,
-          targetMessage: `Monthly goal: Need ${formatCurrency(needed)} more this month`
-        };
-
-      case 'target_balance':
-      case 'balance':
-        const balanceNeeded = Math.max(0, targetAmount - available);
-        const balancePriority = balanceNeeded > 0 ? (balanceNeeded / targetAmount) * 100 : 0;
-        return {
-          needed: balanceNeeded,
-          type: 'balance',
-          priority: balancePriority,
-          targetMessage: `Savings goal: Need ${formatCurrency(balanceNeeded)} to reach ${formatCurrency(targetAmount)}`
-        };
-
-      case 'target_balance_by_date':
-      case 'by_date':
-        if (!category.target_date) {
-          return { needed: 0, type: 'none', priority: 0 };
-        }
-        const today = new Date();
-        const targetDate = new Date(category.target_date);
-        const monthsRemaining = Math.max(1, (targetDate.getFullYear() - today.getFullYear()) * 12 +
-          (targetDate.getMonth() - today.getMonth()));
-        const totalNeeded = Math.max(0, targetAmount - available);
-        const monthlyNeeded = totalNeeded / monthsRemaining;
-        const datePriority = totalNeeded > 0 ? (totalNeeded / targetAmount) * 100 : 0;
-        return {
-          needed: monthlyNeeded,
-          totalNeeded: totalNeeded,
-          monthsRemaining: monthsRemaining,
-          type: 'deadline',
-          priority: datePriority,
-          targetMessage: `Deadline goal: Need ${formatCurrency(monthlyNeeded)}/month for ${monthsRemaining} months`
-        };
-
-      default:
-        return { needed: 0, type: 'none', priority: 0 };
+    if (meta.goalType === 'monthly_funding') {
+      return {
+        needed,
+        type: 'monthly',
+        priority,
+        targetMessage: `Monthly goal: Need ${formatCurrency(needed)} more this month`,
+      };
     }
+    if (meta.goalType === 'target_balance') {
+      return {
+        needed,
+        type: 'balance',
+        priority,
+        targetMessage: `Savings goal: Need ${formatCurrency(needed)} to reach ${formatCurrency(targetAmount)}`,
+      };
+    }
+    if (meta.goalType === 'spending_target') {
+      return {
+        needed,
+        type: 'spending',
+        priority,
+        targetMessage: `Spending target: Need ${formatCurrency(needed)} more`,
+      };
+    }
+    if (meta.goalType === 'deadline') {
+      const monthlyNeeded = meta.monthlyNeeded ?? needed;
+      return {
+        needed: monthlyNeeded,
+        totalNeeded: needed,
+        monthsRemaining: meta.monthsRemaining ?? 1,
+        type: 'deadline',
+        priority,
+        targetMessage: `Deadline goal: Need ${formatCurrency(monthlyNeeded)}/month`,
+      };
+    }
+    return { needed: 0, type: 'none', priority: 0 };
   }, [formatCurrency]);
 
   const calculatePriorityScore = useCallback((category) => {

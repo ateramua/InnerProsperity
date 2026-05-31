@@ -12,12 +12,18 @@ import {
   normalizeAccountId,
 } from '../utils/cashAccountUtils';
 import {
+  formatAccountTypeLabel,
   formatCreditDeleteError,
   getCreditAccountDeleteConfirmMessage,
-  isCreditAccountType,
   permanentlyDeleteCreditAccountViaApi,
+  resolveDisplayAccountType,
 } from '../utils/creditAccountUtils.jsx';
-
+import { coerceStoredAccountType } from '../utils/accountTypeOptions.jsx';
+import {
+  formatLoanDeleteError,
+  getLoanAccountDeleteConfirmMessage,
+  permanentlyDeleteLoanAccountViaApi,
+} from '../utils/loanAccountUtils.jsx';
 const AllAccountsView = () => {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -135,25 +141,35 @@ const AllAccountsView = () => {
     [accounts]
   );
 
-  /** Cash/loan soft-delete; credit cards permanent delete (manual + Plaid). */
+  /** Route delete by resolved type (matches Cash / Credit / Loan managers). */
   const handleDeleteAccount = async (accountOrId) => {
     const account = resolveAccount(accountOrId);
     const id = normalizeAccountId(account?.id ?? accountOrId);
-    if (!id || deletingAccountId) return;
+    if (!id || deletingAccountId === id) return;
 
-    const isCredit = isCreditAccountType(account);
+    const displayType = resolveDisplayAccountType(account);
+    const isCredit = displayType === 'credit';
+    const isLoan = displayType === 'loan';
+
     const confirmMessage = isCredit
       ? getCreditAccountDeleteConfirmMessage(account)
-      : getAccountDeleteConfirmMessage(account);
+      : isLoan
+        ? getLoanAccountDeleteConfirmMessage(account)
+        : getAccountDeleteConfirmMessage(account);
     if (!window.confirm(confirmMessage)) {
       return;
     }
 
     setDeletingAccountId(id);
     try {
-      const result = isCredit
-        ? await permanentlyDeleteCreditAccountViaApi(account || id)
-        : await deleteAccountViaApi(account || id);
+      let result;
+      if (isCredit) {
+        result = await permanentlyDeleteCreditAccountViaApi(account || id);
+      } else if (isLoan) {
+        result = await permanentlyDeleteLoanAccountViaApi(account || id);
+      } else {
+        result = await deleteAccountViaApi(account || id);
+      }
 
       if (result?.success) {
         setAccounts((prev) => prev.filter((a) => normalizeAccountId(a.id) !== id));
@@ -161,15 +177,28 @@ const AllAccountsView = () => {
         setEditingAccount(null);
         window.dispatchEvent(new CustomEvent('accounts-updated'));
         await fetchAccounts({ quiet: true });
-        showAppToast(isCredit ? 'Credit card deleted' : 'Account removed', 'success');
+        const toastLabel = isCredit
+          ? 'Credit card deleted'
+          : isLoan
+            ? 'Loan deleted'
+            : 'Account removed';
+        showAppToast(toastLabel, 'success');
       } else {
-        const err = isCredit ? formatCreditDeleteError(result) : formatAccountDeleteError(result);
+        const err = isCredit
+          ? formatCreditDeleteError(result)
+          : isLoan
+            ? formatLoanDeleteError(result)
+            : formatAccountDeleteError(result);
         alert('Failed to delete account: ' + err);
         await fetchAccounts({ quiet: true });
       }
     } catch (error) {
       console.error('❌ Error deleting account:', error);
-      alert('Failed to delete account: ' + (error.message || 'Delete failed'));
+      const msg =
+        error?.code === 'PLAID_ACCOUNT_DELETE_BLOCKED'
+          ? 'This account is linked via Plaid. Use Linked Banks to manage the connection, or remove it from Cash Accounts if it is checking/savings.'
+          : error.message || 'Delete failed';
+      alert('Failed to delete account: ' + msg);
     } finally {
       setDeletingAccountId(null);
     }
@@ -228,10 +257,26 @@ const AllAccountsView = () => {
     return colors[type] || '#9CA3AF';
   };
 
-  // Filter accounts
+  /** accounts.type from DB (via getAccountsSummary on each load). */
+  const accountStoredType = useCallback((acc) => {
+    const raw = acc?.type;
+    if (raw == null || String(raw).trim() === '') return '';
+    return coerceStoredAccountType(raw);
+  }, []);
+
+  const formatTypeColumnLabel = useCallback(
+    (acc) => {
+      const key = accountStoredType(acc);
+      if (!key) return '—';
+      return formatAccountTypeLabel(key);
+    },
+    [accountStoredType]
+  );
+
+  // Filter accounts (by stored DB type)
   const filteredAccounts = selectedType === 'all'
     ? accounts
-    : accounts.filter(acc => acc.type === selectedType);
+    : accounts.filter((acc) => accountStoredType(acc) === selectedType);
 
   const accountsByInstitution = useMemo(() => {
     const map = new Map();
@@ -246,11 +291,12 @@ const AllAccountsView = () => {
   // Calculate totals by type
   const totals = accounts.reduce((sums, acc) => {
     const balance = Math.abs(acc.balance || 0);
-    if (acc.type === 'checking') sums.checking = (sums.checking || 0) + balance;
-    if (acc.type === 'savings') sums.savings = (sums.savings || 0) + balance;
-    if (acc.type === 'credit') sums.credit = (sums.credit || 0) + balance;
-    if (acc.type === 'loan') sums.loan = (sums.loan || 0) + balance;
-    if (acc.type === 'investment') sums.investment = (sums.investment || 0) + balance;
+    const type = accountStoredType(acc);
+    if (type === 'checking') sums.checking = (sums.checking || 0) + balance;
+    if (type === 'savings') sums.savings = (sums.savings || 0) + balance;
+    if (type === 'credit') sums.credit = (sums.credit || 0) + balance;
+    if (type === 'loan') sums.loan = (sums.loan || 0) + balance;
+    if (type === 'investment') sums.investment = (sums.investment || 0) + balance;
     sums.total += balance;
     return sums;
   }, { checking: 0, savings: 0, credit: 0, loan: 0, investment: 0, total: 0 });
@@ -339,7 +385,7 @@ const AllAccountsView = () => {
               ...(selectedType === 'checking' ? styles.activeFilterTab : {})
             }}
           >
-            Checking ({accounts.filter(a => a.type === 'checking').length})
+            Checking ({accounts.filter((a) => accountStoredType(a) === 'checking').length})
           </button>
           <button
             onClick={() => setSelectedType('savings')}
@@ -348,7 +394,7 @@ const AllAccountsView = () => {
               ...(selectedType === 'savings' ? styles.activeFilterTab : {})
             }}
           >
-            Savings ({accounts.filter(a => a.type === 'savings').length})
+            Savings ({accounts.filter((a) => accountStoredType(a) === 'savings').length})
           </button>
           <button
             onClick={() => setSelectedType('credit')}
@@ -357,7 +403,7 @@ const AllAccountsView = () => {
               ...(selectedType === 'credit' ? styles.activeFilterTab : {})
             }}
           >
-            Credit Cards ({accounts.filter(a => a.type === 'credit').length})
+            Credit Cards ({accounts.filter((a) => accountStoredType(a) === 'credit').length})
           </button>
           <button
             onClick={() => setSelectedType('loan')}
@@ -366,7 +412,7 @@ const AllAccountsView = () => {
               ...(selectedType === 'loan' ? styles.activeFilterTab : {})
             }}
           >
-            Loans ({accounts.filter(a => a.type === 'loan').length})
+            Loans ({accounts.filter((a) => accountStoredType(a) === 'loan').length})
           </button>
           <button
             onClick={() => setSelectedType('investment')}
@@ -375,7 +421,7 @@ const AllAccountsView = () => {
               ...(selectedType === 'investment' ? styles.activeFilterTab : {})
             }}
           >
-            Investments ({accounts.filter(a => a.type === 'investment').length})
+            Investments ({accounts.filter((a) => accountStoredType(a) === 'investment').length})
           </button>
         </div>
       </div>
@@ -420,11 +466,14 @@ const AllAccountsView = () => {
                       <span style={styles.institutionCount}> ({group.length})</span>
                     </td>
                   </tr>
-                  {group.map((account) => (
+                  {group.map((account) => {
+                const storedType = accountStoredType(account);
+                const typeForStyle = storedType || 'other';
+                return (
                 <tr key={account.id} style={styles.tableRow}>
                   <td style={styles.td}>
                     <div style={styles.accountNameCell}>
-                      <span style={styles.accountIcon}>{getAccountIcon(account.type)}</span>
+                      <span style={styles.accountIcon}>{getAccountIcon(typeForStyle)}</span>
                       <strong>
                         {account.name}
                         <PlaidLinkedBadge account={account} />
@@ -434,10 +483,14 @@ const AllAccountsView = () => {
                   <td style={styles.td}>
                     <span style={{
                       ...styles.typeBadge,
-                      background: `${getAccountColor(account.type)}20`,
-                      color: getAccountColor(account.type)
-                    }}>
-                      {account.type}
+                      background: `${getAccountColor(typeForStyle)}20`,
+                      color: getAccountColor(typeForStyle)
+                    }}
+                    title={account.type != null && String(account.type).trim() !== ''
+                      ? `accounts.type: ${account.type}`
+                      : 'No type set in database'}
+                    >
+                      {formatTypeColumnLabel(account)}
                     </span>
                   </td>
                   <td style={styles.td}>
@@ -446,7 +499,7 @@ const AllAccountsView = () => {
                   <td style={styles.td}>
                     <span style={{
                       ...styles.balance,
-                      color: account.type === 'credit' || account.type === 'loan' ? '#EF4444' : '#4ADE80'
+                      color: storedType === 'credit' || storedType === 'loan' ? '#EF4444' : '#4ADE80'
                     }}>
                       {formatCurrency(account.balance)}
                     </span>
@@ -506,7 +559,8 @@ const AllAccountsView = () => {
                     </div>
                   </td>
                 </tr>
-                  ))}
+                );
+                  })}
                 </React.Fragment>
               ))}
             </tbody>
@@ -524,11 +578,13 @@ const AllAccountsView = () => {
         onSave={handleSaveEdit}
         onDelete={handleDeleteAccount}
         account={editingAccount}
-        allowDeleteWhenPlaidLinked={isCreditAccountType(editingAccount)}
+        allowDeleteWhenPlaidLinked
         deleteButtonLabel={
-          isCreditAccountType(editingAccount)
+          resolveDisplayAccountType(editingAccount) === 'credit'
             ? 'Delete Credit Card Account'
-            : 'Delete Account'
+            : resolveDisplayAccountType(editingAccount) === 'loan'
+              ? 'Delete Loan Account'
+              : 'Delete Account'
         }
       />
     </div>

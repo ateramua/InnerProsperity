@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import TransactionManager from '../components/TransactionManager';
+import TransactionImportModal from '../components/TransactionImportModal';
 
 export default function TransactionsPage() {
   const router = useRouter();
@@ -10,6 +11,7 @@ export default function TransactionsPage() {
   const [categories, setCategories] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // Define formatCurrency inside the component
   const formatCurrency = (amount) => {
@@ -251,6 +253,22 @@ export default function TransactionsPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: 0, color: 'white' }}>All Transactions</h2>
           <button
+            type="button"
+            onClick={() => setShowImportModal(true)}
+            style={{
+              background: 'rgba(255,255,255,0.12)',
+              color: 'white',
+              border: '1px solid rgba(255,255,255,0.35)',
+              padding: '0.75rem 1.5rem',
+              borderRadius: '0.5rem',
+              fontSize: '1rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+            }}
+          >
+            Import CSV
+          </button>
+          <button
             onClick={() => setShowAddModal(true)}
             style={{
               background: '#10B981',
@@ -269,6 +287,14 @@ export default function TransactionsPage() {
             <span style={{ fontSize: '1.2rem' }}>+</span> Add Transaction
           </button>
         </div>
+
+        <TransactionImportModal
+          isOpen={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          accounts={accounts}
+          title="Import transactions from CSV"
+          onComplete={() => loadData()}
+        />
 
         {/* Add Transaction Modal */}
         {showAddModal && (
@@ -403,10 +429,10 @@ export default function TransactionsPage() {
           transactions={transactions}
           categories={categories}
           accounts={accounts}
-          onAddTransaction={handleAddTransaction}
           onUpdateTransaction={handleUpdateTransaction}
           onDeleteTransaction={handleDeleteTransaction}
           onToggleCleared={handleToggleCleared}
+          showAccountColumn
         />
       </main>
     </div>

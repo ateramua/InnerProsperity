@@ -27,6 +27,7 @@ import {
   formatMoneyInput,
   mapGoalTargetFromDb,
 } from '../utils/categoryMoneyInput.jsx';
+import { sumTotalBudgetCash } from '../utils/cashAccountUtils.jsx';
 
 const PropertyMapView = () => {
   // ==================== STATE DECLARATIONS ====================
@@ -134,9 +135,39 @@ const PropertyMapView = () => {
   // ==================== CREDIT CARD PAYMENT HELPER ====================
   
   // Move money from spending category to credit card payment category
-  const moveMoneyForCreditCardTransaction = async (amount, spendingCategoryId, creditCardAccountName, budgetMonthKeyOpt) => {
+  const resolveCreditCardPaymentCategory = (categories, paymentGroupId, accountRef) => {
+    const ref = String(accountRef || '').trim();
+    if (!ref) return null;
+    const pool = (categories || []).filter(
+      (cat) =>
+        cat.is_credit_card_payment_category === 1 ||
+        cat.is_credit_card_payment_category === true
+    );
+    const inGroup = paymentGroupId
+      ? pool.filter((cat) => String(cat.group_id ?? cat.groupId) === String(paymentGroupId))
+      : pool;
+
+    const byLinked = inGroup.find(
+      (cat) => String(cat.linked_account_id ?? cat.linkedAccountId) === ref
+    );
+    if (byLinked) return byLinked;
+
+    const refLower = ref.toLowerCase();
+    return (
+      inGroup.find((cat) => {
+        const name = String(cat.name || '').toLowerCase();
+        return (
+          name === refLower ||
+          name === `${refLower} payment` ||
+          (name.endsWith(' payment') && name.slice(0, -8) === refLower)
+        );
+      }) || null
+    );
+  };
+
+  const moveMoneyForCreditCardTransaction = async (amount, spendingCategoryId, creditCardAccountRef, budgetMonthKeyOpt) => {
     try {
-      console.log(`🔄 Moving $${amount} from category ${spendingCategoryId} to credit card payment category for ${creditCardAccountName}`);
+      console.log(`🔄 Moving $${amount} from category ${spendingCategoryId} to credit card payment category for ${creditCardAccountRef}`);
       
       const groupsResult = await window.electronAPI.getCategoryGroups(userId);
       if (!groupsResult?.success) {
@@ -159,13 +190,14 @@ const PropertyMapView = () => {
         return false;
       }
       
-      const paymentCategory = categoriesResult.data.find(cat => 
-        cat.group_id === paymentGroup.id && 
-        cat.name.toLowerCase() === creditCardAccountName.toLowerCase()
+      const paymentCategory = resolveCreditCardPaymentCategory(
+        categoriesResult.data,
+        paymentGroup.id,
+        creditCardAccountRef
       );
       
       if (!paymentCategory) {
-        console.error(`Payment category for "${creditCardAccountName}" not found`);
+        console.error(`Payment category for "${creditCardAccountRef}" not found`);
         return false;
       }
       
@@ -245,76 +277,23 @@ const PropertyMapView = () => {
     }));
   };
 
-  const calculateTargetProgress = (category) => {
-    if (!category) {
-      return { progress: null, status: 'no-target', needed: 0 };
-    }
-
-    if (category.target_amount == null || category.target_amount === undefined) {
-      return { progress: null, status: 'no-target', needed: 0 };
-    }
-    if (Number(category.target_amount) === 0) {
-      return { progress: 0, status: 'no-target', needed: 0 };
-    }
-
-    const targetAmount = Number(category.target_amount) || 0;
-
-    switch (category.target_type) {
-      case 'monthly':
-      case 'monthly_debt_payment': {
-        const funded = Number(category.assigned) || 0;
-        const progress = (funded / targetAmount) * 100;
-        const needed = Math.max(0, targetAmount - funded);
-        return {
-          progress,
-          status: progress >= 100 ? 'funded' : progress > 0 ? 'partial' : 'unfunded',
-          needed
-        };
-      }
-      case 'balance':
-      case 'by_date': {
-        const currentAmount = Number(category.available) || 0;
-        const goalProgress = (currentAmount / targetAmount) * 100;
-        const goalNeeded = Math.max(0, targetAmount - currentAmount);
-        return {
-          progress: goalProgress,
-          status: goalProgress >= 100 ? 'funded' : goalProgress > 0 ? 'partial' : 'unfunded',
-          needed: goalNeeded
-        };
-      }
-      default:
-        return { progress: null, status: 'no-target', needed: 0 };
-    }
-  };
+  const calculateTargetProgress = (category) =>
+    budgetEngine.calculateTargetProgress(category);
 
   const calculateUnderfundedCategories = () => {
     if (!budgetData.categories || !Array.isArray(budgetData.categories)) {
       return [];
     }
-
-    return budgetData.categories.filter(cat => {
-      if (!cat || isCategoryArchived(cat)) return false;
-      const targetInfo = calculateTargetProgress(cat);
-      return targetInfo.status === 'partial' ||
-        targetInfo.status === 'unfunded' ||
-        targetInfo.status === 'in-progress';
-    });
+    const active = budgetData.categories.filter((cat) => cat && !isCategoryArchived(cat));
+    return budgetEngine.calculateUnderfundedCategories(active);
   };
 
   const getTotalUnderfunded = () => {
     if (!budgetData.categories || !Array.isArray(budgetData.categories)) {
       return 0;
     }
-
-    let total = 0;
-    budgetData.categories.forEach(cat => {
-      if (!cat || isCategoryArchived(cat)) return;
-      const targetInfo = calculateTargetProgress(cat);
-      if (targetInfo && targetInfo.needed && targetInfo.needed > 0) {
-        total += targetInfo.needed;
-      }
-    });
-    return total;
+    const active = budgetData.categories.filter((cat) => cat && !isCategoryArchived(cat));
+    return budgetEngine.getTotalUnderfunded(active);
   };
 
   const formatCurrency = (amount) => {
@@ -365,6 +344,7 @@ const PropertyMapView = () => {
     overspent: cat.overspent === true || cat.overspent === 1,
     overspending_type: cat.overspending_type || null,
     is_credit_card_payment_category: cat.is_credit_card_payment_category === 1,
+    linked_account_id: cat.linked_account_id ?? null,
     groupId: cat.group_id ?? null,
     user_id: cat.user_id,
     priority: cat.priority || 2,
@@ -380,9 +360,23 @@ const PropertyMapView = () => {
     original_group_id: cat.original_group_id || cat.group_id,
     is_loan_payment_category: cat.is_loan_payment_category === 1
   };
+    const rowForUnderfunded = {
+      ...row,
+      forecasted_need: cat.forecasted_need ?? cat.forecastedNeed ?? row.forecasted_need,
+    };
+    const targetMeta = budgetEngine.calculateTargetProgress(rowForUnderfunded);
     const derived = deriveAvailableFromCategoryRow(row);
+    const serverUnderfunded =
+      cat.underfunded != null && cat.underfunded !== undefined
+        ? toMoneyNumber(cat.underfunded)
+        : null;
     return {
       ...row,
+      forecasted_need: rowForUnderfunded.forecasted_need,
+      underfunded: serverUnderfunded ?? targetMeta.underfunded ?? targetMeta.needed ?? 0,
+      goalType: cat.goalType ?? targetMeta.goalType,
+      goalStatus: cat.goalStatus ?? targetMeta.status,
+      goalProgress: cat.goalProgress ?? targetMeta.progress,
       available: roundMoneyEnvelope(derived.available),
       activity: roundMoneyEnvelope(derived.activity ?? row.activity),
     };
@@ -453,11 +447,14 @@ const PropertyMapView = () => {
   };
 
   // ==================== READY TO ASSIGN CALCULATION ====================
-  const calculateReadyToAssign = () => {
+  const calculateReadyToAssign = (categoriesOverride = null) => {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('💰 CALCULATING READY TO ASSIGN (cash − Σ category available)');
 
-    const activeCategories = budgetData.categories.filter((cat) => !isCategoryArchived(cat));
+    const sourceCategories = Array.isArray(categoriesOverride)
+      ? categoriesOverride
+      : budgetData.categories;
+    const activeCategories = sourceCategories.filter((cat) => !isCategoryArchived(cat));
 
     const sumCategoryAvailable = activeCategories.reduce(
       (sum, cat) => sum + (Number(cat.available) || 0),
@@ -686,7 +683,7 @@ const PropertyMapView = () => {
           ? categoryGroups
           : lastGoodSnapshotRef.current.categoryGroups;
       commitBudgetSnapshot(patchedCategories, groups, userId, monthKey);
-      return true;
+      return patchedCategories;
     }
     if (opts.allowEmpty) {
       lastGoodSnapshotRef.current = {
@@ -700,16 +697,17 @@ const PropertyMapView = () => {
       saveSnapshotToSession(lastGoodSnapshotRef.current);
       setBudgetData((prev) => ({ ...prev, categories: [] }));
       setCategories([]);
-      return true;
+      return [];
     }
     if ((budgetData.categories?.length || 0) > 0) {
       console.warn('⚠️ Transient empty categories response — kept current table data.');
-      return false;
+      return null;
     }
     if (restoreFromLastGoodSnapshotIfNeeded()) {
       console.warn('⚠️ Transient empty categories response — restored last known snapshot.');
+      return lastGoodSnapshotRef.current.categories || null;
     }
-    return false;
+    return null;
   };
 
   const loadCategoryGroups = async () => {
@@ -763,14 +761,14 @@ const PropertyMapView = () => {
   const loadCategoriesFromDB = async (retryCount = 0, opts = {}) => {
     if (!window.electronAPI?.getCategories) {
       console.error('❌ electronAPI.getCategories is not available!');
-      return;
+      return null;
     }
     if (!userId) {
       console.warn('⚠️ No userId provided to loadCategoriesFromDB');
-      return;
+      return null;
     }
     if (editingCategoryRef.current != null && !opts.allowWhileEditing) {
-      return;
+      return null;
     }
 
     const monthDate = opts.monthDate ?? selectedMonthRef.current ?? selectedMonth;
@@ -783,11 +781,18 @@ const PropertyMapView = () => {
         const snap = await window.electronAPI.getBudgetMonthSnapshot(userId, monthKey);
         if (snap && snap.success && snap.data && Array.isArray(snap.data.categories)) {
           const dbCategories = snap.data.categories.map(mapDbCategoryToBudgetRow);
-          applyCategoriesFromDb(dbCategories, monthKey, opts);
+          if (snap.data.underfundedTotal != null) {
+            lastGoodSnapshotRef.current = {
+              ...lastGoodSnapshotRef.current,
+              underfundedTotal: Number(snap.data.underfundedTotal) || 0,
+              underfundedBreakdown: snap.data.underfundedBreakdown || [],
+            };
+          }
+          const loaded = applyCategoriesFromDb(dbCategories, monthKey, opts);
           setTimeout(() => {
             loadCategoryGroups();
           }, 100);
-          return;
+          return loaded;
         }
         console.warn('⚠️ getBudgetMonthSnapshot failed or empty; falling back to getCategories', snap?.error);
       }
@@ -796,10 +801,11 @@ const PropertyMapView = () => {
 
       if (result && result.success && result.data) {
         const dbCategories = result.data.map(mapDbCategoryToBudgetRow);
-        applyCategoriesFromDb(dbCategories, monthKey, opts);
+        const loaded = applyCategoriesFromDb(dbCategories, monthKey, opts);
         setTimeout(() => {
           loadCategoryGroups();
         }, 100);
+        return loaded;
       }
     } catch (error) {
       console.error('❌ Error loading categories:', error);
@@ -809,6 +815,7 @@ const PropertyMapView = () => {
     } finally {
       setLoading(false);
     }
+    return null;
   };
 
   const loadArchivedCategories = async () => {
@@ -977,18 +984,27 @@ const PropertyMapView = () => {
 
       registerGoalPatch(categoryId, goalFields);
 
-      const nextCategories = budgetData.categories.map((cat) => {
-        if (!sameCategoryId(cat.id, categoryId)) return cat;
-        const fromServer = result.data ? mapDbCategoryToBudgetRow(result.data) : null;
-        return fromServer
-          ? { ...cat, ...fromServer, name, assigned: parsedAssigned }
-          : { ...cat, name, assigned: parsedAssigned, ...goalFields };
-      });
-
-      commitBudgetSnapshot(withDerivedAvailable(nextCategories), categoryGroups, userId, monthKey);
-
       setEditingCategory(null);
       editingCategoryRef.current = null;
+
+      const moneyChanged = Number.isFinite(parsedAssigned);
+      if (moneyChanged) {
+        const reloaded = await loadCategoriesFromDB(0, {
+          monthDate: selectedMonthRef.current || selectedMonth,
+        });
+        calculateReadyToAssign(
+          reloaded || lastGoodSnapshotRef.current.categories || budgetData.categories,
+        );
+      } else {
+        const nextCategories = budgetData.categories.map((cat) => {
+          if (!sameCategoryId(cat.id, categoryId)) return cat;
+          const fromServer = result.data ? mapDbCategoryToBudgetRow(result.data) : null;
+          return fromServer
+            ? { ...cat, ...fromServer, name }
+            : { ...cat, name, ...goalFields };
+        });
+        commitBudgetSnapshot(withDerivedAvailable(nextCategories), categoryGroups, userId, monthKey);
+      }
 
       alert('✅ Category updated successfully!');
     } catch (error) {
@@ -1274,10 +1290,7 @@ const PropertyMapView = () => {
         const userIdForAccounts = userResult.data.id;
         const accountsResult = await window.electronAPI.getAccountsSummary(userIdForAccounts);
         if (accountsResult?.success && accountsResult.data) {
-          const totalCashValue = accountsResult.data
-            .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-            .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-          setTotalCashInAccounts(totalCashValue);
+          setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
         }
         setIncomeData({
           amount: '',
@@ -1343,23 +1356,32 @@ const PropertyMapView = () => {
         break;
       }
 
-      case 'underfunded':
-        const overspent = activeCategories.filter(c => (c.available || 0) < 0);
-        const monthlyTargets = activeCategories.filter(c =>
-          c.target_type === 'monthly' && (c.assigned || 0) < (c.target_amount || 0)
+      case 'underfunded': {
+        const overspent = activeCategories.filter((c) => (c.available || 0) < 0);
+        const withGoalGap = activeCategories
+          .map((c) => {
+            const targetInfo = calculateTargetProgress(c);
+            return { ...c, targetInfo, needed: targetInfo.underfunded ?? targetInfo.needed ?? 0 };
+          })
+          .filter((c) => c.needed > 0 && (c.available || 0) >= 0);
+
+        const monthlyGap = withGoalGap.filter((c) =>
+          ['monthly', 'monthly_debt_payment', 'monthly_savings'].includes(
+            String(c.target_type || '').toLowerCase()
+          )
         );
-        const savingsGoals = activeCategories.filter(c =>
-          c.target_type === 'balance' && (c.available || 0) < (c.target_amount || 0)
+        const balanceGap = withGoalGap.filter((c) =>
+          ['balance', 'target_balance'].includes(String(c.target_type || '').toLowerCase())
         );
-        const dateGoals = activeCategories.filter(c =>
-          c.target_type === 'by_date' && (c.available || 0) < (c.target_amount || 0)
+        const dateGap = withGoalGap.filter((c) =>
+          ['by_date', 'target_balance_by_date'].includes(String(c.target_type || '').toLowerCase())
         );
 
         const sortedCategories = [
-          ...overspent.map(c => ({ ...c, urgency: 1, needed: Math.abs(c.available || 0) })),
-          ...monthlyTargets.map(c => ({ ...c, urgency: 2, needed: (c.target_amount || 0) - (c.assigned || 0) })),
-          ...savingsGoals.map(c => ({ ...c, urgency: 3, needed: (c.target_amount || 0) - (c.available || 0) })),
-          ...dateGoals.map(c => ({ ...c, urgency: 4, needed: (c.target_amount || 0) - (c.available || 0) }))
+          ...overspent.map((c) => ({ ...c, urgency: 1, needed: Math.abs(c.available || 0) })),
+          ...monthlyGap.map((c) => ({ ...c, urgency: 2, needed: c.needed })),
+          ...balanceGap.map((c) => ({ ...c, urgency: 3, needed: c.needed })),
+          ...dateGap.map((c) => ({ ...c, urgency: 4, needed: c.needed })),
         ].sort((a, b) => a.urgency - b.urgency);
 
         for (const cat of sortedCategories) {
@@ -1371,6 +1393,7 @@ const PropertyMapView = () => {
           }
         }
         break;
+      }
 
       case 'last-month':
         activeCategories.forEach(cat => {
@@ -1404,44 +1427,75 @@ const PropertyMapView = () => {
       }
 
       const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
-      const deltas = {};
-      for (const a of allocations) {
-        deltas[a.categoryId] = (deltas[a.categoryId] || 0) + a.amount;
+      const deltaByCategoryId = new Map();
+      for (const allocation of allocations) {
+        const categoryId = String(allocation.categoryId);
+        deltaByCategoryId.set(
+          categoryId,
+          (deltaByCategoryId.get(categoryId) || 0) + allocation.amount
+        );
       }
 
       setBudgetData((prev) => ({
         ...prev,
         categories: withDerivedAvailable(
           prev.categories.map((cat) => {
-            const d = deltas[cat.id];
-            if (d) {
-              return { ...cat, assigned: (cat.assigned || 0) + d };
-            }
-            return cat;
+            const delta = Array.from(deltaByCategoryId.entries()).find(([id]) =>
+              sameCategoryId(id, cat.id)
+            )?.[1];
+            if (delta == null) return cat;
+            return { ...cat, assigned: roundMoney((Number(cat.assigned) || 0) + delta) };
           }),
         ),
       }));
 
       try {
-        for (const [categoryId, delta] of Object.entries(deltas)) {
-          const cat = budgetData.categories.find(c => c.id === categoryId);
-          const newAssigned = (cat?.assigned || 0) + delta;
-          const res = await window.electronAPI.updateCategory(
+        const bulkAssignments = Array.from(deltaByCategoryId.entries()).map(
+          ([categoryId, delta]) => ({
             categoryId,
-            {
-              assigned: newAssigned,
-              budget_month: monthKey
-            }
+            delta,
+          }),
+        );
+
+        if (window.electronAPI?.bulkAssignMonthBudget) {
+          const bulkRes = await window.electronAPI.bulkAssignMonthBudget(
+            userId,
+            monthKey,
+            bulkAssignments,
+            { mode: 'delta' },
           );
-          if (!res?.success) {
-            console.error('Quick assign failed for category', categoryId, res?.error);
+          if (!bulkRes?.success) {
+            throw new Error(bulkRes?.error || 'Bulk assign failed');
+          }
+        } else {
+          for (const { categoryId, delta } of bulkAssignments) {
+            const categoryRow = activeCategories.find((c) => sameCategoryId(c.id, categoryId));
+            const newAssigned = roundMoney((Number(categoryRow?.assigned) || 0) + delta);
+            const res = await window.electronAPI.updateCategory(categoryId, {
+              assigned: newAssigned,
+              budget_month: monthKey,
+            });
+            if (!res?.success) {
+              throw new Error(res?.error || `Failed to assign category ${categoryId}`);
+            }
           }
         }
-        await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
-        calculateReadyToAssign();
-        alert(`✅ Assigned ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${Object.keys(deltas).length} categories`);
+
+        const reloadedCategories = await loadCategoriesFromDB(0, {
+          monthDate: selectedMonthRef.current || selectedMonth,
+        });
+        calculateReadyToAssign(
+          reloadedCategories || lastGoodSnapshotRef.current.categories || budgetData.categories,
+        );
+        alert(`✅ Assigned ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${deltaByCategoryId.size} categories`);
       } catch (err) {
         console.error('Quick assign error:', err);
+        const reloadedCategories = await loadCategoriesFromDB(0, {
+          monthDate: selectedMonthRef.current || selectedMonth,
+        });
+        calculateReadyToAssign(
+          reloadedCategories || lastGoodSnapshotRef.current.categories || budgetData.categories,
+        );
         alert(`❌ Error while saving assignments: ${err.message}`);
       }
     } else {
@@ -1616,20 +1670,74 @@ const PropertyMapView = () => {
     }
   };
   
-  const handleAutoAssign = (allocations) => {
+  const handleAutoAssign = async (allocations) => {
+    if (!Array.isArray(allocations) || allocations.length === 0) {
+      alert('No allocations to apply');
+      return;
+    }
+
+    const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+    const bulkAssignments = allocations
+      .filter((a) => a?.categoryId != null && Number(a.amount) > 0)
+      .map((a) => ({ categoryId: a.categoryId, delta: Number(a.amount) }));
+
+    if (!bulkAssignments.length) {
+      alert('No valid allocations to apply');
+      return;
+    }
+
     setBudgetData((prev) => ({
       ...prev,
       categories: withDerivedAvailable(
         prev.categories.map((cat) => {
-          const allocation = allocations.find((a) => a.categoryId === cat.id);
-          if (allocation) {
-            return { ...cat, assigned: (cat.assigned || 0) + allocation.amount };
-          }
-          return cat;
+          const allocation = bulkAssignments.find((a) => sameCategoryId(a.categoryId, cat.id));
+          if (!allocation) return cat;
+          return {
+            ...cat,
+            assigned: roundMoney((Number(cat.assigned) || 0) + allocation.delta),
+          };
         }),
       ),
     }));
-    alert('✅ Auto-assign completed successfully!');
+
+    try {
+      if (window.electronAPI?.bulkAssignMonthBudget) {
+        const bulkRes = await window.electronAPI.bulkAssignMonthBudget(
+          userId,
+          monthKey,
+          bulkAssignments,
+          { mode: 'delta' },
+        );
+        if (!bulkRes?.success) {
+          throw new Error(bulkRes?.error || 'Auto assign failed');
+        }
+      } else {
+        for (const { categoryId, delta } of bulkAssignments) {
+          const categoryRow = budgetData.categories.find((c) => sameCategoryId(c.id, categoryId));
+          const newAssigned = roundMoney((Number(categoryRow?.assigned) || 0) + delta);
+          const res = await window.electronAPI.updateCategory(categoryId, {
+            assigned: newAssigned,
+            budget_month: monthKey,
+          });
+          if (!res?.success) {
+            throw new Error(res?.error || `Failed to assign category ${categoryId}`);
+          }
+        }
+      }
+
+      const reloadedCategories = await loadCategoriesFromDB(0, {
+        monthDate: selectedMonthRef.current || selectedMonth,
+      });
+      calculateReadyToAssign(
+        reloadedCategories || lastGoodSnapshotRef.current.categories || budgetData.categories,
+      );
+      alert('✅ Auto-assign completed successfully!');
+    } catch (err) {
+      console.error('Auto assign error:', err);
+      await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
+      calculateReadyToAssign();
+      alert(`❌ Error while saving auto-assign: ${err.message}`);
+    }
   };
 
   // ==================== UI HELPER FUNCTIONS ====================
@@ -1731,10 +1839,7 @@ const PropertyMapView = () => {
         if (userResult?.success && userResult?.data) {
           const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
           if (accountsResult?.success) {
-            const totalCashValue = accountsResult.data
-              .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-              .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-            setTotalCashInAccounts(totalCashValue);
+            setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
           }
         }
       } catch (error) {
@@ -1750,7 +1855,20 @@ const PropertyMapView = () => {
   // Do not reload on window focus / visibility — opening DevTools triggers those events
   // and can race IPC loads that briefly return empty, wiping the Prosperity Map table.
 
-  const { lastUpdate } = useRealtimeUpdates(['prosperity:updated'], () => {
+  const budgetRefreshEvents = [
+    'prosperity:updated',
+    'budget:assigned',
+    'budget:bulkAssigned',
+    'budget:repaired',
+    'budget:consolidated',
+    'category:updated',
+    'category:created',
+    'transaction:added',
+    'transaction:updated',
+    'transaction:deleted',
+  ];
+
+  const { lastUpdate } = useRealtimeUpdates(budgetRefreshEvents, () => {
     void (async () => {
       if (editingCategoryRef.current != null) {
         return;
@@ -1766,10 +1884,7 @@ const PropertyMapView = () => {
         if (userResult?.success && userResult?.data) {
           const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
           if (accountsResult?.success && accountsResult.data) {
-            const totalCashValue = accountsResult.data
-              .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-              .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-            setTotalCashInAccounts(totalCashValue);
+            setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
           }
         }
       } catch (e) {
@@ -1791,10 +1906,7 @@ const PropertyMapView = () => {
           if (userResult?.success && userResult?.data) {
             const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
             if (accountsResult?.success && accountsResult.data) {
-              const totalCashValue = accountsResult.data
-                .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-                .reduce((sum, acc) => sum + (acc.balance || 0), 0);
-              setTotalCashInAccounts(totalCashValue);
+              setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
             }
           }
         } catch (e) {
@@ -1929,9 +2041,7 @@ const PropertyMapView = () => {
               <Button variant="pmSecondary" onClick={async () => {
                 const userResult = await window.electronAPI.getCurrentUser();
                 const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
-                const totalCash = accountsResult.data
-                  .filter(acc => acc.type === 'checking' || acc.type === 'savings')
-                  .reduce((sum, acc) => sum + (acc.balance || 0), 0);
+                const totalCash = sumTotalBudgetCash(accountsResult.data);
                 const categories = await window.electronAPI.getCategories(2);
                 const totalAssigned = categories.data.reduce((sum, cat) => sum + (cat.assigned || 0), 0);
                 alert(`Total Cash: $${totalCash}

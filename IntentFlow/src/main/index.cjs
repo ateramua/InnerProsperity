@@ -8,6 +8,7 @@ const {
 } = require('../services/plaid/plaidOAuth.cjs');
 const plaidRelayClient = require('../services/plaid/plaidRelayClient.cjs') || {};
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
+const { getEditMenuTemplate, attachEditableContextMenu } = require('./textInputClipboard.cjs');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -317,6 +318,9 @@ const updateService = requireModule('../services/realtime/updateService.cjs') ||
         'transaction:updated',
         'transaction:deleted',
         'budget:assigned',
+        'budget:bulkAssigned',
+        'budget:repaired',
+        'budget:consolidated',
         'budget:moved',
         'category:updated',
         'category:created',
@@ -553,112 +557,6 @@ function resolveBudgetOwnerId(_db, requestedUserId) {
     return currentUserId;
 }
 
-const CREDIT_CARD_PAYMENTS_GROUP_NAME = 'Credit Card Payments';
-
-function buildCreditCardPaymentCategoryName(accountName) {
-    const safe = String(accountName || 'Credit Card').trim() || 'Credit Card';
-    return `${safe} Payment`;
-}
-
-async function getOrCreateCreditCardPaymentsGroup(db, userId) {
-    if (!userId) return null;
-    const existing = await db.get(
-        `SELECT * FROM category_groups
-         WHERE user_id = ? AND lower(name) = lower(?)
-         LIMIT 1`,
-        [userId, CREDIT_CARD_PAYMENTS_GROUP_NAME]
-    );
-    if (existing) {
-        if (!existing.system_managed) {
-            await db.run(
-                `UPDATE category_groups
-                 SET system_managed = 1, updated_at = datetime('now')
-                 WHERE id = ?`,
-                [existing.id]
-            );
-            return { ...existing, system_managed: 1 };
-        }
-        return existing;
-    }
-
-    const maxSort = await db.get(
-        `SELECT COALESCE(MAX(sort_order), -1) AS max_sort
-         FROM category_groups
-         WHERE user_id = ?`,
-        [userId]
-    );
-    const nextSort = (Number(maxSort?.max_sort) || -1) + 1;
-    const result = await db.run(
-        `INSERT INTO category_groups (user_id, name, sort_order, system_managed, created_at, updated_at)
-         VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))`,
-        [userId, CREDIT_CARD_PAYMENTS_GROUP_NAME, nextSort]
-    );
-    return db.get('SELECT * FROM category_groups WHERE id = ?', [result.lastID]);
-}
-
-async function ensureCreditCardPaymentCategoryForAccount(db, accountRow) {
-    if (!accountRow || accountRow.type !== 'credit') return null;
-    const ownerId = accountRow.user_id;
-    if (!ownerId) return null;
-
-    const paymentGroup = await getOrCreateCreditCardPaymentsGroup(db, ownerId);
-    if (!paymentGroup) return null;
-
-    let paymentCategory = null;
-    if (accountRow.paired_category_id) {
-        paymentCategory = await db.get(
-            'SELECT * FROM categories WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?',
-            [accountRow.paired_category_id, ownerId]
-        );
-    }
-    if (!paymentCategory) {
-        paymentCategory = await db.get(
-            `SELECT * FROM categories
-             WHERE user_id = ?
-               AND is_credit_card_payment_category = 1
-               AND CAST(linked_account_id AS TEXT) = CAST(? AS TEXT)
-             LIMIT 1`,
-            [ownerId, accountRow.id]
-        );
-    }
-
-    const desiredName = buildCreditCardPaymentCategoryName(accountRow.name);
-    if (!paymentCategory) {
-        const categoryId = `cat_ccpay_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
-        await db.run(
-            `INSERT INTO categories (
-                id, user_id, name, group_id, assigned, target_type, target_amount, target_date,
-                is_credit_card_payment_category, linked_account_id, priority, archived, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, 0, 'monthly', 0, NULL, 1, ?, 2, 0, datetime('now'), datetime('now'))`,
-            [categoryId, ownerId, desiredName, paymentGroup.id, accountRow.id]
-        );
-        paymentCategory = await db.get(
-            'SELECT * FROM categories WHERE id = ? AND user_id = ?',
-            [categoryId, ownerId]
-        );
-    } else {
-        await db.run(
-            `UPDATE categories
-             SET name = ?, group_id = ?, is_credit_card_payment_category = 1,
-                 linked_account_id = ?, updated_at = datetime('now')
-             WHERE CAST(id AS TEXT) = CAST(? AS TEXT)`,
-            [desiredName, paymentGroup.id, accountRow.id, paymentCategory.id]
-        );
-        paymentCategory = await db.get(
-            'SELECT * FROM categories WHERE CAST(id AS TEXT) = CAST(? AS TEXT)',
-            [paymentCategory.id]
-        );
-    }
-
-    await db.run(
-        `UPDATE accounts
-         SET paired_category_id = ?, updated_at = datetime('now')
-         WHERE id = ? AND user_id = ?`,
-        [paymentCategory.id, accountRow.id, ownerId]
-    );
-    return paymentCategory;
-}
-
 async function getCategoryMonthEnvelope(db, userId, categoryId, monthKey) {
     const normalizedMonth = monthlyBudgetService.toLocalMonthKey(monthKey || new Date());
     await monthlyBudgetService.getBudgetMonthSnapshot(db, userId, normalizedMonth);
@@ -732,8 +630,39 @@ const monthlyBudgetService = requireModule('../services/budget/monthlyBudgetServ
     }),
     refreshBudgetMonthsForward: async () => {},
     applyMonthBudgetedAmount: async () => ({}),
-    applyMonthAssignedAndAvailable: async () => ({})
+    applyMonthAssignedAndAvailable: async () => ({}),
+    applyMonthBudgetBulk: async () => ({ monthKey: '', mode: 'delta', assignments: [] }),
+    applyMonthBudgetDelta: async () => ({}),
+    repairImplicitAssignmentsForMonth: async () => ({ monthKey: '', repairs: [] }),
+    repairAndRefreshBudgetMonths: async () => ({ monthKey: '', repairs: [], snapshot: {} }),
+    consolidateAvailableIntoMonthAssignments: async () => ({ monthKey: '', conversions: [] }),
+    resetEnvelopesFromMonth: async () => ({ monthKey: '', categoriesReset: 0 }),
+    auditBudgetMonthIntegrity: async () => ({ monthKey: '', categories: [], totals: {} })
 };
+
+const creditCardPaymentCategoryService =
+    requireModule('../services/accounts/creditCardPaymentCategoryService.cjs') ||
+    require(path.join(__dirname, '../services/accounts/creditCardPaymentCategoryService.cjs'));
+
+const {
+    CREDIT_CARD_PAYMENTS_GROUP_NAME,
+    isEligibleBudgetCreditCardAccount,
+    ensureCreditCardPaymentCategoryForAccount,
+    archiveCreditCardPaymentCategoryForAccount,
+    syncCreditCardPaymentCategoriesForUser,
+    ensureAllCreditCardPaymentCategoriesForUser,
+} = creditCardPaymentCategoryService;
+
+async function runCreditCardPaymentCategorySync(userId, reason = 'sync') {
+    if (!userId || !syncCreditCardPaymentCategoriesForUser) return null;
+    try {
+        const db = await getDatabase();
+        return await syncCreditCardPaymentCategoriesForUser(db, userId, { reason });
+    } catch (err) {
+        console.warn('[cc-payment-category] sync failed:', err.message);
+        return null;
+    }
+}
 
 const TransactionService = requireModule('../services/transactions/transactionService.cjs') || class TransactionService {
     constructor(dbPath) {
@@ -750,6 +679,10 @@ const TransactionService = requireModule('../services/transactions/transactionSe
 const transactionLifecycle = requireModule('../services/transactions/transactionLifecycle.cjs') || {
     runPostTransactionEffects: async () => {}
 };
+const transactionImportService = requireModule('../services/transactions/transactionImportService.cjs');
+const importCategoryMapping = requireModule('../services/transactions/importCategoryMapping.cjs');
+
+console.log('   - transactionImportService loaded:', !!transactionImportService, transactionImportService?.readImportFile ? '(readImportFile ok)' : '(MISSING — check main log above)');
 
 console.log('   - accountService loaded:', !!accountService, '📦📦📦 SERVICE LOADING STATUS 📦📦📦');
 console.log('   - accountService.getAccountsSummary exists:', !!(accountService && typeof accountService.getAccountsSummary === 'function'));
@@ -1100,6 +1033,20 @@ function getPlaidSyncDeps() {
         getDatabase,
         decryptToken,
         updateAccountBalances,
+        ensureCreditCardPaymentCategoriesForUser: async (userId) => {
+            return runCreditCardPaymentCategorySync(userId, 'plaid_sync');
+        },
+        refreshBudgetAfterTransactions: async (userId, dates) => {
+            if (!userId || !transactionLifecycle?.runPostTransactionEffects) return;
+            await transactionLifecycle.runPostTransactionEffects(userId, {
+                dates: dates || [],
+                forwardMonths: 6,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId,
+                reason: 'plaid:transactions',
+            });
+        },
     };
 }
 
@@ -1345,6 +1292,7 @@ app.whenReady().then(async () => {
             registerPlaidItemsWithRelayForUser(currentUser.id).catch((err) => {
                 logPlaidError('relay registration on startup', err);
             });
+            runCreditCardPaymentCategorySync(currentUser.id, 'app_startup').catch(() => {});
         }
 
         backgroundSyncInterval = setInterval(() => runPlaidBackgroundSync('background'), 3600000);
@@ -1383,6 +1331,8 @@ function createWindow() {
     });
 
     mainWindow = win;
+
+    attachEditableContextMenu(win.webContents);
 
     win.on('focus', () => scheduleFocusPlaidSync());
 
@@ -1602,6 +1552,26 @@ function _parseOptInt(v) {
     return Number.isFinite(n) ? n : null;
 }
 
+async function finalizeManualAccountWithStartingBalance(db, accountId, userId) {
+    const account = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
+    if (!account) return null;
+
+    const initialBalance = Math.abs(Number(account.initial_balance) || 0);
+    if (initialBalance === 0) return account;
+
+    const existingSystem = await db.get(
+        `SELECT id FROM transactions WHERE account_id = ? AND IFNULL(is_system, 0) = 1 LIMIT 1`,
+        [accountId]
+    );
+    if (existingSystem) return account;
+
+    const dbPath = getDatabasePath();
+    const txService = new TransactionService(dbPath);
+    await txService.createStartingBalanceTransaction(db, account, userId);
+    await txService.updateAccountBalances(accountId);
+    return db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
+}
+
 function buildAccountInsertFromPayload(accountData, accountId, userId) {
     const type = accountData.type || 'checking';
     let balance = Number(accountData.balance);
@@ -1631,6 +1601,11 @@ function buildAccountInsertFromPayload(accountData, accountId, userId) {
             ? Number(accountData.working_balance)
             : balance;
 
+    const initialBalanceRaw =
+        accountData.initial_balance !== undefined && Number.isFinite(Number(accountData.initial_balance))
+            ? Math.abs(Number(accountData.initial_balance))
+            : Math.abs(balance);
+
     const now = new Date().toISOString();
 
     return {
@@ -1639,6 +1614,7 @@ function buildAccountInsertFromPayload(accountData, accountId, userId) {
         name: (accountData.name || 'New Account').toString().trim() || 'New Account',
         type,
         balance,
+        initial_balance: initialBalanceRaw,
         cleared_balance: cleared,
         working_balance: working,
         account_type_category: accountData.account_type_category || (type === 'loan' ? 'loan' : type === 'credit' ? 'credit' : 'budget'),
@@ -1884,6 +1860,7 @@ function setupIpcHandlers() {
                 registerPlaidItemsWithRelayForUser(user.id).catch((err) => {
                     logPlaidError('relay registration on login', err);
                 });
+                runCreditCardPaymentCategorySync(user.id, 'login').catch(() => {});
             }
             return { success: true, data: user };
         } catch (error) {
@@ -2350,10 +2327,11 @@ function setupIpcHandlers() {
             }
 
             let didMonthMutation = false;
+            let envelopeResult = null;
             if (budgetMonth !== undefined && budgetMonth !== null && String(budgetMonth).trim() !== '') {
                 const mKey = monthlyBudgetService.toLocalMonthKey(budgetMonth);
                 if (patch.assigned !== undefined) {
-                    await monthlyBudgetService.applyMonthBudgetedAmount(
+                    envelopeResult = await monthlyBudgetService.applyMonthBudgetedAmount(
                         db,
                         ownerId,
                         canonicalCategoryId,
@@ -2438,6 +2416,27 @@ function setupIpcHandlers() {
             if (!updatedCategory) {
                 return { success: false, error: 'Category not found' };
             }
+            const envelopeResultForResponse = envelopeResult;
+            let responseData = envelopeResultForResponse
+                ? {
+                    ...updatedCategory,
+                    assigned: envelopeResultForResponse.assigned,
+                    available: envelopeResultForResponse.available,
+                    activity: envelopeResultForResponse.activity,
+                    previous_available: envelopeResultForResponse.previous_available,
+                }
+                : updatedCategory;
+            const responseMonthKey =
+                budgetMonth !== undefined && budgetMonth !== null && String(budgetMonth).trim() !== ''
+                    ? monthlyBudgetService.toLocalMonthKey(budgetMonth)
+                    : monthlyBudgetService.toLocalMonthKey(new Date());
+            const [enrichedRow] = await monthlyBudgetService.enrichCategoriesWithUnderfunded(
+                db,
+                ownerId,
+                [responseData],
+                responseMonthKey
+            );
+            if (enrichedRow) responseData = enrichedRow;
             const moneyRelated =
                 didMonthMutation ||
                 updates.assigned !== undefined ||
@@ -2445,10 +2444,14 @@ function setupIpcHandlers() {
                 updates.activity !== undefined;
             if (moneyRelated) {
                 notifyBudgetStateChanged('budget:assigned', { categoryId: canonicalCategoryId, userId: ownerId });
+                notifyBudgetStateChanged('prosperity:updated', { userId: ownerId, reason: 'category:assigned' });
+            } else if (hadGoalPatch) {
+                notifyBudgetStateChanged('category:updated', { categoryId: canonicalCategoryId, userId: ownerId });
+                notifyBudgetStateChanged('prosperity:updated', { userId: ownerId, reason: 'category:goal' });
             } else {
                 notifyBudgetStateChanged('category:updated', { categoryId: canonicalCategoryId, userId: ownerId });
             }
-            return { success: true, data: updatedCategory };
+            return { success: true, data: responseData };
 
         } catch (error) {
             console.error('❌ Error in updateCategory:', error);
@@ -2811,9 +2814,13 @@ function setupIpcHandlers() {
 
             if (row.type === 'credit') {
                 const createdAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
-                await ensureCreditCardPaymentCategoryForAccount(db, createdAccount);
+                if (isEligibleBudgetCreditCardAccount(createdAccount)) {
+                    await ensureCreditCardPaymentCategoryForAccount(db, createdAccount, {
+                        reason: 'create_account',
+                    });
+                }
             }
-            const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [id]);
+            const newAccount = await finalizeManualAccountWithStartingBalance(db, id, userId);
             return { success: true, data: newAccount };
         } catch (error) {
             console.error('❌ Error creating account:', error);
@@ -2862,9 +2869,13 @@ function setupIpcHandlers() {
 
             if (row.type === 'credit') {
                 const createdAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
-                await ensureCreditCardPaymentCategoryForAccount(db, createdAccount);
+                if (isEligibleBudgetCreditCardAccount(createdAccount)) {
+                    await ensureCreditCardPaymentCategoryForAccount(db, createdAccount, {
+                        reason: 'accounts_create',
+                    });
+                }
             }
-            const newAccount = await db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
+            const newAccount = await finalizeManualAccountWithStartingBalance(db, accountId, userId);
             notifyAccountsUpdated('manual');
             return { success: true, data: newAccount };
         } catch (error) {
@@ -2883,11 +2894,39 @@ function setupIpcHandlers() {
             const result = await accountService.updateAccount(id, ownerId, updates);
             const db = await getDatabase();
             const account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [id, ownerId]);
-            if (account?.type === 'credit') {
-                await ensureCreditCardPaymentCategoryForAccount(db, account);
+            if (account) {
+                const deactivating =
+                    updates.is_active === 0 ||
+                    updates.is_active === false ||
+                    (updates.account_status &&
+                        String(updates.account_status).toLowerCase() !== 'active');
+                if (deactivating || !isEligibleBudgetCreditCardAccount(account)) {
+                    await archiveCreditCardPaymentCategoryForAccount(db, account, {
+                        reason: 'accounts_update_inactive',
+                    });
+                } else if (String(account.type || '').toLowerCase() === 'credit') {
+                    await ensureCreditCardPaymentCategoryForAccount(db, account, {
+                        reason: 'accounts_update',
+                    });
+                }
             }
             notifyAccountsUpdated('manual');
             return { success: true, data: result };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('accounts:ensureCreditCardPaymentCategories', async (event, userId) => {
+        try {
+            const ownerId = resolveBudgetOwnerId(null, userId);
+            if (ownerId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
+            if (!ownerId) return { success: false, error: 'No user logged in' };
+            const data = await runCreditCardPaymentCategorySync(ownerId, 'ipc_manual');
+            if (!data) {
+                return { success: false, error: 'Credit card payment category service not loaded' };
+            }
+            return { success: true, data };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -2938,6 +2977,12 @@ function setupIpcHandlers() {
                     notifyBudgetStateChanged('category:deleted', { source: 'loan-account-delete' });
                 }
                 return result;
+            }
+
+            if (String(account.type || '').toLowerCase() === 'credit') {
+                await archiveCreditCardPaymentCategoryForAccount(db, account, {
+                    reason: 'accounts_soft_delete',
+                });
             }
 
             const deleted = await accountService.deleteAccount(id, ownerId);
@@ -3007,7 +3052,12 @@ function setupIpcHandlers() {
 
     ipcMain.handle('accounts:getBalances', async (event, accountId, userId) => {
         try {
-            const result = await accountService.getAccountBalances(accountId, userId);
+            const effectiveUserId = resolveBudgetOwnerId(null, userId);
+            if (effectiveUserId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
+            if (!effectiveUserId) return { success: false, error: 'No user logged in' };
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
+            const result = await service.getAccountBalanceDetails(accountId, effectiveUserId);
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };
@@ -3259,7 +3309,7 @@ function setupIpcHandlers() {
             if (!plaidAccountMatch.mergePlaidAccountToManual) {
                 throw new Error('Plaid merge module not loaded');
             }
-            const result = await plaidAccountMatch.mergePlaidAccountToManual(
+            const result = await plaidAccountMatch.executePlaidToManualMerge(
                 await getDatabase(),
                 currentUser.id,
                 plaidAccountId,
@@ -3270,6 +3320,9 @@ function setupIpcHandlers() {
                 }
             );
             notifyAccountsUpdated('plaid-link-account');
+            if (result?.success && currentUser?.id) {
+                await runCreditCardPaymentCategorySync(currentUser.id, 'plaid_merge');
+            }
             return result;
         } catch (error) {
             return { success: false, error: error.message };
@@ -3280,10 +3333,10 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
-            if (!plaidAccountMatch.mergePlaidAccountToManual) {
+            if (!plaidAccountMatch.executePlaidToManualMerge) {
                 throw new Error('Plaid merge module not loaded');
             }
-            const result = await plaidAccountMatch.mergePlaidAccountToManual(
+            const result = await plaidAccountMatch.executePlaidToManualMerge(
                 await getDatabase(),
                 currentUser.id,
                 plaidAccountId,
@@ -3294,6 +3347,78 @@ function setupIpcHandlers() {
                 }
             );
             notifyAccountsUpdated('plaid-merge');
+            if (result?.success && currentUser?.id) {
+                await runCreditCardPaymentCategorySync(currentUser.id, 'plaid_merge');
+            }
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-get-merge-preview', async (event, plaidAccountId, targetAccountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const data = await plaidAccountMatch.getMergePreview(
+                await getDatabase(),
+                currentUser.id,
+                plaidAccountId,
+                targetAccountId
+            );
+            return { success: true, data };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-execute-merge', async (event, plaidAccountId, targetAccountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const result = await plaidAccountMatch.executePlaidToManualMerge(
+                await getDatabase(),
+                currentUser.id,
+                plaidAccountId,
+                targetAccountId,
+                {
+                    ...getPlaidSyncDeps(),
+                    createPlaidClient,
+                }
+            );
+            notifyAccountsUpdated('plaid-merge');
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-keep-account-separate', async (event, plaidAccountId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const result = await plaidAccountMatch.keepPlaidAccountSeparate(
+                await getDatabase(),
+                currentUser.id,
+                plaidAccountId
+            );
+            notifyAccountsUpdated('plaid-keep-separate');
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('plaid-rollback-merge', async (event, sessionId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const result = await plaidAccountMatch.rollbackMergeSession(
+                await getDatabase(),
+                currentUser.id,
+                sessionId
+            );
+            notifyAccountsUpdated('plaid-merge-rollback');
             return result;
         } catch (error) {
             return { success: false, error: error.message };
@@ -3654,6 +3779,201 @@ function setupIpcHandlers() {
         }
     });
 
+    ipcMain.handle('transactions:pickImportFile', async () => {
+        try {
+            if (!transactionImportService?.readImportFile) {
+                return { success: false, error: 'Transaction import service unavailable' };
+            }
+            const openResult = await dialog.showOpenDialog({
+                title: 'Import transactions',
+                filters: [
+                    { name: 'CSV', extensions: ['csv', 'txt'] },
+                    { name: 'All Files', extensions: ['*'] },
+                ],
+                properties: ['openFile'],
+            });
+            if (openResult.canceled || !openResult.filePaths?.length) {
+                return { success: false, canceled: true };
+            }
+            const filePath = openResult.filePaths[0];
+            const read = transactionImportService.readImportFile(filePath);
+            if (!read.ok) return { success: false, error: read.error };
+            return {
+                success: true,
+                filePath,
+                fileName: read.fileName,
+                format: read.format,
+                content: read.content,
+            };
+        } catch (error) {
+            console.error('transactions:pickImportFile error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:previewImport', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            if (!transactionImportService?.previewImport) {
+                return { success: false, error: 'Transaction import service unavailable' };
+            }
+            const { accountId, content, columnMap, categoryMappings, fileName } = payload || {};
+            if (!accountId || !content) {
+                return { success: false, error: 'Account and file content are required' };
+            }
+            const db = await getDatabase();
+            const account = await db.get(
+                'SELECT id, type, name FROM accounts WHERE id = ? AND user_id = ?',
+                [accountId, currentUser.id]
+            );
+            if (!account) return { success: false, error: 'Account not found' };
+            const categories = await db.all(
+                'SELECT id, name FROM categories WHERE user_id = ? ORDER BY name',
+                [currentUser.id]
+            );
+            const savedMappings = importCategoryMapping?.getImportCategoryMappings
+                ? await importCategoryMapping.getImportCategoryMappings(db, currentUser.id)
+                : {};
+            const categoriesByName = transactionImportService.buildCategoryNameMap(categories);
+            const preview = transactionImportService.previewImport(
+                content,
+                account,
+                categories,
+                columnMap || null,
+                categoryMappings || null,
+                fileName || ''
+            );
+            const suggestedCategoryMappings = transactionImportService.buildSuggestedCategoryMappings(
+                preview.bankCategories,
+                categoriesByName,
+                savedMappings
+            );
+            return {
+                success: true,
+                data: {
+                    accountName: account.name,
+                    headers: preview.headers,
+                    suggestedMapping: preview.suggestedMapping,
+                    preview: preview.preview,
+                    totalRows: preview.totalRows,
+                    validCount: preview.validCount,
+                    parseErrors: preview.parseErrors,
+                    balancePreview: preview.balancePreview,
+                    bankCategories: preview.bankCategories,
+                    categories: preview.categories,
+                    savedCategoryMappings: savedMappings,
+                    suggestedCategoryMappings,
+                    detectedProfile: preview.detectedProfile,
+                    previewTransactions: preview.previewTransactions,
+                },
+            };
+        } catch (error) {
+            console.error('transactions:previewImport error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:executeImport', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            if (!transactionImportService?.previewImport || !transactionImportService?.importTransactionsForAccount) {
+                return { success: false, error: 'Transaction import service unavailable' };
+            }
+            const { accountId, content, columnMap, categoryMappings, saveCategoryMappings, fileName } = payload || {};
+            if (!accountId || !content) {
+                return { success: false, error: 'Account and file content are required' };
+            }
+            const db = await getDatabase();
+            const account = await db.get(
+                'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
+                [accountId, currentUser.id]
+            );
+            if (!account) return { success: false, error: 'Account not found' };
+            const categories = await db.all(
+                'SELECT id, name FROM categories WHERE user_id = ?',
+                [currentUser.id]
+            );
+            const built = transactionImportService.previewImport(
+                content,
+                account,
+                categories,
+                columnMap || null,
+                categoryMappings || null,
+                fileName || ''
+            );
+            if (saveCategoryMappings && categoryMappings && importCategoryMapping?.saveImportCategoryMappings) {
+                await importCategoryMapping.saveImportCategoryMappings(
+                    db,
+                    currentUser.id,
+                    categoryMappings
+                );
+            }
+            const dbPath = getDatabasePath();
+            const result = await transactionImportService.importTransactionsForAccount(
+                db,
+                dbPath,
+                currentUser.id,
+                accountId,
+                built.normalized,
+                { skipLedgerSync: true }
+            );
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'transaction:imported',
+            });
+            if (updateService) updateService.publish('transaction:added', { accountId, imported: result.imported });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:executeImport error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('import-get-category-mappings', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: true, data: {} };
+            const db = await getDatabase();
+            const map = importCategoryMapping?.getImportCategoryMappings
+                ? await importCategoryMapping.getImportCategoryMappings(db, currentUser.id)
+                : {};
+            return { success: true, data: map };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('import-save-category-mappings', async (event, mappings) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const db = await getDatabase();
+            const result = importCategoryMapping?.saveImportCategoryMappings
+                ? await importCategoryMapping.saveImportCategoryMappings(db, currentUser.id, mappings)
+                : { saved: 0 };
+            return { success: true, data: result };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    function normalizeTransactionUpdatePayload(updates) {
+        if (!updates || typeof updates !== 'object') return updates;
+        const normalized = { ...updates };
+        if (Object.prototype.hasOwnProperty.call(normalized, 'categoryId')) {
+            let cid = normalized.categoryId;
+            delete normalized.categoryId;
+            if (cid === 'inflow_ready_to_assign' || cid === '') cid = null;
+            normalized.category_id = cid;
+        }
+        if (normalized.category_id === 'inflow_ready_to_assign' || normalized.category_id === '') {
+            normalized.category_id = null;
+        }
+        return normalized;
+    }
+
     ipcMain.handle('addTransaction', async (event, transaction) => {
         try {
             const currentUser = userService.getCurrentUser();
@@ -3836,7 +4156,8 @@ function setupIpcHandlers() {
 
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
-            const result = await service.updateTransaction(id, currentUser.id, updates);
+            const normalizedUpdates = normalizeTransactionUpdatePayload(updates);
+            const result = await service.updateTransaction(id, currentUser.id, normalizedUpdates);
 
             const post = await database.get(
                 'SELECT account_id, date FROM transactions WHERE id = ? AND user_id = ?',
@@ -3924,6 +4245,50 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('Error in deleteTransaction:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:bulkDelete', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+
+            const ids = Array.isArray(payload) ? payload : payload?.ids;
+            if (!Array.isArray(ids) || ids.length === 0) {
+                return { success: false, error: 'No transaction ids provided' };
+            }
+
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
+            const result = await service.bulkDeleteTransactions(ids, currentUser.id);
+
+            if (transactionLifecycle?.runPostTransactionEffects && result.dates?.length) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: result.accountIds,
+                        dates: result.dates,
+                        skipLedgerSync: true,
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (bulk delete):', e?.message || e);
+                }
+            }
+
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'transaction:deleted',
+            });
+            if (updateService) {
+                updateService.publish('transaction:deleted', {
+                    bulk: true,
+                    count: result.deleted,
+                });
+            }
+
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:bulkDelete error:', error);
             return { success: false, error: error.message };
         }
     });
@@ -4196,9 +4561,45 @@ function setupIpcHandlers() {
                  ORDER BY cg.sort_order ASC, c.name ASC`,
                 [targetUserId]
             );
-            return { success: true, data: categories };
+            const monthKey = monthlyBudgetService.toLocalMonthKey(new Date());
+            const enriched = await monthlyBudgetService.enrichCategoriesWithUnderfunded(
+                dbConnection,
+                targetUserId,
+                categories,
+                monthKey
+            );
+            return { success: true, data: enriched };
         } catch (error) {
             return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('budget:getUnderfundedSummary', async (event, userId, monthKey) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session', data: null };
+            }
+            if (!targetUserId) {
+                return { success: true, data: { underfundedTotal: 0, categoryBreakdown: [], monthKey: '' } };
+            }
+            const snapshot = await monthlyBudgetService.getBudgetMonthSnapshot(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date())
+            );
+            return {
+                success: true,
+                data: {
+                    monthKey: snapshot.monthKey,
+                    underfundedTotal: snapshot.underfundedTotal ?? 0,
+                    categoryBreakdown: snapshot.underfundedBreakdown ?? [],
+                },
+            };
+        } catch (error) {
+            console.error('budget:getUnderfundedSummary error:', error);
+            return { success: false, error: error.message, data: null };
         }
     });
 
@@ -4209,6 +4610,8 @@ function setupIpcHandlers() {
             if (targetUserId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session', data: { categories: [], monthKey: '', isCurrentCalendarMonth: false } };
             if (!targetUserId) return { success: true, data: { categories: [], monthKey: '', isCurrentCalendarMonth: false } };
 
+            await runCreditCardPaymentCategorySync(targetUserId, 'budget_month_snapshot');
+
             const snapshot = await monthlyBudgetService.getBudgetMonthSnapshot(
                 dbConnection,
                 targetUserId,
@@ -4218,6 +4621,135 @@ function setupIpcHandlers() {
         } catch (error) {
             console.error('budget:getMonthSnapshot error:', error);
             return { success: false, error: error.message, data: { categories: [], monthKey: '', isCurrentCalendarMonth: false } };
+        }
+    });
+
+    ipcMain.handle('budget:bulkAssignMonth', async (event, userId, monthKey, assignments, opts = {}) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            if (!Array.isArray(assignments) || assignments.length === 0) {
+                return { success: false, error: 'No assignments provided' };
+            }
+
+            const result = await monthlyBudgetService.applyMonthBudgetBulk(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
+                assignments,
+                { mode: opts?.mode || 'delta' }
+            );
+            notifyBudgetStateChanged('budget:bulkAssigned', {
+                userId: targetUserId,
+                monthKey: result.monthKey,
+                count: result.assignments.length,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:bulkAssigned',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:bulkAssignMonth error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:repairAssignments', async (event, userId, monthKey, opts = {}) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            await runCreditCardPaymentCategorySync(targetUserId, 'budget_repair');
+            const forwardMonths = Number(opts?.forwardMonths) || 6;
+            const result = await monthlyBudgetService.repairAndRefreshBudgetMonths(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
+                forwardMonths
+            );
+            notifyBudgetStateChanged('budget:repaired', {
+                userId: targetUserId,
+                monthKey: result.monthKey,
+                repairCount: result.repairs?.length || 0,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:repaired',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:repairAssignments error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:consolidateAssignments', async (event, userId, monthKey, opts = {}) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const result = await monthlyBudgetService.consolidateAvailableIntoMonthAssignments(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
+                opts
+            );
+            notifyBudgetStateChanged('budget:consolidated', {
+                userId: targetUserId,
+                monthKey: result.monthKey,
+                count: result.conversions?.length || 0,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:consolidated',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:consolidateAssignments error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:resetEnvelopes', async (event, userId, monthKey) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const result = await monthlyBudgetService.resetEnvelopesFromMonth(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date())
+            );
+            notifyBudgetStateChanged('budget:resetEnvelopes', {
+                userId: targetUserId,
+                monthKey: result.monthKey,
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:resetEnvelopes error:', error);
+            return { success: false, error: error.message };
         }
     });
 
@@ -4389,28 +4921,73 @@ function setupIpcHandlers() {
 
 // ==================== MENU ====================
 function createMenu() {
+    const isMac = process.platform === 'darwin';
+
     const template = [
+        ...(isMac
+            ? [
+                  {
+                      label: app.name,
+                      submenu: [
+                          { role: 'about' },
+                          { type: 'separator' },
+                          { role: 'services' },
+                          { type: 'separator' },
+                          { role: 'hide' },
+                          { role: 'hideOthers' },
+                          { role: 'unhide' },
+                          { type: 'separator' },
+                          { role: 'quit' },
+                      ],
+                  },
+              ]
+            : []),
         {
-            label: 'File', submenu: [
-                { label: 'New Budget', accelerator: 'CmdOrCtrl+N', click: () => mainWindow?.webContents.send('menu-new-budget') },
-                { label: 'Open Budget...', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('menu-open-budget') },
+            label: 'File',
+            submenu: [
+                {
+                    label: 'New Budget',
+                    accelerator: 'CmdOrCtrl+N',
+                    click: () => mainWindow?.webContents.send('menu-new-budget'),
+                },
+                {
+                    label: 'Open Budget...',
+                    accelerator: 'CmdOrCtrl+O',
+                    click: () => mainWindow?.webContents.send('menu-open-budget'),
+                },
                 { type: 'separator' },
-                { label: 'Import from CSV...', click: () => mainWindow?.webContents.send('menu-import-csv') },
-                { label: 'Export to CSV...', click: () => mainWindow?.webContents.send('menu-export-csv') },
-                { type: 'separator' },
-                { role: 'quit' }
-            ]
+                {
+                    label: 'Import from CSV...',
+                    click: () => mainWindow?.webContents.send('menu-import-csv'),
+                },
+                {
+                    label: 'Export to CSV...',
+                    click: () => mainWindow?.webContents.send('menu-export-csv'),
+                },
+                ...(isMac ? [] : [{ type: 'separator' }, { role: 'quit' }]),
+            ],
         },
         {
-            label: 'View', submenu: [
-                { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
-                { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
-                { type: 'separator' }, { role: 'togglefullscreen' }
-            ]
-        }
+            label: 'Edit',
+            submenu: getEditMenuTemplate(),
+        },
+        {
+            label: 'View',
+            submenu: [
+                { role: 'reload' },
+                { role: 'forceReload' },
+                { role: 'toggleDevTools' },
+                { type: 'separator' },
+                { role: 'resetZoom' },
+                { role: 'zoomIn' },
+                { role: 'zoomOut' },
+                { type: 'separator' },
+                { role: 'togglefullscreen' },
+            ],
+        },
     ];
-    const menu = Menu.buildFromTemplate(template);
-    Menu.setApplicationMenu(menu);
+
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 // ==================== APP EVENTS & ERROR HANDLING ====================

@@ -120,6 +120,9 @@ async function runMigrations(existingDb) {
             '019_preserve_archived_category_group.cjs',
             '020_category_goal_frequency.cjs',
             '021_plaid_account_dismissals.cjs',
+            '022_account_merge_framework.cjs',
+            '023_import_category_mappings.cjs',
+            '024_account_balance_engine.cjs',
         ];
 
         for (const migration of migrations) {

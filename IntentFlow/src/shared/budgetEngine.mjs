@@ -1,5 +1,10 @@
 // src/shared/budgetEngine.mjs
 
+import {
+  computeCategoryUnderfunded,
+  computeBudgetUnderfunded,
+} from './underfundedEngine.mjs';
+
 /**
  * Zero-Based Budgeting Engine
  * Implements SoulFunds's 4 core rules
@@ -19,125 +24,27 @@ export default class BudgetEngine {
   // ==================== TARGET CALCULATIONS ====================
 
   calculateTargetProgress(category) {
-
-    if (!category.target_amount || category.target_amount === 0) {
-      return { progress: null, status: "no-target", needed: 0 };
-    }
-
-    switch (category.target_type) {
-
-      case "monthly":
-
-        const progress =
-          (category.assigned || 0) / category.target_amount * 100;
-
-        const needed =
-          Math.max(0, category.target_amount - (category.assigned || 0));
-
-        return {
-          progress,
-          status:
-            progress >= 100
-              ? "funded"
-              : progress > 0
-              ? "partial"
-              : "unfunded",
-          needed,
-          targetAmount: category.target_amount,
-          currentAmount: category.assigned || 0
-        };
-
-      case "balance":
-
-        const balanceProgress =
-          ((category.available || 0) / category.target_amount) * 100;
-
-        const balanceNeeded =
-          Math.max(0, category.target_amount - (category.available || 0));
-
-        return {
-          progress: balanceProgress,
-          status:
-            balanceProgress >= 100
-              ? "completed"
-              : balanceProgress > 0
-              ? "in-progress"
-              : "not-started",
-          needed: balanceNeeded,
-          targetAmount: category.target_amount,
-          currentAmount: category.available || 0
-        };
-
-      case "by_date":
-
-        if (!category.target_date) {
-          return { progress: null, status: "no-date", needed: 0 };
-        }
-
-        const today = new Date();
-        const targetDate = new Date(category.target_date);
-
-        const monthsRemaining =
-          (targetDate.getFullYear() - today.getFullYear()) * 12 +
-          (targetDate.getMonth() - today.getMonth());
-
-        const totalNeeded =
-          category.target_amount - (category.available || 0);
-
-        const monthlyNeeded =
-          monthsRemaining > 0
-            ? totalNeeded / monthsRemaining
-            : totalNeeded;
-
-        const dateProgress =
-          ((category.available || 0) / category.target_amount) * 100;
-
-        return {
-          progress: dateProgress,
-          status: dateProgress >= 100 ? "completed" : "in-progress",
-          needed: totalNeeded,
-          monthlyNeeded: Math.max(0, monthlyNeeded),
-          targetAmount: category.target_amount,
-          currentAmount: category.available || 0,
-          monthsRemaining: Math.max(0, monthsRemaining)
-        };
-
-      default:
-        return { progress: null, status: "no-target", needed: 0 };
-    }
+    return computeCategoryUnderfunded(category);
   }
 
   calculateUnderfundedCategories(categories) {
-
     return categories.filter((cat) => {
-
       const targetInfo = this.calculateTargetProgress(cat);
-
       return (
-        targetInfo.status === "partial" ||
-        targetInfo.status === "unfunded" ||
-        targetInfo.status === "in-progress"
+        targetInfo.underfunded > 0 ||
+        targetInfo.status === 'partial' ||
+        targetInfo.status === 'unfunded' ||
+        targetInfo.status === 'in-progress'
       );
-
     });
-
   }
 
   getTotalUnderfunded(categories) {
+    return computeBudgetUnderfunded(categories).underfundedTotal;
+  }
 
-    let total = 0;
-
-    categories.forEach((cat) => {
-
-      const targetInfo = this.calculateTargetProgress(cat);
-
-      if (targetInfo.needed && targetInfo.needed > 0) {
-        total += targetInfo.needed;
-      }
-
-    });
-
-    return total;
+  getBudgetUnderfunded(categories, opts) {
+    return computeBudgetUnderfunded(categories, opts);
   }
 
   /**

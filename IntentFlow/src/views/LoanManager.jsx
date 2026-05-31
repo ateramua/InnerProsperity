@@ -14,6 +14,7 @@ import {
   formatLoanDeleteError,
 } from '../utils/loanAccountUtils.jsx';
 import { normalizeAccountId } from '../utils/cashAccountUtils.jsx';
+import TransactionImportModal from '../components/TransactionImportModal';
 
 function LoanManager({
   onNavigate,
@@ -31,6 +32,8 @@ function LoanManager({
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingLoan, setEditingLoan] = useState(null);
   const [deletingLoanId, setDeletingLoanId] = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importAccountId, setImportAccountId] = useState(null);
   
   // ===================== LOAN PAYMENT MODAL STATE =====================
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -856,6 +859,17 @@ function LoanManager({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      setImportAccountId(loan.id);
+                      setShowImportModal(true);
+                    }}
+                    style={styles.transactionsButton}
+                    title="Import transactions from CSV"
+                  >
+                    Import CSV
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
                       onViewDetails && onViewDetails(loan.id);
                     }}
                     style={styles.transactionsButton}
@@ -1337,6 +1351,18 @@ function LoanManager({
           </div>
         </div>
       )}
+
+      <TransactionImportModal
+        isOpen={showImportModal}
+        onClose={() => {
+          setShowImportModal(false);
+          setImportAccountId(null);
+        }}
+        fixedAccountId={importAccountId}
+        accounts={loans}
+        title="Import loan account transactions"
+        onComplete={() => window.dispatchEvent(new CustomEvent('accounts-updated'))}
+      />
 
       {/* EditAccountModal for editing loans */}
       <EditAccountModal

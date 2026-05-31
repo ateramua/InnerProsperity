@@ -1,6 +1,8 @@
 /**
  * Shared checking/savings account helpers — single source of truth for Cash Accounts UI + delete.
  */
+import { resolveDisplayAccountType } from './accountTypeUtils.cjs';
+import { isPlaidLinkedAccount } from './accountRegisterBalance.jsx';
 
 export const CASH_ACCOUNT_TYPES = Object.freeze(['checking', 'savings']);
 
@@ -34,6 +36,10 @@ export function isSavingsType(typeOrAccount) {
 }
 
 export function isCashAccountType(typeOrAccount) {
+  if (typeOrAccount && typeof typeOrAccount === 'object') {
+    const resolved = resolveDisplayAccountType(typeOrAccount);
+    return resolved === 'checking' || resolved === 'savings';
+  }
   return isCheckingType(typeOrAccount) || isSavingsType(typeOrAccount);
 }
 
@@ -66,9 +72,10 @@ export function partitionCashAccounts(list) {
   const checking = [];
   const savings = [];
   for (const account of active) {
-    if (isCheckingType(account)) {
+    const resolved = resolveDisplayAccountType(account);
+    if (resolved === 'checking') {
       checking.push(account);
-    } else if (isSavingsType(account)) {
+    } else if (resolved === 'savings') {
       savings.push(account);
     }
   }
@@ -189,4 +196,29 @@ export async function loadCashAccountsViaApi() {
     success: true,
     data: filterActiveCashAccounts(result.data || []),
   };
+}
+
+/**
+ * Cash balance used for Home / Prosperity Map Ready to Assign (cash − Σ category available).
+ * Plaid-linked cash accounts use register_balance (transaction sum) when provided so manual
+ * inflows count without overwriting stored bank balances elsewhere.
+ */
+export function getBudgetCashBalanceForAccount(account) {
+  if (!account || !isCashAccountType(account)) return 0;
+  if (isPlaidLinkedAccount(account)) {
+    const reg = account.register_balance;
+    if (reg != null && Number.isFinite(Number(reg))) {
+      return Number(reg);
+    }
+  }
+  return Number(account.balance) || 0;
+}
+
+/** Sum on-budget checking + savings for Ready to Assign numerator. */
+export function sumTotalBudgetCash(accounts) {
+  if (!Array.isArray(accounts)) return 0;
+  return filterActiveCashAccounts(accounts).reduce(
+    (sum, acc) => sum + getBudgetCashBalanceForAccount(acc),
+    0
+  );
 }

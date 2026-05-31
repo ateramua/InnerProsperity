@@ -1,7 +1,18 @@
 // src/pages/accounts/[id]/reconcile.jsx
 import { useRouter } from 'next/router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import TransactionImportModal from '../../../components/TransactionImportModal';
+import TransactionToolbar from '../../../components/transactions/TransactionToolbar.jsx';
+import TransactionTable from '../../../components/transactions/TransactionTable.jsx';
+import {
+    DEFAULT_TRANSACTION_SORT,
+    sortTransactions,
+} from '../../../utils/transactionSortUtils.jsx';
+import {
+    DEFAULT_TRANSACTION_FILTERS,
+    filterTransactions,
+} from '../../../utils/transactionFilterUtils.jsx';
 
 export default function ReconcilePage() {
     const router = useRouter();
@@ -14,6 +25,13 @@ export default function ReconcilePage() {
     );
     const [selectedTransactions, setSelectedTransactions] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [showImportModal, setShowImportModal] = useState(false);
+    const [transactionSort, setTransactionSort] = useState(DEFAULT_TRANSACTION_SORT);
+    const [transactionFilters, setTransactionFilters] = useState({
+        ...DEFAULT_TRANSACTION_FILTERS,
+        status: 'uncleared',
+    });
+    const [categories, setCategories] = useState([]);
 
     useEffect(() => {
         if (id) {
@@ -39,9 +57,13 @@ export default function ReconcilePage() {
             // Get uncleared transactions for this account
             const transactionsResult = await window.electronAPI.getAccountTransactions(id);
             if (transactionsResult.success) {
-                // Only show uncleared transactions for reconciliation
-                const uncleared = transactionsResult.data.filter(t => t.is_cleared === 0);
+                const uncleared = transactionsResult.data.filter((t) => t.is_cleared === 0);
                 setTransactions(uncleared);
+            }
+
+            const categoriesResult = await window.electronAPI.getCategories(userId);
+            if (categoriesResult?.success) {
+                setCategories(categoriesResult.data || []);
             }
         } catch (error) {
             console.error('Error loading account data:', error);
@@ -118,6 +140,20 @@ export default function ReconcilePage() {
         }).format(amount);
     };
 
+    const filteredTransactions = useMemo(
+        () =>
+            filterTransactions(transactions, transactionFilters, {
+                categories,
+                fixedAccountId: id,
+            }),
+        [transactions, transactionFilters, categories, id]
+    );
+
+    const sortedTransactions = useMemo(
+        () => sortTransactions(filteredTransactions, transactionSort, { categories }),
+        [filteredTransactions, transactionSort, categories]
+    );
+
     if (loading) {
         return (
             <div style={styles.loadingContainer}>
@@ -147,7 +183,23 @@ export default function ReconcilePage() {
                     ← Back to Account
                 </Link>
                 <h1 style={styles.title}>Reconcile {account.name}</h1>
+                <button
+                    type="button"
+                    onClick={() => setShowImportModal(true)}
+                    style={styles.importButton}
+                >
+                    Import CSV
+                </button>
             </div>
+
+            <TransactionImportModal
+                isOpen={showImportModal}
+                onClose={() => setShowImportModal(false)}
+                fixedAccountId={id}
+                accounts={account ? [account] : []}
+                title="Import transactions before reconciling"
+                onComplete={() => loadAccountData()}
+            />
 
             <div style={styles.content}>
                 {/* Left Column - Reconciliation Form */}
@@ -262,37 +314,27 @@ export default function ReconcilePage() {
                             </div>
                         ) : (
                             <div style={styles.transactionsList}>
-                                {transactions.map(transaction => (
-                                    <div
-                                        key={transaction.id}
-                                        style={{
-                                            ...styles.transactionItem,
-                                            backgroundColor: selectedTransactions.includes(transaction.id)
-                                                ? '#3B82F620'
-                                                : '#111827'
-                                        }}
-                                        onClick={() => toggleTransaction(transaction.id)}
-                                    >
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedTransactions.includes(transaction.id)}
-                                            onChange={() => toggleTransaction(transaction.id)}
-                                            style={styles.checkbox}
-                                        />
-                                        <div style={styles.transactionInfo}>
-                                            <div style={styles.transactionDate}>{transaction.date}</div>
-                                            <div style={styles.transactionPayee}>
-                                                {transaction.payee || transaction.description}
-                                            </div>
-                                        </div>
-                                        <div style={{
-                                            ...styles.transactionAmount,
-                                            color: transaction.amount < 0 ? '#F87171' : '#4ADE80'
-                                        }}>
-                                            {formatCurrency(transaction.amount)}
-                                        </div>
-                                    </div>
-                                ))}
+                                <TransactionToolbar
+                                    filters={transactionFilters}
+                                    onFiltersChange={setTransactionFilters}
+                                    categories={categories}
+                                    accounts={account ? [account] : []}
+                                    hideAccountFilter
+                                    resultCount={sortedTransactions.length}
+                                    totalCount={transactions.length}
+                                />
+                                <TransactionTable
+                                    transactions={sortedTransactions}
+                                    categories={categories}
+                                    sort={transactionSort}
+                                    onSortChange={setTransactionSort}
+                                    emptyMessage="No uncleared transactions match your search or filters"
+                                    showCheckbox
+                                    selectedIds={selectedTransactions}
+                                    onToggleSelect={(txId) => toggleTransaction(txId)}
+                                    isRowSelected={(tx) => selectedTransactions.includes(tx.id)}
+                                    onRowClick={(tx) => toggleTransaction(tx.id)}
+                                />
                             </div>
                         )}
                     </div>
@@ -328,7 +370,19 @@ const styles = {
     title: {
         fontSize: '2rem',
         fontWeight: 'bold',
-        margin: 0
+        margin: 0,
+        flex: 1,
+    },
+    importButton: {
+        marginLeft: 'auto',
+        padding: '0.5rem 1rem',
+        background: 'rgba(255,255,255,0.12)',
+        color: 'white',
+        border: '1px solid rgba(255,255,255,0.35)',
+        borderRadius: '0.5rem',
+        cursor: 'pointer',
+        fontSize: '0.875rem',
+        fontWeight: 600,
     },
     content: {
         maxWidth: '1200px',
@@ -453,6 +507,14 @@ const styles = {
         fontSize: '0.875rem',
         color: '#9CA3AF',
         marginBottom: '1rem'
+    },
+    reconcileSortHeader: {
+        padding: '0.5rem 0.75rem',
+        borderBottom: '1px solid #374151',
+        marginBottom: '0.25rem',
+        fontSize: '0.75rem',
+        fontWeight: 600,
+        color: '#9CA3AF',
     },
     transactionsList: {
         maxHeight: '400px',

@@ -35,6 +35,7 @@ async function ensureSchema(db) {
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       balance REAL DEFAULT 0,
+      initial_balance REAL DEFAULT 0,
       cleared_balance REAL DEFAULT 0,
       working_balance REAL DEFAULT 0,
       account_type_category TEXT DEFAULT 'budget',
@@ -62,6 +63,10 @@ async function ensureSchema(db) {
       linked_savings_account TEXT,
       notes TEXT,
       is_active INTEGER DEFAULT 1,
+      account_status TEXT NOT NULL DEFAULT 'active',
+      merged_into_account_id TEXT,
+      merged_at TEXT,
+      merge_session_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
@@ -116,10 +121,14 @@ async function ensureSchema(db) {
       date DATE NOT NULL,
       description TEXT,
       amount REAL NOT NULL,
+      direction TEXT CHECK(direction IN ('inflow','outflow') OR direction IS NULL),
       category_id TEXT,
       payee TEXT,
       memo TEXT,
       is_cleared INTEGER DEFAULT 0,
+      is_system INTEGER DEFAULT 0,
+      is_adjustment INTEGER DEFAULT 0,
+      is_reconciled INTEGER DEFAULT 0,
       is_transfer INTEGER DEFAULT 0,
       transfer_group_id TEXT,
       linked_transaction_id TEXT,
@@ -183,10 +192,25 @@ async function ensureSchema(db) {
       official_name TEXT,
       type TEXT,
       subtype TEXT,
+      fingerprint TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (item_id) REFERENCES plaid_items(id),
       FOREIGN KEY (account_id) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS account_merge_sessions (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      survivor_account_id TEXT NOT NULL,
+      merged_account_id TEXT NOT NULL,
+      plaid_account_id TEXT,
+      confidence_score INTEGER,
+      initiated_by TEXT,
+      pre_merge_snapshot TEXT,
+      post_merge_snapshot TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      rolled_back_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS plaid_category_mappings (
@@ -199,6 +223,16 @@ async function ensureSchema(db) {
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (category_id) REFERENCES categories(id),
       UNIQUE(user_id, plaid_category)
+    );
+
+    CREATE TABLE IF NOT EXISTS import_category_mappings (
+      user_id INTEGER NOT NULL,
+      bank_category TEXT NOT NULL,
+      category_id TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, bank_category),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (category_id) REFERENCES categories(id)
     );
 
     CREATE TABLE IF NOT EXISTS user_settings (
@@ -262,6 +296,7 @@ async function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_category_groups_user ON category_groups(user_id);
     CREATE INDEX IF NOT EXISTS idx_plaid_items_user_id ON plaid_items(user_id);
     CREATE INDEX IF NOT EXISTS idx_plaid_category_mappings_user_id ON plaid_category_mappings(user_id);
+    CREATE INDEX IF NOT EXISTS idx_import_category_mappings_user_id ON import_category_mappings(user_id);
     CREATE INDEX IF NOT EXISTS idx_monthly_budgets_category_id ON monthly_budgets(category_id);
     CREATE INDEX IF NOT EXISTS idx_monthly_budgets_month ON monthly_budgets(month);
   `);

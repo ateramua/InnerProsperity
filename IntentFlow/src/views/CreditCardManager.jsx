@@ -15,6 +15,7 @@ import {
   formatCreditDeleteError,
 } from '../utils/creditAccountUtils.jsx';
 import { normalizeAccountId } from '../utils/cashAccountUtils.jsx';
+import TransactionImportModal from '../components/TransactionImportModal';
 
 function CreditCardManager({
   onNavigate,
@@ -31,6 +32,8 @@ function CreditCardManager({
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingCard, setEditingCard] = useState(null);
   const [deletingCardId, setDeletingCardId] = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importAccountId, setImportAccountId] = useState(null);
 
   // State for Zero Interest Accelerator
   const [showAccelerator, setShowAccelerator] = useState(false);
@@ -761,6 +764,17 @@ function CreditCardManager({
                     ⚡ Zero Interest
                   </button>
                   <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setImportAccountId(card.id);
+                      setShowImportModal(true);
+                    }}
+                    style={styles.transactionsButton}
+                    title="Import transactions from CSV"
+                  >
+                    Import CSV
+                  </button>
+                  <button
                     onClick={(e) => { e.stopPropagation(); onViewTransactions(card.id); }}
                     style={styles.transactionsButton}
                     title="View account transactions"
@@ -900,6 +914,18 @@ function CreditCardManager({
           })}
         </div>
       )}
+
+      <TransactionImportModal
+        isOpen={showImportModal}
+        onClose={() => {
+          setShowImportModal(false);
+          setImportAccountId(null);
+        }}
+        fixedAccountId={importAccountId}
+        accounts={cards}
+        title="Import credit card transactions"
+        onComplete={() => window.dispatchEvent(new CustomEvent('accounts-updated'))}
+      />
 
       {/* Payment Modal - Original modal kept for compatibility */}
       {showPaymentModal && (

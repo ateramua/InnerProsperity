@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { showAppToast } from '../components/AppToast';
+import AccountMergeWizard from '../components/accounts/AccountMergeWizard';
+import TransactionImportModal from '../components/TransactionImportModal';
 
 const PLAID_LINK_SCRIPT_URL = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
 let plaidLinkScriptPromise = null;
@@ -181,6 +183,8 @@ const LinkedBanksView = ({ onNavigate }) => {
     deleteImportedTransactions: false,
     deactivateAccounts: true,
   });
+  const [importAccounts, setImportAccounts] = useState([]);
+  const [showTransactionImport, setShowTransactionImport] = useState(false);
   const [syncHistory, setSyncHistory] = useState([]);
 
   // Load linked items
@@ -284,9 +288,26 @@ const LinkedBanksView = ({ onNavigate }) => {
     setShowMappingModal(true);
   };
 
+  const loadImportAccounts = async () => {
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      const userId = userResult?.data?.id;
+      if (!userId) return;
+      const res = await window.electronAPI.getAccountsSummary(userId);
+      if (res?.success) {
+        setImportAccounts(
+          (res.data || []).filter((a) => a.is_active !== false && a.is_active !== 0)
+        );
+      }
+    } catch (e) {
+      console.warn('loadImportAccounts:', e);
+    }
+  };
+
   useEffect(() => {
     loadLinkedItems();
     loadPlaidSettings();
+    loadImportAccounts();
     (async () => {
       try {
         if (window.electronAPI?.getPlaidConfigStatus) {
@@ -606,30 +627,15 @@ const LinkedBanksView = ({ onNavigate }) => {
     setCategoryMappings(prev => ({ ...prev, [plaidCategory]: categoryId }));
   };
 
-  const handleConfirmMerge = async (offer, targetAccountId) => {
-    if (!window.electronAPI?.mergePlaidAccount) return;
-    setMergingId(offer.plaidAccountId);
-    try {
-      const res = await window.electronAPI.mergePlaidAccount(
-        offer.plaidAccountId,
-        targetAccountId
-      );
-      if (res?.success) {
-        setMergeOffers((prev) => prev.filter((o) => o.plaidAccountId !== offer.plaidAccountId));
-        await loadLinkedItems();
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-      } else {
-        showAppToast(res?.error || 'Failed to link accounts', 'error');
-      }
-    } catch (err) {
-      showAppToast(err.message, 'error');
-    } finally {
-      setMergingId(null);
-    }
+  const handleMergeWizardClosed = () => {
+    setMergeOffers([]);
+    setMergingId(null);
   };
 
-  const handleSkipMergeOffer = (plaidAccountId) => {
+  const handleMergeCompleted = async (plaidAccountId) => {
     setMergeOffers((prev) => prev.filter((o) => o.plaidAccountId !== plaidAccountId));
+    await loadLinkedItems();
+    window.dispatchEvent(new CustomEvent('accounts-updated'));
   };
 
   const handleSaveMappings = async () => {
@@ -762,6 +768,13 @@ const LinkedBanksView = ({ onNavigate }) => {
             </p>
             <button type="button" onClick={openCategorySettings} style={styles.settingsLinkButton}>
               Manage category mappings ({savedMappings.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTransactionImport(true)}
+              style={styles.settingsLinkButton}
+            >
+              Import transactions (CSV)…
             </button>
             {syncHistory.length > 0 && (
               <div style={styles.syncHistoryBox}>
@@ -966,57 +979,24 @@ const LinkedBanksView = ({ onNavigate }) => {
       )}
 
       {mergeOffers.length > 0 && (
-        <div style={styles.mergeModalOverlay}>
-          <div style={styles.mergeModalContent}>
-            <h3 style={styles.modalTitle}>Link to existing account?</h3>
-            <p style={styles.mergeIntro}>
-              We found manual accounts that may match newly imported bank accounts. Link them to
-              avoid duplicates.
-            </p>
-            {mergeOffers.map((offer) => (
-              <div key={offer.plaidAccountId} style={styles.mergeOfferCard}>
-                <div style={styles.mergePlaidName}>
-                  <strong>{offer.plaidDisplayName}</strong>
-                  {offer.mask ? ` •••• ${offer.mask}` : ''}
-                </div>
-                <p style={styles.mergeHint}>Choose an existing account to link:</p>
-                <ul style={styles.mergeCandidateList}>
-                  {offer.candidates.map((c) => (
-                    <li key={c.id} style={styles.mergeCandidateItem}>
-                      <span>
-                        {c.name}
-                        {c.institution ? ` — ${c.institution}` : ''}
-                      </span>
-                      <button
-                        type="button"
-                        style={styles.mergeLinkButton}
-                        disabled={mergingId === offer.plaidAccountId}
-                        onClick={() => handleConfirmMerge(offer, c.id)}
-                      >
-                        {mergingId === offer.plaidAccountId ? 'Linking…' : 'Link here'}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  type="button"
-                  style={styles.mergeSkipButton}
-                  onClick={() => handleSkipMergeOffer(offer.plaidAccountId)}
-                >
-                  Keep separate (skip)
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              style={styles.cancelButton}
-              onClick={() => setMergeOffers([])}
-            >
-              Done
-            </button>
-          </div>
-        </div>
+        <AccountMergeWizard
+          offers={mergeOffers}
+          onClose={handleMergeWizardClosed}
+          onMerged={handleMergeCompleted}
+          onKeptSeparate={handleMergeCompleted}
+        />
       )}
+
+      <TransactionImportModal
+        isOpen={showTransactionImport}
+        onClose={() => setShowTransactionImport(false)}
+        accounts={importAccounts}
+        title="Import transactions from CSV"
+        onComplete={() => {
+          loadLinkedItems();
+          window.dispatchEvent(new CustomEvent('accounts-updated'));
+        }}
+      />
 
       {/* Category Mapping Modal */}
       {showMappingModal && (

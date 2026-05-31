@@ -72,3 +72,23 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* Copy/paste in account forms, login, modals, and all native inputs */
+input,
+textarea,
+select,
+option,
+[contenteditable='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+input:disabled,
+textarea:disabled,
+select:disabled,
+input[readonly],
+textarea[readonly] {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
