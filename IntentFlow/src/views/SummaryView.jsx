@@ -8,12 +8,16 @@ const SummaryView = ({
   totalActivity = 0,
   totalAssigned = 0,
   unassigned = 0,
+  totalCash = 0,
+  futureAssigned = 0,
+  futureBreakdown = [],
   month = new Date().toLocaleString('default', { month: 'long', year: 'numeric' }),
   categories = [],
   onAutoAssign = null,
   underfundedTotal = 0,
 }) => {
   const [showAutoAssignOptions, setShowAutoAssignOptions] = useState(false);
+  const [showFutureReservedPanel, setShowFutureReservedPanel] = useState(false);
   const [selectedStrategy, setSelectedStrategy] = useState('priority_weighted');
   const [previewResults, setPreviewResults] = useState(null);
   const [isCalculating, setIsCalculating] = useState(false);
@@ -1188,7 +1192,17 @@ const SummaryView = ({
     return { totalCategories, fundedCategories, overspentCategories, onTrackCategories };
   };
 
-  const assignedPercentage = totalAvailable > 0 ? (totalAssigned / totalAvailable) * 100 : 0;
+  const formatMonthKeyLabel = (monthKey) => {
+    const match = String(monthKey || '').match(/^(\d{4})-(\d{2})/);
+    if (!match) return monthKey || '';
+    const d = new Date(Number(match[1]), Number(match[2]) - 1, 1);
+    return d.toLocaleString('default', { month: 'long', year: 'numeric' });
+  };
+
+  const cashDenominator =
+    Number(totalCash) > 0 ? Number(totalCash) : Math.max(0, Number(totalAssigned) + Number(unassigned));
+  const assignedPercentage =
+    cashDenominator > 0 ? (Number(totalAssigned) / cashDenominator) * 100 : 0;
   const stats = getCategoryStats();
 
   return (
@@ -1209,11 +1223,32 @@ const SummaryView = ({
               ...styles.metricValue,
               color: unassigned >= 0 ? '#4ADE80' : '#F87171'
             }}>
+              {unassigned < 0 && <span aria-hidden>⚠️ </span>}
               {formatCurrency(unassigned)}
             </div>
             <div style={styles.metricSubtext}>
-              {unassigned >= 0 ? 'Available to budget' : 'Overspending detected'}
+              {unassigned < 0
+                ? 'You have assigned more money than is available.'
+                : 'Shared pool — same in every month'}
             </div>
+            {(futureAssigned || 0) > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowFutureReservedPanel((open) => !open)}
+                style={{
+                  marginTop: '8px',
+                  border: '1px solid rgba(251, 191, 36, 0.35)',
+                  background: 'rgba(251, 191, 36, 0.12)',
+                  color: '#FDE68A',
+                  borderRadius: '999px',
+                  padding: '4px 10px',
+                  fontSize: '0.72rem',
+                  cursor: 'pointer',
+                }}
+              >
+                Reserved in Future: {formatCurrency(futureAssigned)} {showFutureReservedPanel ? '▼' : '▶'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -1229,12 +1264,54 @@ const SummaryView = ({
         <div style={styles.metricCard}>
           <div style={styles.metricIcon}>📋</div>
           <div style={styles.metricContent}>
-            <div style={styles.metricLabel}>Total Assigned</div>
+            <div style={styles.metricLabel}>Assigned (all months)</div>
             <div style={styles.metricValue}>{formatCurrency(totalAssigned)}</div>
-            <div style={styles.metricSubtext}>{assignedPercentage.toFixed(1)}% of available</div>
+            <div style={styles.metricSubtext}>
+              {cashDenominator > 0
+                ? `${assignedPercentage.toFixed(1)}% of cash on budget`
+                : 'No cash on budget accounts'}
+            </div>
           </div>
         </div>
       </div>
+
+      {showFutureReservedPanel && (futureBreakdown || []).length > 0 && (
+        <div
+          style={{
+            marginBottom: '16px',
+            padding: '12px',
+            borderRadius: '12px',
+            border: '1px solid rgba(255,255,255,0.15)',
+            background: 'rgba(0,0,0,0.15)',
+          }}
+        >
+          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: PM.textMuted, marginBottom: '8px' }}>
+            FUTURE ALLOCATIONS
+          </div>
+          <div style={{ maxHeight: '160px', overflowY: 'auto', fontSize: '0.85rem' }}>
+            {futureBreakdown.map((row, idx) => (
+              <div
+                key={`${row.monthKey}-${row.categoryId}-${idx}`}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  padding: '4px 0',
+                  borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.08)' : 'none',
+                }}
+              >
+                <span style={{ color: PM.text }}>
+                  {formatMonthKeyLabel(row.monthKey)} · {row.categoryName}
+                </span>
+                <span style={{ fontWeight: 600 }}>{formatCurrency(row.assignedAmount)}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: '8px', fontWeight: 600, fontSize: '0.85rem' }}>
+            Total Future Reserved: {formatCurrency(futureAssigned)}
+          </div>
+        </div>
+      )}
 
       {/* Progress Bar */}
       <div style={styles.progressSection}>

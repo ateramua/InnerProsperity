@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   RECENT_RANGE_OPTIONS,
+  DATE_PRESET_OPTIONS,
   TRANSACTION_TYPE_OPTIONS,
   TRANSACTION_STATUS_OPTIONS,
   DEFAULT_TRANSACTION_FILTERS,
@@ -15,6 +16,8 @@ const styles = {
     padding: '0.75rem 1rem',
     background: '#111827',
     borderBottom: '1px solid #374151',
+    width: '100%',
+    boxSizing: 'border-box',
   },
   toolbarRow: {
     display: 'flex',
@@ -116,6 +119,10 @@ const styles = {
  * @param {boolean} [hideAccountFilter]
  * @param {number} [resultCount]
  * @param {number} [totalCount]
+ * @param {boolean} [multiAccountFilter]
+ * @param {string} [searchValue] — controlled search (debounced upstream)
+ * @param {(value: string) => void} [onSearchChange]
+ * @param {React.ReactNode} [extraActions]
  */
 export default function TransactionToolbar({
   filters,
@@ -123,8 +130,12 @@ export default function TransactionToolbar({
   categories = [],
   accounts = [],
   hideAccountFilter = false,
+  multiAccountFilter = false,
   resultCount,
   totalCount,
+  searchValue,
+  onSearchChange,
+  extraActions,
 }) {
   const [showFilters, setShowFilters] = useState(false);
   const activeFilterCount = countActiveFilters(filters, { hideAccountFilter });
@@ -138,12 +149,29 @@ export default function TransactionToolbar({
       ...filters,
       dateFrom: '',
       dateTo: '',
+      datePreset: '',
       accountId: hideAccountFilter ? '' : '',
+      accountIds: [],
       categoryId: '',
+      categoryIds: [],
       payee: '',
       transactionType: '',
       status: '',
     });
+  };
+
+  const toggleAccountFilter = (accountId) => {
+    const id = String(accountId);
+    const current = Array.isArray(filters.accountIds) ? [...filters.accountIds] : [];
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    onFiltersChange({ ...filters, accountIds: next, accountId: '' });
+  };
+
+  const toggleCategoryFilter = (categoryId) => {
+    const id = String(categoryId);
+    const current = Array.isArray(filters.categoryIds) ? [...filters.categoryIds] : [];
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    onFiltersChange({ ...filters, categoryIds: next, categoryId: '' });
   };
 
   return (
@@ -152,9 +180,13 @@ export default function TransactionToolbar({
         <div style={styles.searchWrap}>
           <input
             type="search"
-            placeholder="Search payee, category, memo, or amount…"
-            value={filters.search || ''}
-            onChange={(e) => setField('search', e.target.value)}
+            placeholder="Search payee, category, account, memo, or amount…"
+            value={searchValue !== undefined ? searchValue : filters.search || ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (onSearchChange) onSearchChange(v);
+              else setField('search', v);
+            }}
             style={styles.searchInput}
             aria-label="Search transactions"
           />
@@ -186,10 +218,25 @@ export default function TransactionToolbar({
             ))}
           </select>
         </label>
+        {extraActions}
       </div>
 
       {showFilters && (
         <div style={styles.filterPanel}>
+          <div style={styles.field}>
+            <span style={styles.fieldLabel}>Date range preset</span>
+            <select
+              value={filters.datePreset || ''}
+              onChange={(e) => setField('datePreset', e.target.value)}
+              style={styles.fieldInput}
+            >
+              {DATE_PRESET_OPTIONS.map((opt) => (
+                <option key={opt.id || 'custom'} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div style={styles.field}>
             <span style={styles.fieldLabel}>Date from</span>
             <input
@@ -209,37 +256,128 @@ export default function TransactionToolbar({
             />
           </div>
           {!hideAccountFilter && accounts.length > 0 && (
-            <div style={styles.field}>
-              <span style={styles.fieldLabel}>Account</span>
+            <div style={{ ...styles.field, gridColumn: multiAccountFilter ? '1 / -1' : undefined }}>
+              <span style={styles.fieldLabel}>
+                {multiAccountFilter ? 'Accounts (select one or more)' : 'Account'}
+              </span>
+              {multiAccountFilter ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '0.35rem',
+                    maxHeight: '120px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {accounts.map((acct) => {
+                    const id = String(acct.id);
+                    const selected = (filters.accountIds || []).includes(id);
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => toggleAccountFilter(id)}
+                        style={{
+                          padding: '0.3rem 0.55rem',
+                          borderRadius: '0.375rem',
+                          border: `1px solid ${selected ? '#2563EB' : '#374151'}`,
+                          background: selected ? 'rgba(37, 99, 235, 0.2)' : '#1F2937',
+                          color: '#E5E7EB',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {acct.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <select
+                  value={filters.accountId || ''}
+                  onChange={(e) => setField('accountId', e.target.value)}
+                  style={styles.fieldInput}
+                >
+                  <option value="">All accounts</option>
+                  {accounts.map((acct) => (
+                    <option key={acct.id} value={acct.id}>
+                      {acct.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+          <div style={{ ...styles.field, gridColumn: multiAccountFilter ? '1 / -1' : undefined }}>
+            <span style={styles.fieldLabel}>
+              {multiAccountFilter ? 'Categories (select one or more)' : 'Category'}
+            </span>
+            {multiAccountFilter ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '0.35rem',
+                  maxHeight: '100px',
+                  overflowY: 'auto',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleCategoryFilter('ready_to_assign')}
+                  style={{
+                    padding: '0.3rem 0.55rem',
+                    borderRadius: '0.375rem',
+                    border: `1px solid ${(filters.categoryIds || []).includes('ready_to_assign') ? '#2563EB' : '#374151'}`,
+                    background: (filters.categoryIds || []).includes('ready_to_assign')
+                      ? 'rgba(37, 99, 235, 0.2)'
+                      : '#1F2937',
+                    color: '#E5E7EB',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Ready to Assign
+                </button>
+                {(categories || []).map((cat) => {
+                  const id = String(cat.id);
+                  const selected = (filters.categoryIds || []).includes(id);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => toggleCategoryFilter(id)}
+                      style={{
+                        padding: '0.3rem 0.55rem',
+                        borderRadius: '0.375rem',
+                        border: `1px solid ${selected ? '#2563EB' : '#374151'}`,
+                        background: selected ? 'rgba(37, 99, 235, 0.2)' : '#1F2937',
+                        color: '#E5E7EB',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {cat.name}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
               <select
-                value={filters.accountId || ''}
-                onChange={(e) => setField('accountId', e.target.value)}
+                value={filters.categoryId || ''}
+                onChange={(e) => setField('categoryId', e.target.value)}
                 style={styles.fieldInput}
               >
-                <option value="">All accounts</option>
-                {accounts.map((acct) => (
-                  <option key={acct.id} value={acct.id}>
-                    {acct.name}
+                <option value="">All categories</option>
+                <option value="ready_to_assign">Ready to Assign</option>
+                {(categories || []).map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
                   </option>
                 ))}
               </select>
-            </div>
-          )}
-          <div style={styles.field}>
-            <span style={styles.fieldLabel}>Category</span>
-            <select
-              value={filters.categoryId || ''}
-              onChange={(e) => setField('categoryId', e.target.value)}
-              style={styles.fieldInput}
-            >
-              <option value="">All categories</option>
-              <option value="ready_to_assign">Ready to Assign</option>
-              {(categories || []).map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.name}
-                </option>
-              ))}
-            </select>
+            )}
           </div>
           <div style={styles.field}>
             <span style={styles.fieldLabel}>Payee</span>

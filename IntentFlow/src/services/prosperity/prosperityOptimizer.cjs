@@ -1,5 +1,6 @@
 // src/services/prosperity/prosperityOptimizer.cjs
 const MoneyMap = require('../forecast/moneyMap.cjs');
+const { getGlobalBudgetSummary } = require('../budget/monthlyBudgetService.cjs');
 
 class ProsperityOptimizer {
     constructor(dbPath) {
@@ -165,11 +166,32 @@ class ProsperityOptimizer {
         }
     }
 
-    // Get unassigned funds (you'll need to implement this based on your data)
+    /** Global Ready to Assign = cash − Σ assigned (all months). */
     async getUnassignedFunds(userId) {
-        // This should calculate Ready to Assign amount
-        // For now, return a sample value
-        return 1250.57;
+        const db = await this.moneyMap.getDb();
+        try {
+            const accounts = await db.all(
+                `SELECT balance, register_balance, type, archived, on_budget, plaid_account_id, plaid_item_id
+                 FROM accounts WHERE user_id = ?`,
+                [userId]
+            );
+            let cash = 0;
+            for (const acc of accounts || []) {
+                if (!acc || acc.archived === 1 || acc.archived === true) continue;
+                const type = String(acc.type || '').toLowerCase();
+                if (type !== 'checking' && type !== 'savings') continue;
+                if (acc.on_budget === 0 || acc.on_budget === '0' || acc.on_budget === false) continue;
+                const linked = acc.plaid_account_id || acc.plaid_item_id;
+                const reg = acc.register_balance;
+                let bal = Number(acc.balance) || 0;
+                if (linked && reg != null && Number.isFinite(Number(reg))) bal = Number(reg);
+                cash += bal;
+            }
+            const summary = await getGlobalBudgetSummary(db, userId, cash);
+            return summary.readyToAssign;
+        } finally {
+            await db.close();
+        }
     }
 
     // Generate recommendations based on allocation

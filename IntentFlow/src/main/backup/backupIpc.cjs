@@ -25,10 +25,15 @@ function registerBackupIpcHandlers(ipcMain, deps) {
   });
 
   ipcMain.handle('backup-database', async (_event, password, options = {}) => {
-    if (!deps.fileEncryption) {
-      return { success: false, error: 'Backup service is unavailable' };
+    try {
+      if (!deps.fileEncryption) {
+        return { success: false, error: 'Backup service is unavailable' };
+      }
+      return await engine.backup({ password, options });
+    } catch (error) {
+      console.error('backup-database error:', error);
+      return { success: false, error: error.message || 'Backup export failed' };
     }
-    return engine.backup({ password, options });
   });
 
   ipcMain.handle('restore-database', async (_event, password, mode = 'in-place') => {

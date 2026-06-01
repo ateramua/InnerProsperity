@@ -134,15 +134,26 @@ async function buildDashboardSummary({ getDatabase, accountService, monthlyBudge
         .filter((account) => (account.account_type_category || 'budget') === 'budget')
         .reduce((sum, account) => sum + Number(account.working_balance ?? account.balance ?? 0), 0);
 
+    let readyToAssign = null;
+    let futureAssigned = null;
     let monthlyBudgetRemaining = null;
     let underfundedTotal = null;
     let underfundedBreakdown = [];
+    if (monthlyBudgetService && typeof monthlyBudgetService.getGlobalBudgetSummary === 'function') {
+        try {
+            const global = await monthlyBudgetService.getGlobalBudgetSummary(db, userId, availableCash);
+            readyToAssign = Number(global.readyToAssign) || 0;
+            futureAssigned = Number(global.futureAssigned) || 0;
+        } catch {
+            readyToAssign = null;
+        }
+    }
     if (monthlyBudgetService && typeof monthlyBudgetService.getBudgetMonthSnapshot === 'function') {
         try {
             const monthKey = monthlyBudgetService.toLocalMonthKey
                 ? monthlyBudgetService.toLocalMonthKey(new Date())
                 : undefined;
-            const snapshot = await monthlyBudgetService.getBudgetMonthSnapshot(userId, monthKey);
+            const snapshot = await monthlyBudgetService.getBudgetMonthSnapshot(db, userId, monthKey);
             if (Array.isArray(snapshot?.categories)) {
                 monthlyBudgetRemaining = snapshot.categories.reduce(
                     (sum, category) => sum + Number(category.available ?? category.remaining ?? 0),
@@ -169,7 +180,9 @@ async function buildDashboardSummary({ getDatabase, accountService, monthlyBudge
     return {
         netWorth: Number(totals?.netWorth ?? totals?.grandTotal ?? availableCash),
         availableCash,
-        monthlyBudgetRemaining: monthlyBudgetRemaining ?? availableCash,
+        readyToAssign: readyToAssign ?? availableCash,
+        futureAssigned: futureAssigned ?? 0,
+        monthlyBudgetRemaining: readyToAssign ?? monthlyBudgetRemaining ?? availableCash,
         underfundedTotal,
         underfundedBreakdown,
         accountsNeedingAttention: Number(plaidAttention?.count || 0),

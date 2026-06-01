@@ -637,8 +637,37 @@ const monthlyBudgetService = requireModule('../services/budget/monthlyBudgetServ
     repairAndRefreshBudgetMonths: async () => ({ monthKey: '', repairs: [], snapshot: {} }),
     consolidateAvailableIntoMonthAssignments: async () => ({ monthKey: '', conversions: [] }),
     resetEnvelopesFromMonth: async () => ({ monthKey: '', categoriesReset: 0 }),
-    auditBudgetMonthIntegrity: async () => ({ monthKey: '', categories: [], totals: {} })
+    unassignAllForMonth: async () => ({
+        monthKey: '',
+        totalReleased: 0,
+        categoriesUpdated: 0,
+        breakdown: [],
+    }),
+    auditBudgetMonthIntegrity: async () => ({ monthKey: '', categories: [], totals: {} }),
+    getGlobalBudgetSummary: async () => ({
+        currentMonthKey: '',
+        totalCash: 0,
+        totalAssigned: 0,
+        futureAssigned: 0,
+        readyToAssign: 0,
+        futureBreakdown: [],
+    }),
+    assertSufficientReadyToAssign: async () => {},
+    readMonthBudgeted: async () => 0,
 };
+
+const { sumTotalBudgetCashFromSummary } = require('../utils/cashAccountUtils.cjs');
+
+/** On-budget checking + savings cash total for global Ready to Assign. */
+async function resolveBudgetCashTotal(userId) {
+    try {
+        const summary = await accountService.getAccountsSummary(userId);
+        return sumTotalBudgetCashFromSummary(summary);
+    } catch (e) {
+        console.warn('resolveBudgetCashTotal:', e?.message || e);
+        return 0;
+    }
+}
 
 const creditCardPaymentCategoryService =
     requireModule('../services/accounts/creditCardPaymentCategoryService.cjs') ||
@@ -789,14 +818,67 @@ async function createDatabaseSnapshot() {
         throw new Error('Database file does not exist');
     }
     const snapshotPath = path.join(app.getPath('temp'), `intentflow-db-snapshot-${Date.now()}.db`);
+    if (fs.existsSync(snapshotPath)) {
+        fs.unlinkSync(snapshotPath);
+    }
+
+    const snapshotTimeoutMs = 60000;
+    const sqlite3 = require('sqlite3');
+
+    const copySnapshotFiles = () => {
+        fs.copyFileSync(dbPath, snapshotPath);
+        for (const suffix of ['-wal', '-shm']) {
+            const sidecar = `${dbPath}${suffix}`;
+            if (fs.existsSync(sidecar)) {
+                try {
+                    fs.copyFileSync(sidecar, `${snapshotPath}${suffix}`);
+                } catch (sidecarErr) {
+                    console.warn(`⚠️ Could not copy ${suffix} for snapshot:`, sidecarErr.message);
+                }
+            }
+        }
+    };
+
+    if (typeof sqlite3.Database.prototype.backup === 'function') {
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error('Database snapshot timed out'));
+            }, snapshotTimeoutMs);
+            const source = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (openErr) => {
+                if (openErr) {
+                    clearTimeout(timer);
+                    reject(openErr);
+                    return;
+                }
+                source.backup(snapshotPath, (backupErr) => {
+                    clearTimeout(timer);
+                    source.close(() => {
+                        if (backupErr) {
+                            reject(backupErr);
+                        } else {
+                            resolve();
+                        }
+                    });
+                });
+            });
+        });
+        return snapshotPath;
+    }
+
     if (db && typeof db.exec === 'function') {
         try {
-            await db.exec('PRAGMA wal_checkpoint(FULL)');
+            await Promise.race([
+                db.exec('PRAGMA wal_checkpoint(PASSIVE)'),
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('WAL checkpoint timed out')), 8000);
+                }),
+            ]);
         } catch (checkpointError) {
-            console.warn('⚠️ WAL checkpoint failed before snapshot:', checkpointError.message);
+            console.warn('⚠️ WAL checkpoint skipped before snapshot:', checkpointError.message);
         }
     }
-    fs.copyFileSync(dbPath, snapshotPath);
+
+    copySnapshotFiles();
     return snapshotPath;
 }
 
@@ -2331,6 +2413,22 @@ function setupIpcHandlers() {
             if (budgetMonth !== undefined && budgetMonth !== null && String(budgetMonth).trim() !== '') {
                 const mKey = monthlyBudgetService.toLocalMonthKey(budgetMonth);
                 if (patch.assigned !== undefined) {
+                    const budgetCash = await resolveBudgetCashTotal(ownerId);
+                    const currentBudgeted = await monthlyBudgetService.readMonthBudgeted(
+                        db,
+                        ownerId,
+                        canonicalCategoryId,
+                        mKey
+                    );
+                    const assignDelta = Number(patch.assigned) - currentBudgeted;
+                    if (assignDelta > 0) {
+                        await monthlyBudgetService.assertSufficientReadyToAssign(
+                            db,
+                            ownerId,
+                            assignDelta,
+                            budgetCash
+                        );
+                    }
                     envelopeResult = await monthlyBudgetService.applyMonthBudgetedAmount(
                         db,
                         ownerId,
@@ -3824,7 +3922,7 @@ function setupIpcHandlers() {
             }
             const db = await getDatabase();
             const account = await db.get(
-                'SELECT id, type, name FROM accounts WHERE id = ? AND user_id = ?',
+                'SELECT id, type, name, institution FROM accounts WHERE id = ? AND user_id = ?',
                 [accountId, currentUser.id]
             );
             if (!account) return { success: false, error: 'Account not found' };
@@ -3832,9 +3930,6 @@ function setupIpcHandlers() {
                 'SELECT id, name FROM categories WHERE user_id = ? ORDER BY name',
                 [currentUser.id]
             );
-            const savedMappings = importCategoryMapping?.getImportCategoryMappings
-                ? await importCategoryMapping.getImportCategoryMappings(db, currentUser.id)
-                : {};
             const categoriesByName = transactionImportService.buildCategoryNameMap(categories);
             const preview = transactionImportService.previewImport(
                 content,
@@ -3844,15 +3939,29 @@ function setupIpcHandlers() {
                 categoryMappings || null,
                 fileName || ''
             );
+            const institutionKey = importCategoryMapping?.resolveInstitutionKey
+                ? importCategoryMapping.resolveInstitutionKey({
+                      detectedProfile: preview.detectedProfile,
+                      account,
+                  })
+                : '';
+            const savedBundle = importCategoryMapping?.getMappingsForImport
+                ? await importCategoryMapping.getMappingsForImport(db, currentUser.id, institutionKey)
+                : { merged: {}, global: {}, institution: {}, institutionKey: '' };
             const suggestedCategoryMappings = transactionImportService.buildSuggestedCategoryMappings(
                 preview.bankCategories,
                 categoriesByName,
-                savedMappings
+                savedBundle.merged
             );
             return {
                 success: true,
                 data: {
                     accountName: account.name,
+                    accountInstitution: account.institution || null,
+                    institutionKey,
+                    institutionLabel: importCategoryMapping?.institutionDisplayName
+                        ? importCategoryMapping.institutionDisplayName(institutionKey)
+                        : institutionKey,
                     headers: preview.headers,
                     suggestedMapping: preview.suggestedMapping,
                     preview: preview.preview,
@@ -3862,7 +3971,7 @@ function setupIpcHandlers() {
                     balancePreview: preview.balancePreview,
                     bankCategories: preview.bankCategories,
                     categories: preview.categories,
-                    savedCategoryMappings: savedMappings,
+                    savedCategoryMappings: savedBundle.merged,
                     suggestedCategoryMappings,
                     detectedProfile: preview.detectedProfile,
                     previewTransactions: preview.previewTransactions,
@@ -3881,7 +3990,15 @@ function setupIpcHandlers() {
             if (!transactionImportService?.previewImport || !transactionImportService?.importTransactionsForAccount) {
                 return { success: false, error: 'Transaction import service unavailable' };
             }
-            const { accountId, content, columnMap, categoryMappings, saveCategoryMappings, fileName } = payload || {};
+            const {
+                accountId,
+                content,
+                columnMap,
+                categoryMappings,
+                saveCategoryMappings,
+                institutionKey,
+                fileName,
+            } = payload || {};
             if (!accountId || !content) {
                 return { success: false, error: 'Account and file content are required' };
             }
@@ -3904,10 +4021,23 @@ function setupIpcHandlers() {
                 fileName || ''
             );
             if (saveCategoryMappings && categoryMappings && importCategoryMapping?.saveImportCategoryMappings) {
+                const accountRow = await db.get(
+                    'SELECT institution FROM accounts WHERE id = ? AND user_id = ?',
+                    [accountId, currentUser.id]
+                );
+                const saveKey =
+                    institutionKey ||
+                    (importCategoryMapping.resolveInstitutionKey
+                        ? importCategoryMapping.resolveInstitutionKey({
+                              detectedProfile: built.detectedProfile,
+                              account: accountRow,
+                          })
+                        : '');
                 await importCategoryMapping.saveImportCategoryMappings(
                     db,
                     currentUser.id,
-                    categoryMappings
+                    categoryMappings,
+                    saveKey
                 );
             }
             const dbPath = getDatabasePath();
@@ -3931,27 +4061,81 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('import-get-category-mappings', async () => {
+    ipcMain.handle('import-get-category-mappings', async (event, payload) => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: true, data: {} };
+            const institutionKey =
+                typeof payload === 'string' ? payload : payload?.institutionKey || '';
             const db = await getDatabase();
-            const map = importCategoryMapping?.getImportCategoryMappings
-                ? await importCategoryMapping.getImportCategoryMappings(db, currentUser.id)
-                : {};
-            return { success: true, data: map };
+            const bundle = importCategoryMapping?.getMappingsForImport
+                ? await importCategoryMapping.getMappingsForImport(
+                      db,
+                      currentUser.id,
+                      institutionKey
+                  )
+                : { merged: {} };
+            return { success: true, data: bundle.merged };
         } catch (error) {
             return { success: false, error: error.message };
         }
     });
 
-    ipcMain.handle('import-save-category-mappings', async (event, mappings) => {
+    ipcMain.handle('import-list-category-mappings', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: true, data: [] };
+            const db = await getDatabase();
+            const rows = importCategoryMapping?.listImportCategoryMappings
+                ? await importCategoryMapping.listImportCategoryMappings(db, currentUser.id)
+                : [];
+            return { success: true, data: rows };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('import-delete-category-mapping', async (event, payload) => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
+            const { institutionKey = '', bankCategory } = payload || {};
+            if (!bankCategory) return { success: false, error: 'bankCategory required' };
+            const db = await getDatabase();
+            const result = importCategoryMapping?.deleteImportCategoryMapping
+                ? await importCategoryMapping.deleteImportCategoryMapping(
+                      db,
+                      currentUser.id,
+                      institutionKey,
+                      bankCategory
+                  )
+                : { deleted: 0 };
+            return { success: true, data: result };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('import-save-category-mappings', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) throw new Error('Not logged in');
+            const mappings =
+                payload && typeof payload === 'object' && !Array.isArray(payload) && payload.mappings
+                    ? payload.mappings
+                    : payload;
+            const institutionKey =
+                payload && typeof payload === 'object' && !Array.isArray(payload)
+                    ? payload.institutionKey || ''
+                    : '';
             const db = await getDatabase();
             const result = importCategoryMapping?.saveImportCategoryMappings
-                ? await importCategoryMapping.saveImportCategoryMappings(db, currentUser.id, mappings)
+                ? await importCategoryMapping.saveImportCategoryMappings(
+                      db,
+                      currentUser.id,
+                      mappings,
+                      institutionKey
+                  )
                 : { saved: 0 };
             return { success: true, data: result };
         } catch (error) {
@@ -3962,6 +4146,10 @@ function setupIpcHandlers() {
     function normalizeTransactionUpdatePayload(updates) {
         if (!updates || typeof updates !== 'object') return updates;
         const normalized = { ...updates };
+        if (Object.prototype.hasOwnProperty.call(normalized, 'cleared')) {
+            normalized.is_cleared = normalized.cleared;
+            delete normalized.cleared;
+        }
         if (Object.prototype.hasOwnProperty.call(normalized, 'categoryId')) {
             let cid = normalized.categoryId;
             delete normalized.categoryId;
@@ -4245,6 +4433,61 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('Error in deleteTransaction:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:bulkUpdate', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+
+            const ids = Array.isArray(payload) ? null : payload?.ids;
+            const updates = Array.isArray(payload) ? null : payload?.updates;
+            const idList = Array.isArray(payload) ? payload : ids;
+
+            if (!Array.isArray(idList) || idList.length === 0) {
+                return { success: false, error: 'No transaction ids provided' };
+            }
+            if (!updates || typeof updates !== 'object') {
+                return { success: false, error: 'No updates provided' };
+            }
+
+            const dbPath = getDatabasePath();
+            const service = new TransactionService(dbPath);
+            const normalizedUpdates = normalizeTransactionUpdatePayload(updates);
+            const result = await service.bulkUpdateTransactions(
+                idList,
+                currentUser.id,
+                normalizedUpdates
+            );
+
+            if (transactionLifecycle?.runPostTransactionEffects && result.dates?.length) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: result.accountIds,
+                        dates: result.dates,
+                        skipLedgerSync: true,
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (bulk update):', e?.message || e);
+                }
+            }
+
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'transaction:updated',
+            });
+            if (updateService) {
+                updateService.publish('transaction:updated', {
+                    bulk: true,
+                    count: result.updated,
+                });
+            }
+
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:bulkUpdate error:', error);
             return { success: false, error: error.message };
         }
     });
@@ -4544,12 +4787,27 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('getCategories', async (event, userId) => {
+    ipcMain.handle('getCategories', async (event, userId, monthKey) => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
             if (targetUserId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session', data: [] };
             if (!targetUserId) return { success: true, data: [] };
+
+            const mKey = monthKey
+                ? monthlyBudgetService.toLocalMonthKey(monthKey)
+                : monthlyBudgetService.toLocalMonthKey(new Date());
+
+            if (monthKey) {
+                await runCreditCardPaymentCategorySync(targetUserId, 'get_categories_month');
+                const snapshot = await monthlyBudgetService.getBudgetMonthSnapshot(
+                    dbConnection,
+                    targetUserId,
+                    mKey
+                );
+                return { success: true, data: snapshot.categories || [] };
+            }
+
             const categories = await dbConnection.all(
                 `SELECT c.*, cg.name as group_name
                  FROM categories c
@@ -4561,16 +4819,67 @@ function setupIpcHandlers() {
                  ORDER BY cg.sort_order ASC, c.name ASC`,
                 [targetUserId]
             );
-            const monthKey = monthlyBudgetService.toLocalMonthKey(new Date());
             const enriched = await monthlyBudgetService.enrichCategoriesWithUnderfunded(
                 dbConnection,
                 targetUserId,
                 categories,
-                monthKey
+                mKey
             );
             return { success: true, data: enriched };
         } catch (error) {
             return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('budget:getAssignmentAudit', async (event, userId, opts = {}) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session', data: [] };
+            }
+            if (!targetUserId) {
+                return { success: true, data: [] };
+            }
+            const { getBudgetAssignmentAuditLog } = require('../services/budget/budgetAssignmentAuditService.cjs');
+            const rows = await getBudgetAssignmentAuditLog(dbConnection, targetUserId, opts || {});
+            return { success: true, data: rows };
+        } catch (error) {
+            console.error('budget:getAssignmentAudit error:', error);
+            return { success: false, error: error.message, data: [] };
+        }
+    });
+
+    ipcMain.handle('budget:getGlobalSummary', async (event, userId) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session', data: null };
+            }
+            if (!targetUserId) {
+                return {
+                    success: true,
+                    data: {
+                        currentMonthKey: monthlyBudgetService.toLocalMonthKey(new Date()),
+                        totalCash: 0,
+                        totalAssigned: 0,
+                        futureAssigned: 0,
+                        readyToAssign: 0,
+                        futureBreakdown: [],
+                    },
+                };
+            }
+            const totalCash = await resolveBudgetCashTotal(targetUserId);
+            const summary = await monthlyBudgetService.getGlobalBudgetSummary(
+                dbConnection,
+                targetUserId,
+                totalCash
+            );
+            return { success: true, data: summary };
+        } catch (error) {
+            console.error('budget:getGlobalSummary error:', error);
+            return { success: false, error: error.message, data: null };
         }
     });
 
@@ -4638,12 +4947,18 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No assignments provided' };
             }
 
-            const result = await monthlyBudgetService.applyMonthBudgetBulk(
+            const totalCash = await resolveBudgetCashTotal(targetUserId);
+            const result = await monthlyBudgetService.applyMonthBudgetBulkAndRefresh(
                 dbConnection,
                 targetUserId,
                 monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
                 assignments,
-                { mode: opts?.mode || 'delta' }
+                {
+                    mode: opts?.mode || 'delta',
+                    totalCash,
+                    auditSource: opts?.auditSource || 'bulk_assign',
+                    auditMetadata: opts?.auditMetadata || null,
+                }
             );
             notifyBudgetStateChanged('budget:bulkAssigned', {
                 userId: targetUserId,
@@ -4723,6 +5038,38 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('budget:consolidateAssignments error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:unassignMonth', async (event, userId, monthKey) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const result = await monthlyBudgetService.unassignAllForMonth(
+                dbConnection,
+                targetUserId,
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
+                { auditSource: 'unassign_month' }
+            );
+            notifyBudgetStateChanged('budget:unassigned', {
+                userId: targetUserId,
+                monthKey: result.monthKey,
+                totalReleased: result.totalReleased,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:unassigned',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:unassignMonth error:', error);
             return { success: false, error: error.message };
         }
     });

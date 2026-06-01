@@ -123,6 +123,10 @@ async function runMigrations(existingDb) {
             '022_account_merge_framework.cjs',
             '023_import_category_mappings.cjs',
             '024_account_balance_engine.cjs',
+            '025_transactions_cleared_column.cjs',
+            '026_transactions_is_flagged.cjs',
+            '027_import_category_mappings_institution.cjs',
+            '028_budget_assignment_audit.cjs',
         ];
 
         for (const migration of migrations) {

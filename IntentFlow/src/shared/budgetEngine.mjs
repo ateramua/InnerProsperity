@@ -14,8 +14,8 @@ export default class BudgetEngine {
 
   /**
    * Rule #1: Give Every Dollar a Job (income vs assigned totals).
-   * Note: The Property Map UI uses cash-on-budget-accounts minus sum(category.available)
-   * for Ready to Assign so envelope balances stay tied to real account cash.
+   * Note: The Property Map UI uses global Ready to Assign:
+   * cash on budget accounts minus sum(assigned) across all budget months.
    */
   calculateReadyToAssign(income, assignedTotal) {
     return income - assignedTotal;

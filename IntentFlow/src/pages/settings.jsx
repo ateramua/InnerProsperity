@@ -75,14 +75,24 @@ export default function Settings() {
     []
   );
 
+  const isBackupBusy = isBackingUp || isRestoring || isSimulating;
   const isBusy =
-    isBackingUp ||
-    isRestoring ||
-    isSimulating ||
+    isBackupBusy ||
     isSaving ||
     isProsperityExporting ||
     isProsperityImporting;
   const canChangeTabs = !isBusy;
+
+  const invokeIpcWithTimeout = (promise, timeoutMs, label) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`${label} timed out. Try closing other heavy tasks and retry.`)),
+          timeoutMs,
+        );
+      }),
+    ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -401,15 +411,22 @@ export default function Settings() {
       return;
     }
 
+    if (!window.electronAPI?.backupDatabase) {
+      setBackupMessage(
+        'Backup is only available in the IntentFlow desktop app. If you are already in the app, fully quit and reopen it, then try again.',
+      );
+      return;
+    }
+
     setIsBackingUp(true);
-    setBackupMessage('Preparing backup file...');
+    setBackupMessage('Preparing backup file… A save dialog will open when ready.');
 
     try {
-      if (!window.electronAPI?.backupDatabase) {
-        setBackupMessage('Backup API is unavailable.');
-        return;
-      }
-      const result = await window.electronAPI.backupDatabase(backupPassword, encryptionSettings);
+      const result = await invokeIpcWithTimeout(
+        window.electronAPI.backupDatabase(backupPassword, encryptionSettings),
+        120000,
+        'Backup export',
+      );
       handleBackupResult(result);
       await refreshBackupRuntimeData();
     } catch (error) {
@@ -681,7 +698,7 @@ export default function Settings() {
                       onChange={(event) => setBackupPassword(event.target.value)}
                       placeholder="Enter secure password"
                       className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
-                      disabled={isBusy}
+                      disabled={isBackupBusy}
                     />
                     <p className="mt-2 text-sm text-slate-400">Your backup file is encrypted locally before it is saved.</p>
                   </div>
@@ -692,7 +709,7 @@ export default function Settings() {
                       value={restoreMode}
                       onChange={(event) => setRestoreMode(event.target.value)}
                       className="mt-3 w-full rounded-3xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
-                      disabled={isBusy}
+                      disabled={isBackupBusy}
                     >
                       <option value="in-place">In-place (replace active data)</option>
                       <option value="side-by-side">Side-by-side (safe validation copy)</option>
@@ -700,20 +717,20 @@ export default function Settings() {
                   </div>
 
                   <div className="flex flex-col gap-3 sm:flex-row">
-                    <Button onClick={handleExportBackup} disabled={isBusy}>
+                    <Button onClick={() => void handleExportBackup()} disabled={isBackupBusy}>
                       {isBackingUp ? 'Exporting...' : 'Export Backup'}
                     </Button>
-                    <Button variant="secondary" onClick={handleImportBackup} disabled={isBusy}>
+                    <Button variant="secondary" onClick={() => void handleImportBackup()} disabled={isBackupBusy}>
                       {isRestoring ? 'Restoring...' : 'Import Backup'}
                     </Button>
-                    <Button variant="secondary" onClick={handleSimulateRestore} disabled={isBusy}>
+                    <Button variant="secondary" onClick={() => void handleSimulateRestore()} disabled={isBackupBusy}>
                       {isSimulating ? 'Simulating...' : 'Simulate Restore'}
                     </Button>
                   </div>
                   <div className="flex flex-col gap-3 sm:flex-row">
-                    <Button variant="secondary" onClick={handleQueueBackup} disabled={isBusy}>Queue Backup</Button>
-                    <Button variant="secondary" onClick={handleProcessQueue} disabled={isBusy}>Process Queue</Button>
-                    <Button variant="secondary" onClick={handleGenerateRecoveryKit} disabled={isBusy}>Generate Recovery Kit</Button>
+                    <Button variant="secondary" onClick={() => void handleQueueBackup()} disabled={isBackupBusy}>Queue Backup</Button>
+                    <Button variant="secondary" onClick={() => void handleProcessQueue()} disabled={isBackupBusy}>Process Queue</Button>
+                    <Button variant="secondary" onClick={() => void handleGenerateRecoveryKit()} disabled={isBackupBusy}>Generate Recovery Kit</Button>
                   </div>
                 </div>
 
@@ -759,7 +776,7 @@ export default function Settings() {
                       ))}
                     </select>
                     <div className="flex gap-3">
-                      <Button variant="secondary" onClick={handleCompareVersions} disabled={isBusy}>Compare</Button>
+                      <Button variant="secondary" onClick={handleCompareVersions} disabled={isBackupBusy}>Compare</Button>
                     </div>
                     {compareResult?.diff && (
                       <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-300">
@@ -788,7 +805,7 @@ export default function Settings() {
                       <div key={version.id} className="mb-3 rounded-xl border border-slate-800 p-3 text-sm text-slate-300">
                         <p className="text-slate-200">{new Date(version.createdAt).toLocaleString()}</p>
                         <p className="truncate text-xs text-slate-500">{version.id}</p>
-                        <Button variant="secondary" onClick={() => handleRewindToVersion(version.id)} disabled={isBusy}>
+                        <Button variant="secondary" onClick={() => handleRewindToVersion(version.id)} disabled={isBackupBusy}>
                           Rewind To This Version
                         </Button>
                       </div>
@@ -1071,10 +1088,15 @@ export default function Settings() {
             <div className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
               <div className="grid gap-6">
                 {groups.map((group) => (
-                  <section key={group.id} className="space-y-4 rounded-3xl border border-slate-800 bg-slate-950/80 p-5">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <section key={group.id} className="space-y-0 overflow-hidden rounded-3xl border border-slate-800 bg-slate-950/80">
+                    <div
+                      className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"
+                      style={{ backgroundColor: '#FFF8E7', color: '#0c2340' }}
+                    >
                       <div className="space-y-2">
-                        <label className="text-sm font-semibold text-slate-200">Group name</label>
+                        <label className="text-sm font-semibold" style={{ color: '#0c2340' }}>
+                          Group name
+                        </label>
                         <input
                           type="text"
                           value={group.name}
@@ -1087,7 +1109,7 @@ export default function Settings() {
                       </Button>
                     </div>
 
-                    <div className="space-y-4">
+                    <div className="space-y-4 p-5">
                       {group.categories.map((category) => (
                         <div key={category.id} className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                           <input

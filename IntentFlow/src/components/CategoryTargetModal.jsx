@@ -38,8 +38,8 @@ const CategoryTargetModal = ({
 
   const handleSave = () => {
     const targetAmount = parseMoneyInput(targetAmountInput);
-    if (!Number.isFinite(targetAmount) || targetAmount < 0) {
-      setError('Please enter a valid target amount (0 or greater)');
+    if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+      setError('Please enter a valid target amount (greater than 0)');
       return;
     }
 

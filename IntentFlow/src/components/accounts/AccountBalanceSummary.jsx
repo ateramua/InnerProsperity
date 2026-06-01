@@ -95,8 +95,9 @@ export default function AccountBalanceSummary({
   const accountType = account.type;
   const plaidLinked = isPlaidLinkedAccount(account);
   const bankBalance = Number(account.balance);
-  const showBankBalance =
-    plaidLinked && Number.isFinite(bankBalance) && Math.abs(bankBalance - balances.working_balance) > 0.01;
+  const hasBankBalance = plaidLinked && Number.isFinite(bankBalance);
+  const bankDiffersFromWorking =
+    hasBankBalance && Math.abs(bankBalance - balances.working_balance) > 0.01;
 
   const working = balances.working_balance;
   const cleared = balances.cleared_balance;
@@ -141,13 +142,17 @@ export default function AccountBalanceSummary({
           <div style={styles.sub}>Pending transaction impact</div>
         </div>
 
-        {showBankBalance && (
+        {hasBankBalance && (
           <div style={styles.item}>
             <div style={styles.label}>Bank Balance</div>
             <div style={{ ...styles.value, color: balanceColor(bankBalance, accountType) }}>
               {formatBalanceDisplay(bankBalance, accountType)}
             </div>
-            <div style={styles.sub}>Last synced from your bank</div>
+            <div style={styles.sub}>
+              {bankDiffersFromWorking
+                ? 'Last synced from your bank (differs from register)'
+                : 'Last synced from your bank (matches working balance)'}
+            </div>
           </div>
         )}
       </div>

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { sortIndicator } from '../../utils/transactionSortUtils.jsx';
 import {
   formatTransactionCurrency,
@@ -7,6 +7,7 @@ import {
   getTransactionOutflow,
   getTransactionPayee,
 } from '../../utils/transactionDisplayUtils.jsx';
+import { InlinePayeeField, InlineCategoryField } from './InlineTransactionFields.jsx';
 
 const styles = {
   container: {
@@ -89,13 +90,22 @@ const styles = {
   },
 };
 
-const STANDARD_COLUMNS = [
+const BASE_COLUMNS = [
   { key: 'date', label: 'Date' },
   { key: 'payee', label: 'Payee' },
   { key: 'category', label: 'Category' },
   { key: 'outflow', label: 'Outflow', align: 'right' },
   { key: 'inflow', label: 'Inflow', align: 'right' },
 ];
+
+function buildDisplayColumns(showAccountColumn) {
+  if (!showAccountColumn) return BASE_COLUMNS;
+  return [
+    BASE_COLUMNS[0],
+    { key: 'account', label: 'Account' },
+    ...BASE_COLUMNS.slice(1),
+  ];
+}
 
 function formatDisplayDate(dateStr) {
   if (!dateStr) return '—';
@@ -127,11 +137,21 @@ export default function TransactionTable({
   renderEditRow,
   formatDate = formatDisplayDate,
   showAccountColumn = false,
+  onAccountClick,
   renderPayeeExtra,
   showRunningBalance = false,
   formatRunningBalance,
+  virtualPaddingTop = 0,
+  virtualPaddingBottom = 0,
+  enableInlineEdit = false,
+  onInlineUpdate,
+  isInlineEditDisabled,
 }) {
-  const categoryById = new Map((categories || []).map((c) => [c.id, c]));
+  const categoryById = useMemo(
+    () => new Map((categories || []).map((c) => [c.id, c])),
+    [categories]
+  );
+  const displayColumns = buildDisplayColumns(showAccountColumn);
 
   const handleSort = (key) => {
     if (!onSortChange || !sort) return;
@@ -141,10 +161,10 @@ export default function TransactionTable({
   };
 
   const colSpan =
-    STANDARD_COLUMNS.length +
+    displayColumns.length +
     (showRunningBalance ? 1 : 0) +
     (showCheckbox ? 1 : 0) +
-    (showAccountColumn ? 1 : 0) +
+    (renderLeadingCell ? 1 : 0) +
     (renderActions ? 1 : 0);
 
   return (
@@ -166,8 +186,7 @@ export default function TransactionTable({
               </th>
             )}
             {renderLeadingCell ? <th style={{ ...styles.th, width: '40px' }} /> : null}
-            {showAccountColumn && <th style={styles.th}>Account</th>}
-            {STANDARD_COLUMNS.map((col) => (
+            {displayColumns.map((col) => (
               <th
                 key={col.key}
                 style={{
@@ -199,7 +218,12 @@ export default function TransactionTable({
           </tr>
         </thead>
         <tbody>
-          {transactions.length === 0 ? (
+          {virtualPaddingTop > 0 ? (
+            <tr aria-hidden="true">
+              <td colSpan={colSpan} style={{ height: virtualPaddingTop, padding: 0, border: 'none' }} />
+            </tr>
+          ) : null}
+          {transactions.length === 0 && virtualPaddingTop === 0 && virtualPaddingBottom === 0 ? (
             <tr>
               <td colSpan={colSpan} style={styles.empty}>
                 {emptyMessage}
@@ -249,26 +273,95 @@ export default function TransactionTable({
                   {renderLeadingCell ? (
                     <td style={styles.td}>{renderLeadingCell(tx)}</td>
                   ) : null}
-                  {showAccountColumn && (
-                    <td style={{ ...styles.td, ...styles.tdMuted }}>
-                      {tx.account_name || tx.account_id || '—'}
-                    </td>
-                  )}
-                  <td style={{ ...styles.td, ...styles.tdMuted }}>{formatDate(tx.date)}</td>
-                  <td style={styles.td}>
-                    {getTransactionPayee(tx)}
-                    {renderPayeeExtra ? renderPayeeExtra(tx) : null}
-                  </td>
-                  <td style={{ ...styles.td, ...styles.tdMuted }}>
-                    {tx.categoryName ||
-                      getTransactionCategoryLabel(tx, category)}
-                  </td>
-                  <td style={{ ...styles.td, ...styles.tdOutflow }}>
-                    {getTransactionOutflow(tx)}
-                  </td>
-                  <td style={{ ...styles.td, ...styles.tdInflow }}>
-                    {getTransactionInflow(tx)}
-                  </td>
+                  {displayColumns.map((col) => {
+                    if (col.key === 'date') {
+                      return (
+                        <td key="date" style={{ ...styles.td, ...styles.tdMuted }}>
+                          {formatDate(tx.date)}
+                        </td>
+                      );
+                    }
+                    if (col.key === 'account') {
+                      const accountLabel = tx.account_name || tx.account_id || '—';
+                      return (
+                        <td key="account" style={styles.td}>
+                          {onAccountClick && tx.account_id ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onAccountClick(tx.account_id, tx);
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: '#60A5FA',
+                                cursor: 'pointer',
+                                padding: 0,
+                                font: 'inherit',
+                                fontWeight: 600,
+                                textAlign: 'left',
+                                textDecoration: 'underline',
+                              }}
+                            >
+                              {accountLabel}
+                            </button>
+                          ) : (
+                            accountLabel
+                          )}
+                        </td>
+                      );
+                    }
+                    if (col.key === 'payee') {
+                      const payeeDisabled = isInlineEditDisabled?.(tx);
+                      return (
+                        <td key="payee" style={styles.td}>
+                          {enableInlineEdit && onInlineUpdate ? (
+                            <InlinePayeeField
+                              transaction={tx}
+                              onSave={onInlineUpdate}
+                              disabled={payeeDisabled}
+                            />
+                          ) : (
+                            getTransactionPayee(tx)
+                          )}
+                          {renderPayeeExtra ? renderPayeeExtra(tx) : null}
+                        </td>
+                      );
+                    }
+                    if (col.key === 'category') {
+                      const categoryDisabled = isInlineEditDisabled?.(tx);
+                      return (
+                        <td key="category" style={{ ...styles.td, ...styles.tdMuted }}>
+                          {enableInlineEdit && onInlineUpdate && tx.is_transfer !== 1 ? (
+                            <InlineCategoryField
+                              transaction={tx}
+                              categories={categories}
+                              onSave={onInlineUpdate}
+                              disabled={categoryDisabled}
+                            />
+                          ) : (
+                            tx.categoryName || getTransactionCategoryLabel(tx, category)
+                          )}
+                        </td>
+                      );
+                    }
+                    if (col.key === 'outflow') {
+                      return (
+                        <td key="outflow" style={{ ...styles.td, ...styles.tdOutflow }}>
+                          {getTransactionOutflow(tx)}
+                        </td>
+                      );
+                    }
+                    if (col.key === 'inflow') {
+                      return (
+                        <td key="inflow" style={{ ...styles.td, ...styles.tdInflow }}>
+                          {getTransactionInflow(tx)}
+                        </td>
+                      );
+                    }
+                    return null;
+                  })}
                   {showRunningBalance && (
                     <td style={{ ...styles.td, ...styles.tdBalance }}>
                       {tx.running_balance != null
@@ -285,6 +378,11 @@ export default function TransactionTable({
               );
             })
           )}
+          {virtualPaddingBottom > 0 ? (
+            <tr aria-hidden="true">
+              <td colSpan={colSpan} style={{ height: virtualPaddingBottom, padding: 0, border: 'none' }} />
+            </tr>
+          ) : null}
         </tbody>
       </table>
     </div>

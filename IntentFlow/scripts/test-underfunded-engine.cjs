@@ -6,6 +6,7 @@ const {
   computeCategoryUnderfunded,
   computeBudgetUnderfunded,
   enrichBudgetSnapshot,
+  computeFundUnderfundedPlan,
 } = require('../src/shared/underfundedEngine.cjs');
 
 const monthlyRollover = {
@@ -52,5 +53,20 @@ const snap = enrichBudgetSnapshot({
 });
 assert.strictEqual(snap.underfundedTotal, 800);
 assert.strictEqual(snap.categories[0].underfunded, 500);
+
+const overspentCat = { id: 'os-1', name: 'Dining', available: -200, target_type: 'monthly', target_amount: 100, assigned: 0 };
+const monthlyGap = { id: 'mg-1', name: 'Rent', available: 50, target_type: 'monthly', target_amount: 500, assigned: 0 };
+const plan = computeFundUnderfundedPlan([overspentCat, monthlyGap], { pool: 1000 });
+assert.strictEqual(plan.totalFundingNeed, 700);
+assert.strictEqual(plan.overspentTotal, 200);
+assert.strictEqual(plan.goalUnderfundedTotal, 500);
+assert.strictEqual(plan.allocations.length, 2);
+assert.strictEqual(plan.allocations[0].kind, 'overspent');
+assert.strictEqual(plan.allocations[0].amount, 200);
+assert.strictEqual(plan.allocations[1].amount, 500);
+assert.strictEqual(
+  computeFundUnderfundedPlan([monthlyGap], { pool: 100 }).totalToAssign,
+  100,
+);
 
 console.log('✅ test-underfunded-engine passed');

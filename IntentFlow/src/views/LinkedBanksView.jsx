@@ -2,6 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { showAppToast } from '../components/AppToast';
 import AccountMergeWizard from '../components/accounts/AccountMergeWizard';
 import TransactionImportModal from '../components/TransactionImportModal';
+import {
+  notifyAccountsChanged,
+  subscribeAccountsChanged,
+} from '../utils/accountRefreshEvents.jsx';
 
 const PLAID_LINK_SCRIPT_URL = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
 let plaidLinkScriptPromise = null;
@@ -319,12 +323,11 @@ const LinkedBanksView = ({ onNavigate }) => {
         setPlaidConfigReady(true);
       }
     })();
-    const unsub = window.electronAPI?.onAccountsUpdated?.(() => {
+    const refreshFromAccountChange = () => {
       loadLinkedItems({ quiet: true });
-    });
-    return () => {
-      if (typeof unsub === 'function') unsub();
+      loadImportAccounts();
     };
+    return subscribeAccountsChanged(refreshFromAccountChange);
   }, []);
 
   // Resume Plaid Link after OAuth bank redirect (intentflow:// deep link from hosted callback page)
@@ -369,7 +372,7 @@ const LinkedBanksView = ({ onNavigate }) => {
               } else {
                 showAppToast('Bank connected successfully');
               }
-              window.dispatchEvent(new CustomEvent('accounts-updated'));
+              notifyAccountsChanged({ reason: 'plaid-connected' });
             } else {
               showAppToast(
                 (mode === 'reconnect' ? 'Failed to reconnect: ' : 'Failed to connect bank: ') +
@@ -439,7 +442,7 @@ const LinkedBanksView = ({ onNavigate }) => {
             } else {
               showAppToast('Bank connected successfully');
             }
-            window.dispatchEvent(new CustomEvent('accounts-updated'));
+            notifyAccountsChanged({ reason: 'plaid-sync' });
           } else {
             showAppToast(
               'Failed to connect bank: ' + (exchangeResult?.error || 'Unknown error'),
@@ -635,7 +638,7 @@ const LinkedBanksView = ({ onNavigate }) => {
   const handleMergeCompleted = async (plaidAccountId) => {
     setMergeOffers((prev) => prev.filter((o) => o.plaidAccountId !== plaidAccountId));
     await loadLinkedItems();
-    window.dispatchEvent(new CustomEvent('accounts-updated'));
+    notifyAccountsChanged({ reason: 'plaid-disconnect' });
   };
 
   const handleSaveMappings = async () => {
@@ -677,7 +680,7 @@ const LinkedBanksView = ({ onNavigate }) => {
       if (res?.success) {
         showAppToast('Account unlinked from Plaid');
         await loadLinkedItems();
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        notifyAccountsChanged({ reason: 'plaid-disconnect' });
       } else {
         showAppToast(res?.error || 'Unlink failed', 'error');
       }
@@ -994,7 +997,7 @@ const LinkedBanksView = ({ onNavigate }) => {
         title="Import transactions from CSV"
         onComplete={() => {
           loadLinkedItems();
-          window.dispatchEvent(new CustomEvent('accounts-updated'));
+          notifyAccountsChanged({ reason: 'plaid-disconnect' });
         }}
       />
 

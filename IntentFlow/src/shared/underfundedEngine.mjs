@@ -210,6 +210,100 @@ export function calculateTargetProgress(category) {
   return computeCategoryUnderfunded(category);
 }
 
+/**
+ * Plan Fund Underfunded allocations: overspent first, then monthly → balance → by-date goals.
+ * @param {object[]} categories
+ * @param {{ pool?: number, isArchived?: (cat: object) => boolean }} [opts]
+ */
+export function computeFundUnderfundedPlan(categories, opts = {}) {
+  const isArchived = opts.isArchived || (() => false);
+  const pool = Number(opts.pool);
+  const hasPoolCap = Number.isFinite(pool) && pool >= 0;
+  let remaining = hasPoolCap ? pool : Number.POSITIVE_INFINITY;
+
+  let goalUnderfundedTotal = 0;
+  let overspentTotal = 0;
+  const queue = [];
+
+  for (const cat of categories || []) {
+    if (!cat || isArchived(cat)) continue;
+
+    const available = Number(cat.available) || 0;
+    if (available < -0.005) {
+      const needed = toMoney(Math.abs(available));
+      overspentTotal += needed;
+      queue.push({
+        categoryId: cat.id,
+        categoryName: cat.name,
+        needed,
+        urgency: 1,
+        kind: 'overspent',
+      });
+      continue;
+    }
+
+    const meta = computeCategoryUnderfunded(cat);
+    const needed = toMoney(meta.underfunded ?? meta.needed ?? 0);
+    if (needed <= 0) continue;
+
+    const goalType = String(cat.target_type || '').toLowerCase();
+    let urgency = null;
+    if (MONTHLY_FUNDING_TYPES.has(goalType)) urgency = 2;
+    else if (TARGET_BALANCE_TYPES.has(goalType)) urgency = 3;
+    else if (DATE_GOAL_TYPES.has(goalType)) urgency = 4;
+    else continue;
+
+    goalUnderfundedTotal += needed;
+    queue.push({
+      categoryId: cat.id,
+      categoryName: cat.name,
+      needed,
+      urgency,
+      kind: 'goal',
+      goalType,
+    });
+  }
+
+  queue.sort((a, b) => a.urgency - b.urgency);
+
+  const allocations = [];
+  for (const item of queue) {
+    if (remaining <= 0) break;
+    const amount = toMoney(Math.min(item.needed, remaining));
+    if (amount <= 0) continue;
+
+    let reason;
+    if (item.kind === 'overspent') {
+      reason = `Cover overspending: ${item.categoryName}`;
+    } else if (item.goalType && MONTHLY_FUNDING_TYPES.has(item.goalType)) {
+      reason = `Monthly goal: ${item.categoryName}`;
+    } else if (item.goalType && TARGET_BALANCE_TYPES.has(item.goalType)) {
+      reason = `Target balance: ${item.categoryName}`;
+    } else {
+      reason = `Deadline goal: ${item.categoryName}`;
+    }
+
+    allocations.push({
+      categoryId: item.categoryId,
+      amount,
+      reason,
+      kind: item.kind,
+    });
+    remaining = hasPoolCap ? toMoney(remaining - amount) : remaining;
+  }
+
+  const totalToAssign = allocations.reduce((sum, row) => sum + row.amount, 0);
+
+  return {
+    allocations,
+    goalUnderfundedTotal: toMoney(goalUnderfundedTotal),
+    overspentTotal: toMoney(overspentTotal),
+    totalFundingNeed: toMoney(overspentTotal + goalUnderfundedTotal),
+    totalToAssign: toMoney(totalToAssign),
+    remainingAfter: hasPoolCap ? toMoney(Math.max(0, remaining)) : 0,
+  };
+}
+
 export function attachUnderfundedFields(category) {
   const meta = computeCategoryUnderfunded(category);
   return {

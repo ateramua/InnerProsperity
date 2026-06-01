@@ -67,6 +67,13 @@ export function sortTransactions(list, sort, opts = {}) {
           { sensitivity: 'base' }
         );
         break;
+      case 'account':
+        cmp = String(a.account_name || a.account_id || '').localeCompare(
+          String(b.account_name || b.account_id || ''),
+          undefined,
+          { sensitivity: 'base' }
+        );
+        break;
       default:
         cmp = 0;
     }

@@ -25,6 +25,10 @@ import {
   mapAccountTypeToCategory,
   resolveDisplayAccountType,
 } from '../utils/accountTypeOptions.jsx';
+import {
+  notifyAccountsChanged,
+  subscribeAccountsChanged,
+} from '../utils/accountRefreshEvents.jsx';
 
 // ✅ HELPER FUNCTIONS
 const parseNumber = (value, fallback = null) => {
@@ -195,17 +199,7 @@ const CashAccountsView = () => {
     loadAccounts();
   }, [loadAccounts]);
 
-  useEffect(() => {
-    const handleAccountsUpdated = () => {
-      loadAccountsRef.current();
-    };
-    window.addEventListener('accounts-updated', handleAccountsUpdated);
-    const unsubIpc = window.electronAPI?.onAccountsUpdated?.(handleAccountsUpdated);
-    return () => {
-      window.removeEventListener('accounts-updated', handleAccountsUpdated);
-      if (typeof unsubIpc === 'function') unsubIpc();
-    };
-  }, []);
+  useEffect(() => subscribeAccountsChanged(() => loadAccountsRef.current({ quiet: true })), []);
 
   // ✅ FIXED: safer masking helper
   const maskNumber = (number) => {
@@ -379,7 +373,7 @@ const CashAccountsView = () => {
       console.log('✅ Account created successfully:', createdAccount || result);
       setShowInlineModal(false);
       resetInlineForm();
-      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      notifyAccountsChanged({ reason: 'cash-account-created' });
       await loadAccounts();
       alert('✅ Account created successfully!');
     } catch (error) {
@@ -418,7 +412,7 @@ const CashAccountsView = () => {
 
       if (wasCash && !willBeCash) {
         const ok = window.confirm(
-          `Change this account to "${accountType}"?\n\nIt will be removed from Cash Accounts and managed under Credit Cards, Loans, or All Accounts instead.`
+          `Change this account to "${accountType}"?\n\nIt will be removed from Cash Accounts and managed under Credit Cards or Loans instead.`
         );
         if (!ok) {
           setIsEditing(false);
@@ -459,7 +453,7 @@ const CashAccountsView = () => {
         alert('✅ Account updated successfully');
         setShowEditModal(false);
         setEditingAccount(null);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        notifyAccountsChanged({ reason: 'cash-account-updated' });
         await loadAccounts();
       } else {
         alert('❌ Error updating account: ' + (result.error || 'Unknown error'));
@@ -495,7 +489,7 @@ const CashAccountsView = () => {
         setAccounts((prev) => prev.filter((a) => normalizeAccountId(a.id) !== id));
         setShowEditModal(false);
         setEditingAccount(null);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
+        notifyAccountsChanged({ reason: 'cash-account-deleted' });
         await loadAccounts({ quiet: true });
         showAppToast('Account removed', 'success');
       } else {

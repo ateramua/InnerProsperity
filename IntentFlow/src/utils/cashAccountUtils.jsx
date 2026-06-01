@@ -199,7 +199,7 @@ export async function loadCashAccountsViaApi() {
 }
 
 /**
- * Cash balance used for Home / Prosperity Map Ready to Assign (cash − Σ category available).
+ * Cash balance used for Prosperity Map global Ready to Assign (cash − Σ assigned across all months).
  * Plaid-linked cash accounts use register_balance (transaction sum) when provided so manual
  * inflows count without overwriting stored bank balances elsewhere.
  */

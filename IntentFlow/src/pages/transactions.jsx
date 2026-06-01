@@ -1,119 +1,30 @@
-// src/pages/transactions.jsx
-import React, { useState, useEffect } from 'react';
+// src/pages/transactions.jsx — consolidated all-accounts register (Next route)
+import React, { useState, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import TransactionManager from '../components/TransactionManager';
 import TransactionImportModal from '../components/TransactionImportModal';
+import useConsolidatedTransactions from '../hooks/useConsolidatedTransactions';
+import { createTransactionRegisterHandlers } from '../hooks/useTransactionRegisterHandlers.jsx';
+
+const PAGE_DEFAULT = 25;
 
 export default function TransactionsPage() {
   const router = useRouter();
-  const [transactions, setTransactions] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [accounts, setAccounts] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    accounts,
+    activeAccounts,
+    transactions,
+    categories,
+    loading,
+    reload,
+  } = useConsolidatedTransactions({ activeOnly: true });
+
+  const handlers = useMemo(() => createTransactionRegisterHandlers(reload), [reload]);
+
   const [showImportModal, setShowImportModal] = useState(false);
-
-  // Define formatCurrency inside the component
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      // Load accounts first (needed to get account IDs for transactions)
-      const accountsResult = await window.electronAPI.getAccounts();
-      if (accountsResult.success) {
-        setAccounts(accountsResult.data);
-      }
-
-      // Load categories
-      const categoriesResult = await window.electronAPI.getCategories(1);
-      if (categoriesResult.success) {
-        setCategories(categoriesResult.data);
-      }
-
-      // Load transactions from all accounts
-      const allTransactions = [];
-      if (accountsResult.success && accountsResult.data) {
-        for (const account of accountsResult.data) {
-          try {
-            const txResult = await window.electronAPI.getAccountTransactions(account.id);
-            if (txResult.success && txResult.data) {
-              // Add account name to each transaction for display
-              const transactionsWithAccount = txResult.data.map(tx => ({
-                ...tx,
-                account_name: account.name,
-                account_type: account.type
-              }));
-              allTransactions.push(...transactionsWithAccount);
-            }
-          } catch (txError) {
-            console.error(`Error loading transactions for account ${account.id}:`, txError);
-          }
-        }
-      }
-      
-      // Sort by date (newest first)
-      allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-      setTransactions(allTransactions);
-
-    } catch (error) {
-      console.error('Error loading data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleUpdateTransaction = async (id, updates) => {
-    try {
-      const result = await window.electronAPI.updateTransaction(id, updates);
-      if (result.success) {
-        await loadData();
-        return { success: true };
-      }
-      return { success: false, error: result.error };
-    } catch (error) {
-      console.error('Error updating transaction:', error);
-      return { success: false, error: error.message };
-    }
-  };
-
-  const handleDeleteTransaction = async (id) => {
-    try {
-      const result = await window.electronAPI.deleteTransaction(id);
-      if (result.success) {
-        await loadData();
-        return { success: true };
-      }
-      return { success: false, error: result.error };
-    } catch (error) {
-      console.error('Error deleting transaction:', error);
-      return { success: false, error: error.message };
-    }
-  };
-
-  const handleToggleCleared = async (id, clearedStatus) => {
-    try {
-      const result = await window.electronAPI.toggleTransactionCleared(id, clearedStatus);
-      if (result.success) {
-        await loadData();
-        return { success: true };
-      }
-      return { success: false, error: result.error };
-    } catch (error) {
-      console.error('Error toggling cleared status:', error);
-      return { success: false, error: error.message };
-    }
-  };
-
+  const [showImportPicker, setShowImportPicker] = useState(false);
+  const [importAccountId, setImportAccountId] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [transactionForm, setTransactionForm] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -123,8 +34,11 @@ export default function TransactionsPage() {
     accountId: '',
     categoryId: '',
     memo: '',
-    cleared: false
+    cleared: false,
   });
+
+  const formatCurrency = (amount) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
 
   const resetForm = () => {
     setTransactionForm({
@@ -135,289 +49,262 @@ export default function TransactionsPage() {
       accountId: '',
       categoryId: '',
       memo: '',
-      cleared: false
+      cleared: false,
     });
   };
 
+  const navigateToAccount = useCallback(
+    (accountId) => {
+      router.push(`/accounts/${accountId}`);
+    },
+    [router]
+  );
+
   const handleAddTransaction = async () => {
-    try {
-      // Validate amount
-      const amountValue = parseFloat(transactionForm.amount);
-      if (isNaN(amountValue) || amountValue === 0) {
-        alert('Please enter a valid amount');
-        return;
-      }
-
-      // Validate account selection
-      if (!transactionForm.accountId) {
-        alert('Please select an account');
-        return;
-      }
-
-      // Calculate amount based on type (inflow/outflow)
-      const amount = transactionForm.type === 'outflow'
+    const amountValue = parseFloat(transactionForm.amount);
+    if (!Number.isFinite(amountValue) || amountValue === 0) {
+      alert('Please enter a valid amount');
+      return;
+    }
+    if (!transactionForm.accountId) {
+      alert('Please select an account');
+      return;
+    }
+    const amount =
+      transactionForm.type === 'outflow'
         ? -Math.abs(amountValue)
         : Math.abs(amountValue);
 
-      const transactionData = {
-        accountId: transactionForm.accountId,
-        date: transactionForm.date,
-        payee: transactionForm.payee,
-        description: transactionForm.payee,
-        amount: amount,
-        categoryId: transactionForm.categoryId || null,
-        memo: transactionForm.memo,
-        cleared: transactionForm.cleared ? 1 : 0
-      };
-
-      console.log('📝 Adding transaction:', transactionData);
-
-      const result = await window.electronAPI.addTransaction(transactionData);
-      if (result.success) {
-        setShowAddModal(false);
-        resetForm();
-        await loadData(); // Refresh data
-        alert('✅ Transaction added successfully');
-      } else {
-        alert('❌ Error adding transaction: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Error adding transaction:', error);
-      alert('❌ Error adding transaction: ' + error.message);
+    const result = await window.electronAPI.addTransaction({
+      accountId: transactionForm.accountId,
+      date: transactionForm.date,
+      payee: transactionForm.payee,
+      description: transactionForm.payee,
+      amount,
+      categoryId: transactionForm.categoryId || null,
+      memo: transactionForm.memo,
+      cleared: transactionForm.cleared ? 1 : 0,
+      is_cleared: transactionForm.cleared ? 1 : 0,
+    });
+    if (result?.success) {
+      setShowAddModal(false);
+      resetForm();
+      await reload({ quiet: true });
+    } else {
+      alert(result?.error || 'Failed to add transaction');
     }
   };
 
+  const openImportFlow = () => {
+    if (!activeAccounts.length) {
+      alert('Create an account first.');
+      return;
+    }
+    if (activeAccounts.length === 1) {
+      setImportAccountId(String(activeAccounts[0].id));
+      setShowImportModal(true);
+      return;
+    }
+    setShowImportPicker(true);
+  };
+
+  const hasTransactions = transactions.some(
+    (tx) => tx.is_deleted !== 1 && tx.is_deleted !== true
+  );
+
   if (loading) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 100%)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: 'white'
-      }}>
-        Loading transactions...
+      <div style={pageStyles.loadingShell}>
+        Loading transactions…
       </div>
     );
   }
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 100%)',
-      color: 'white'
-    }}>
-      {/* Navigation Header */}
-      <header style={{
-        background: 'linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%)',
-        padding: '1rem 1.5rem',
-        position: 'sticky',
-        top: 0,
-        zIndex: 10
-      }}>
-        <div style={{
-          maxWidth: '1200px',
-          margin: '0 auto',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}>
-          <h1 style={{ fontSize: '1.5rem', margin: 0 }}>IntentFlow</h1>
-          <nav style={{ display: 'flex', gap: '1rem' }}>
+    <div style={pageStyles.page}>
+      <header style={pageStyles.header}>
+        <div style={pageStyles.headerInner}>
+          <h1 style={pageStyles.brand}>IntentFlow</h1>
+          <nav style={pageStyles.nav}>
             <Link href="/">Budget</Link>
             <Link href="/forecast">Forecast</Link>
             <Link href="/credit-cards">Cards</Link>
             <Link href="/reports">Reports</Link>
             <Link href="/accounts">Accounts</Link>
             <Link href="/goal-reports" passHref>
-              <button style={{
-                background: router.pathname === '/goal-reports' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.1)',
-                border: 'none',
-                color: 'white',
-                padding: '0.5rem 1rem',
-                borderRadius: '0.5rem',
-                cursor: 'pointer',
-                fontSize: '0.875rem'
-              }}>
-                📈 Goal Reports
+              <button
+                type="button"
+                style={{
+                  ...pageStyles.navBtn,
+                  ...(router.pathname === '/goal-reports' ? pageStyles.navBtnActive : null),
+                }}
+              >
+                Goal Reports
               </button>
             </Link>
-            <Link href="/transactions" style={{ fontWeight: 'bold' }}>Transactions</Link>
+            <Link href="/transactions" style={{ fontWeight: 'bold' }}>
+              Transactions
+            </Link>
             <Link href="/settings">Settings</Link>
           </nav>
         </div>
       </header>
 
-      <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: 0, color: 'white' }}>All Transactions</h2>
-          <button
-            type="button"
-            onClick={() => setShowImportModal(true)}
-            style={{
-              background: 'rgba(255,255,255,0.12)',
-              color: 'white',
-              border: '1px solid rgba(255,255,255,0.35)',
-              padding: '0.75rem 1.5rem',
-              borderRadius: '0.5rem',
-              fontSize: '1rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-            }}
-          >
-            Import CSV
-          </button>
-          <button
-            onClick={() => setShowAddModal(true)}
-            style={{
-              background: '#10B981',
-              color: 'white',
-              border: 'none',
-              padding: '0.75rem 1.5rem',
-              borderRadius: '0.5rem',
-              fontSize: '1rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}
-          >
-            <span style={{ fontSize: '1.2rem' }}>+</span> Add Transaction
-          </button>
+      <main style={pageStyles.main}>
+        <div style={pageStyles.titleRow}>
+          <div>
+            <h2 style={pageStyles.title}>All Transactions</h2>
+            <p style={pageStyles.subtitle}>
+              Unified register across active accounts (same data as All Accounts in the desktop app).
+            </p>
+          </div>
+          <div style={pageStyles.titleActions}>
+            <button type="button" style={pageStyles.btnSecondary} onClick={openImportFlow}>
+              Import CSV
+            </button>
+            <button type="button" style={pageStyles.btnPrimary} onClick={() => setShowAddModal(true)}>
+              + Add Transaction
+            </button>
+          </div>
         </div>
 
-        <TransactionImportModal
-          isOpen={showImportModal}
-          onClose={() => setShowImportModal(false)}
-          accounts={accounts}
-          title="Import transactions from CSV"
-          onComplete={() => loadData()}
-        />
+        {!hasTransactions ? (
+          <div style={pageStyles.empty}>
+            <p>Transactions from all accounts will appear here.</p>
+            <div style={pageStyles.emptyActions}>
+              <button type="button" style={pageStyles.btnPrimary} onClick={() => setShowAddModal(true)}>
+                Add Transaction
+              </button>
+              <button type="button" style={pageStyles.btnSecondary} onClick={openImportFlow}>
+                Import Transactions
+              </button>
+            </div>
+          </div>
+        ) : (
+          <TransactionManager
+            transactions={transactions}
+            categories={categories}
+            accounts={activeAccounts}
+            onUpdateTransaction={handlers.handleUpdateTransaction}
+            onDeleteTransaction={handlers.handleDeleteTransaction}
+            onToggleCleared={handlers.handleToggleCleared}
+            onBulkDelete={handlers.handleBulkDelete}
+            onBulkUpdate={handlers.handleBulkUpdate}
+            showAccountColumn
+            multiAccountFilter
+            enablePagination
+            enableVirtualScroll
+            defaultPageSize={PAGE_DEFAULT}
+            enableBulkSelection
+            enableInlineEdit
+            onNavigateToAccount={navigateToAccount}
+          />
+        )}
 
-        {/* Add Transaction Modal */}
         {showAddModal && (
-          <div style={styles.modalOverlay} onClick={() => setShowAddModal(false)}>
-            <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
-              <h3 style={styles.modalTitle}>Add Transaction</h3>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Date</label>
+          <div style={modalStyles.modalOverlay} onClick={() => setShowAddModal(false)}>
+            <div style={modalStyles.modalContent} onClick={(e) => e.stopPropagation()}>
+              <h3 style={modalStyles.modalTitle}>Add Transaction</h3>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Date</label>
                 <input
                   type="date"
                   value={transactionForm.date}
                   onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })}
-                  style={styles.input}
+                  style={modalStyles.input}
                 />
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Account</label>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Account</label>
                 <select
                   value={transactionForm.accountId}
-                  onChange={(e) => setTransactionForm({ ...transactionForm, accountId: e.target.value })}
-                  style={styles.select}
+                  onChange={(e) =>
+                    setTransactionForm({ ...transactionForm, accountId: e.target.value })
+                  }
+                  style={modalStyles.select}
                 >
                   <option value="">Select an account</option>
-                  {accounts.map(account => {
-                    // Format balance with proper sign
-                    let balanceDisplay = formatCurrency(Math.abs(account.balance || 0));
-                    let balanceColor = '';
-
-                    if (account.type === 'credit' || account.type === 'loan') {
-                      balanceDisplay = `(${balanceDisplay})`; // Parentheses for liability accounts
-                    }
-
+                  {accounts.map((account) => {
+                    const balanceDisplay = formatCurrency(Math.abs(account.balance || 0));
                     return (
                       <option key={account.id} value={account.id}>
-                        {account.name} ({account.type === 'credit' ? 'Credit Card' :
-                          account.type === 'loan' ? 'Loan' :
-                            account.type === 'savings' ? 'Savings' : 'Checking'}) - {balanceDisplay}
+                        {account.name} — {balanceDisplay}
                       </option>
                     );
                   })}
                 </select>
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Payee</label>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Payee</label>
                 <input
                   type="text"
                   value={transactionForm.payee}
                   onChange={(e) => setTransactionForm({ ...transactionForm, payee: e.target.value })}
-                  style={styles.input}
-                  placeholder="e.g., Grocery Store"
+                  style={modalStyles.input}
                 />
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Amount</label>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Amount</label>
                 <input
                   type="number"
+                  step="0.01"
                   value={transactionForm.amount}
                   onChange={(e) => setTransactionForm({ ...transactionForm, amount: e.target.value })}
-                  style={styles.input}
-                  placeholder="0.00"
-                  step="0.01"
+                  style={modalStyles.input}
                 />
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Type</label>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Type</label>
                 <select
                   value={transactionForm.type}
                   onChange={(e) => setTransactionForm({ ...transactionForm, type: e.target.value })}
-                  style={styles.select}
+                  style={modalStyles.select}
                 >
-                  <option value="outflow">Outflow (Money Out)</option>
-                  <option value="inflow">Inflow (Money In)</option>
+                  <option value="outflow">Outflow</option>
+                  <option value="inflow">Inflow</option>
                 </select>
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Category</label>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Category</label>
                 <select
                   value={transactionForm.categoryId}
-                  onChange={(e) => setTransactionForm({ ...transactionForm, categoryId: e.target.value })}
-                  style={styles.select}
+                  onChange={(e) =>
+                    setTransactionForm({ ...transactionForm, categoryId: e.target.value })
+                  }
+                  style={modalStyles.select}
                 >
-                  <option value="">Select Category</option>
-                  {categories.map(category => (
+                  <option value="">Uncategorized</option>
+                  {categories.map((category) => (
                     <option key={category.id} value={category.id}>
                       {category.name}
                     </option>
                   ))}
                 </select>
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Memo (Optional)</label>
+              <div style={modalStyles.formGroup}>
+                <label style={modalStyles.label}>Memo</label>
                 <input
                   type="text"
                   value={transactionForm.memo}
                   onChange={(e) => setTransactionForm({ ...transactionForm, memo: e.target.value })}
-                  style={styles.input}
-                  placeholder="Additional notes"
+                  style={modalStyles.input}
                 />
               </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.checkboxLabel}>
-                  <input
-                    type="checkbox"
-                    checked={transactionForm.cleared}
-                    onChange={(e) => setTransactionForm({ ...transactionForm, cleared: e.target.checked })}
-                  />
-                  <span style={{ marginLeft: '0.5rem' }}>Cleared</span>
-                </label>
-              </div>
-
-              <div style={styles.modalActions}>
-                <button onClick={handleAddTransaction} style={styles.saveButton}>
+              <label style={modalStyles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={transactionForm.cleared}
+                  onChange={(e) =>
+                    setTransactionForm({ ...transactionForm, cleared: e.target.checked })
+                  }
+                />
+                Cleared
+              </label>
+              <div style={modalStyles.modalActions}>
+                <button type="button" onClick={handleAddTransaction} style={modalStyles.saveButton}>
                   Add Transaction
                 </button>
-                <button onClick={() => setShowAddModal(false)} style={styles.cancelButton}>
+                <button type="button" onClick={() => setShowAddModal(false)} style={modalStyles.cancelButton}>
                   Cancel
                 </button>
               </div>
@@ -425,21 +312,148 @@ export default function TransactionsPage() {
           </div>
         )}
 
-        <TransactionManager
-          transactions={transactions}
-          categories={categories}
-          accounts={accounts}
-          onUpdateTransaction={handleUpdateTransaction}
-          onDeleteTransaction={handleDeleteTransaction}
-          onToggleCleared={handleToggleCleared}
-          showAccountColumn
-        />
+        {showImportPicker && (
+          <div style={modalStyles.modalOverlay} onClick={() => setShowImportPicker(false)}>
+            <div style={modalStyles.modalContent} onClick={(e) => e.stopPropagation()}>
+              <h3 style={modalStyles.modalTitle}>Import into which account?</h3>
+              <select
+                value={importAccountId}
+                onChange={(e) => setImportAccountId(e.target.value)}
+                style={modalStyles.select}
+              >
+                <option value="">Select account</option>
+                {activeAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+              <div style={modalStyles.modalActions}>
+                <button type="button" style={modalStyles.cancelButton} onClick={() => setShowImportPicker(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  style={modalStyles.saveButton}
+                  disabled={!importAccountId}
+                  onClick={() => {
+                    setShowImportPicker(false);
+                    setShowImportModal(true);
+                  }}
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showImportModal && importAccountId && (
+          <TransactionImportModal
+            isOpen={showImportModal}
+            onClose={() => {
+              setShowImportModal(false);
+              setImportAccountId('');
+            }}
+            fixedAccountId={importAccountId}
+            accounts={activeAccounts}
+            title="Import transactions from CSV"
+            onComplete={() => reload({ quiet: true })}
+          />
+        )}
       </main>
     </div>
   );
 }
 
-const styles = {
+const pageStyles = {
+  page: {
+    minHeight: '100vh',
+    background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 100%)',
+    color: 'white',
+  },
+  loadingShell: {
+    minHeight: '100vh',
+    background: 'linear-gradient(135deg, #0047AB 0%, #0047AB 100%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'white',
+  },
+  header: {
+    background: 'linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%)',
+    padding: '1rem 1.5rem',
+    position: 'sticky',
+    top: 0,
+    zIndex: 10,
+  },
+  headerInner: {
+    maxWidth: '1400px',
+    margin: '0 auto',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: '1rem',
+  },
+  brand: { fontSize: '1.5rem', margin: 0 },
+  nav: { display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center' },
+  navBtn: {
+    background: 'rgba(255, 255, 255, 0.1)',
+    border: 'none',
+    color: 'white',
+    padding: '0.5rem 1rem',
+    borderRadius: '0.5rem',
+    cursor: 'pointer',
+    fontSize: '0.875rem',
+  },
+  navBtnActive: { background: 'rgba(255, 255, 255, 0.3)' },
+  main: { maxWidth: '1400px', margin: '0 auto', padding: '1.25rem 1.5rem 2rem' },
+  titleRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '1rem',
+    marginBottom: '1.25rem',
+  },
+  title: { fontSize: '1.5rem', fontWeight: 'bold', margin: 0 },
+  subtitle: { fontSize: '0.875rem', opacity: 0.85, marginTop: '0.35rem' },
+  titleActions: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' },
+  btnPrimary: {
+    background: '#10B981',
+    color: 'white',
+    border: 'none',
+    padding: '0.65rem 1.25rem',
+    borderRadius: '0.5rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  btnSecondary: {
+    background: 'rgba(255,255,255,0.12)',
+    color: 'white',
+    border: '1px solid rgba(255,255,255,0.35)',
+    padding: '0.65rem 1.25rem',
+    borderRadius: '0.5rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  empty: {
+    textAlign: 'center',
+    padding: '3rem 1.5rem',
+    background: 'rgba(0,0,0,0.2)',
+    borderRadius: '0.75rem',
+  },
+  emptyActions: {
+    display: 'flex',
+    gap: '0.75rem',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    marginTop: '1.25rem',
+  },
+};
+
+const modalStyles = {
   modalOverlay: {
     position: 'fixed',
     top: 0,
@@ -450,7 +464,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 1000
+    zIndex: 1000,
   },
   modalContent: {
     background: '#1F2937',
@@ -459,28 +473,27 @@ const styles = {
     width: '90%',
     maxWidth: '500px',
     maxHeight: '90vh',
-    overflowY: 'auto'
+    overflowY: 'auto',
   },
   modalTitle: {
     fontSize: '1.5rem',
     fontWeight: 'bold',
     marginBottom: '1.5rem',
-    color: 'white'
+    color: 'white',
   },
-  formGroup: {
-    marginBottom: '1rem'
-  },
+  formGroup: { marginBottom: '1rem' },
   label: {
     display: 'block',
     marginBottom: '0.5rem',
     color: '#9CA3AF',
-    fontSize: '0.875rem'
+    fontSize: '0.875rem',
   },
   checkboxLabel: {
     display: 'flex',
     alignItems: 'center',
     color: '#9CA3AF',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    gap: '0.5rem',
   },
   input: {
     width: '100%',
@@ -489,7 +502,8 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem'
+    fontSize: '1rem',
+    boxSizing: 'border-box',
   },
   select: {
     width: '100%',
@@ -498,12 +512,13 @@ const styles = {
     border: '1px solid #374151',
     borderRadius: '0.5rem',
     color: 'white',
-    fontSize: '1rem'
+    fontSize: '1rem',
+    boxSizing: 'border-box',
   },
   modalActions: {
     display: 'flex',
     gap: '1rem',
-    marginTop: '2rem'
+    marginTop: '2rem',
   },
   saveButton: {
     flex: 1,
@@ -514,7 +529,7 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '1rem',
     fontWeight: '600',
-    cursor: 'pointer'
+    cursor: 'pointer',
   },
   cancelButton: {
     flex: 1,
@@ -525,6 +540,6 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '1rem',
     fontWeight: '600',
-    cursor: 'pointer'
-  }
+    cursor: 'pointer',
+  },
 };

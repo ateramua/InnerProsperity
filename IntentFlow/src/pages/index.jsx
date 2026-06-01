@@ -27,6 +27,8 @@ export default function HomePage() {
       'transaction:updated',
       'transaction:deleted',
       'budget:assigned',
+      'budget:bulkAssigned',
+      'budget:unassigned',
       'budget:moved',
       'prosperity:updated'
     ],
@@ -39,7 +41,10 @@ export default function HomePage() {
           break;
 
         case 'budget:assigned':
+        case 'budget:bulkAssigned':
+        case 'budget:unassigned':
         case 'budget:moved':
+        case 'prosperity:updated':
           if (currentView === 'propertyMap') {
             window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
           }

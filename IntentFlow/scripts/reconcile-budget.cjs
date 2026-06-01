@@ -21,6 +21,7 @@ const { open } = require('sqlite');
 const {
   toLocalMonthKey,
   getBudgetMonthSnapshot,
+  getGlobalBudgetSummary,
   refreshBudgetMonthsForward,
   repairAndRefreshBudgetMonths,
   consolidateAvailableIntoMonthAssignments,
@@ -131,17 +132,21 @@ async function getCategoryRollup(db, userId) {
 
 async function printReport(db, userId, monthKey) {
   const cash = await getCashTotal(db, userId);
+  const global = await getGlobalBudgetSummary(db, userId, cash);
   const monthTotals = await getMonthEnvelopeTotals(db, userId, monthKey);
   const categoryRollup = await getCategoryRollup(db, userId);
   const sumAvailable = Number(monthTotals.sum_available) || 0;
-  const readyToAssign = roundMoney(cash - sumAvailable);
+  const legacyRta = roundMoney(cash - sumAvailable);
 
   console.log('\n=== Budget Reconciliation Report ===');
   console.log(`User ID:              ${userId}`);
-  console.log(`Month key:            ${monthKey}`);
+  console.log(`Month key (view):     ${monthKey}`);
   console.log(`Cash (checking+savings): $${cash.toFixed(2)}`);
-  console.log(`Σ Category Available:   $${sumAvailable.toFixed(2)}  (monthly_budgets, active categories)`);
-  console.log(`Ready to Assign:        $${readyToAssign.toFixed(2)}  (= cash − Σ available)`);
+  console.log(`Σ Assigned (all months): $${global.totalAssigned.toFixed(2)}`);
+  console.log(`Ready to Assign (global): $${global.readyToAssign.toFixed(2)}  (= cash − Σ assigned)`);
+  console.log(`Reserved in future:     $${global.futureAssigned.toFixed(2)}`);
+  console.log(`Σ Category Available (${monthKey}): $${sumAvailable.toFixed(2)}  (this month only)`);
+  console.log(`Legacy RTA (cash − Σ avail this month): $${legacyRta.toFixed(2)}  [deprecated view]`);
   console.log('');
   console.log('--- monthly_budgets (this month) ---');
   console.log(`  Rows:                 ${monthTotals.row_count}`);

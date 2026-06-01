@@ -12,6 +12,11 @@ const PM = {
   /** Inset fields on fg panels */
   well: 'rgba(0, 71, 171, 0.55)',
   shadow: '0 24px 48px rgba(0, 26, 64, 0.45)',
+  /** Category group header rows in budget tables (Prosperity Map, Cash Flow, etc.) */
+  categoryGroupRowBg: '#FFF8E7',
+  categoryGroupRowText: '#0c2340',
+  categoryGroupRowTextMuted: 'rgba(12, 35, 64, 0.72)',
+  categoryGroupRowBorder: 'rgba(12, 35, 64, 0.22)',
 };
 
 export default PM;

@@ -1,14 +1,13 @@
 // src/views/PropertyMapView.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import SummaryView from './SummaryView';
-import AutoAssignView from './AutoAssignView';
-import FutureMonthsView from './FutureMonthsView';
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import BudgetEngine from "../shared/budgetEngine.mjs";
 import {
   deriveAvailableFromCategoryRow,
   roundMoney as roundMoneyEnvelope,
 } from "../shared/categoryAvailableEngine.mjs";
+import { computeFundUnderfundedPlan } from "../shared/underfundedEngine.mjs";
 import Button from '../components/ui/Button';
 import CategoryTargetModal from '../components/CategoryTargetModal';
 import CategoryBudgetEditRow from '../components/CategoryBudgetEditRow';
@@ -28,6 +27,15 @@ import {
   mapGoalTargetFromDb,
 } from '../utils/categoryMoneyInput.jsx';
 import { sumTotalBudgetCash } from '../utils/cashAccountUtils.jsx';
+
+const EMPTY_MOVE_MONEY_FORM = {
+  amount: '',
+  fromCategoryId: '',
+  toCategoryId: '',
+  source: 'manual',
+};
+const READY_TO_ASSIGN_ID = '__ready_to_assign__';
+const READY_TO_ASSIGN_LABEL = 'Ready to Assign';
 
 const PropertyMapView = () => {
   // ==================== STATE DECLARATIONS ====================
@@ -86,19 +94,34 @@ const PropertyMapView = () => {
   const editingCategoryRef = useRef(null);
   /** Short-lived goal patches so background reloads cannot overwrite a just-saved target_amount. */
   const goalPatchByCategoryIdRef = useRef(new Map());
+  const [isQuickAssigning, setIsQuickAssigning] = useState(false);
+  const [isMonthBudgetLoading, setIsMonthBudgetLoading] = useState(false);
+  const rtaRefreshTimerRef = useRef(null);
 
-  const [moveMoneyData, setMoveMoneyData] = useState({
-    amount: '',
-    fromCategoryId: '',
-    toCategoryId: ''
-  });
+  const [moveMoneyData, setMoveMoneyData] = useState(EMPTY_MOVE_MONEY_FORM);
+  const [moveMoneyError, setMoveMoneyError] = useState('');
+  const [moveMoneySearchQuery, setMoveMoneySearchQuery] = useState('');
+  const [pendingUndoMove, setPendingUndoMove] = useState(null);
+  const [moveMoneyActivity, setMoveMoneyActivity] = useState([]);
+  const [moveMoneyRecentlyUsedSourceIds, setMoveMoneyRecentlyUsedSourceIds] = useState([]);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [userId, setUserId] = useState(2);
+  const userIdRef = useRef(userId);
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
+
+  const resolveBudgetUserId = (override) => {
+    if (override != null && override !== '') return override;
+    return userIdRef.current;
+  };
 
   const [totalCashInAccounts, setTotalCashInAccounts] = useState(0);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [showArchivedModal, setShowArchivedModal] = useState(false);
   const [archivedCategories, setArchivedCategories] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [focusCategoryId, setFocusCategoryId] = useState(null);
 
   const waitForElectronAPI = async (requiredMethods = [], timeout = 5000) => {
     const startTime = Date.now();
@@ -125,8 +148,14 @@ const PropertyMapView = () => {
     totalAvailable: 0,
     totalActivity: 0,
     totalAssigned: 0,
-    unassigned: 0
+    unassigned: 0,
+    totalCash: 0,
+    futureAssigned: 0,
+    futureBreakdown: [],
+    monthAssigned: 0,
   });
+  const [showFutureReservedPanel, setShowFutureReservedPanel] = useState(false);
+  const [isUnassigningMonth, setIsUnassigningMonth] = useState(false);
 
   const [budgetData, setBudgetData] = useState({
     categories: []
@@ -270,10 +299,12 @@ const PropertyMapView = () => {
   }, [budgetData.categories]);
 
   // ==================== HELPER FUNCTIONS ====================
+  const isGroupCollapsed = (groupId) => collapsedGroups[groupId] !== false;
+
   const toggleGroupCollapse = (groupId) => {
     setCollapsedGroups(prev => ({
       ...prev,
-      [groupId]: !prev[groupId]
+      [groupId]: prev[groupId] === false ? true : false,
     }));
   };
 
@@ -294,6 +325,141 @@ const PropertyMapView = () => {
     }
     const active = budgetData.categories.filter((cat) => cat && !isCategoryArchived(cat));
     return budgetEngine.getTotalUnderfunded(active);
+  };
+
+  const getActiveBudgetCategories = (overrideRows = null) => {
+    const source =
+      overrideRows ||
+      lastGoodSnapshotRef.current.categories ||
+      budgetData.categories ||
+      [];
+    return source.filter((cat) => cat && !isCategoryArchived(cat));
+  };
+
+  const getGlobalReadyToAssign = () => roundMoney(Number(budgetSummary.unassigned) || 0);
+
+  const getReadyToAssignPool = () => getGlobalReadyToAssign();
+
+  const refreshGlobalBudgetSummaryWithTimeout = async (timeoutMs = 12000) => {
+    try {
+      return await Promise.race([
+        refreshGlobalBudgetSummary(),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Ready to Assign refresh timed out')), timeoutMs);
+        }),
+      ]);
+    } catch (e) {
+      console.warn('refreshGlobalBudgetSummaryWithTimeout:', e?.message || e);
+      return null;
+    }
+  };
+
+  const alertNoReadyToAssignForQuickAssign = (pool) => {
+    const monthLabel = (selectedMonthRef.current || selectedMonth).toLocaleString('default', {
+      month: 'long',
+      year: 'numeric',
+    });
+    const futureReserved = roundMoney(Number(budgetSummary.futureAssigned) || 0);
+    if (futureReserved > 0.005) {
+      alert(
+        `Ready to Assign is ${formatCurrency(pool)}. ${formatCurrency(futureReserved)} is already assigned in other budget months (for example, a month before ${monthLabel}). To fund ${monthLabel}, unassign from those months using "Unassign Month" or add new income.`,
+      );
+      return;
+    }
+    alert('No funds available to assign from Ready to Assign.');
+  };
+
+  const formatMonthKeyLabel = (monthKey) => {
+    const match = String(monthKey || '').match(/^(\d{4})-(\d{2})/);
+    if (!match) return monthKey || '';
+    const d = new Date(Number(match[1]), Number(match[2]) - 1, 1);
+    return d.toLocaleString('default', { month: 'long', year: 'numeric' });
+  };
+
+  const refreshGlobalBudgetSummary = async () => {
+    if (!userId || !window.electronAPI?.getBudgetGlobalSummary) return null;
+    try {
+      const res = await window.electronAPI.getBudgetGlobalSummary(userId);
+      if (res?.success && res.data) {
+        const data = res.data;
+        setBudgetSummary((prev) => ({
+          ...prev,
+          totalAvailable: data.readyToAssign,
+          unassigned: data.readyToAssign,
+          totalAssigned: data.totalAssigned,
+          totalCash: data.totalCash,
+          futureAssigned: data.futureAssigned,
+          futureBreakdown: data.futureBreakdown || [],
+        }));
+        return data;
+      }
+    } catch (e) {
+      console.warn('refreshGlobalBudgetSummary:', e);
+    }
+    return null;
+  };
+
+  const getMonthAssignedTotal = (overrideRows = null) => {
+    const active = getActiveBudgetCategories(overrideRows);
+    return roundMoney(active.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0));
+  };
+
+  const updateMonthMetricsFromCategories = (categoriesOverride = null) => {
+    const source = Array.isArray(categoriesOverride)
+      ? categoriesOverride
+      : budgetData.categories;
+    const active = (source || []).filter((cat) => cat && !isCategoryArchived(cat));
+    const totalActivity = active.reduce((sum, cat) => sum + (Number(cat.activity) || 0), 0);
+    const monthAssigned = active.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0);
+    setBudgetSummary((prev) => ({
+      ...prev,
+      totalActivity,
+      monthAssigned,
+    }));
+  };
+
+  const getFundUnderfundedSummary = (overrideRows = null) => {
+    const active = getActiveBudgetCategories(overrideRows);
+    return computeFundUnderfundedPlan(active, { pool: Number.POSITIVE_INFINITY });
+  };
+
+  /** Amount Fund Underfunded would assign now (capped by Ready to Assign). */
+  const getFundUnderfundedButtonAmount = (overrideRows = null) => {
+    const pool = Math.max(0, getReadyToAssignPool());
+    if (pool <= 0) return 0;
+    const active = getActiveBudgetCategories(overrideRows);
+    const plan = computeFundUnderfundedPlan(active, { pool });
+    return roundMoney(plan.totalToAssign || 0);
+  };
+
+  const getFundUnderfundedButtonLabel = () => {
+    if (isQuickAssigning) return 'Funding underfunded…';
+    if (isMonthBudgetLoading) return 'Loading month…';
+    const need = roundMoney(getFundUnderfundedSummary().totalFundingNeed || 0);
+    const pool = Math.max(0, getReadyToAssignPool());
+    const toFund = getFundUnderfundedButtonAmount();
+    if (pool <= 0 && need > 0) {
+      return `🎯 Fund Underfunded (need ${formatCurrency(need)}, RTA ${formatCurrency(pool)})`;
+    }
+    return `🎯 Fund Underfunded (${formatCurrency(toFund)})`;
+  };
+
+  const deriveReadyToAssignFromCash = () => {
+    const cash = roundMoney(Number(totalCashInAccounts || budgetSummary.totalCash) || 0);
+    const assigned = roundMoney(Number(budgetSummary.totalAssigned) || 0);
+    return roundMoney(cash - assigned);
+  };
+
+  const resolveReadyToAssignPool = async () => {
+    let pool = getReadyToAssignPool();
+    if (pool <= 0) {
+      pool = deriveReadyToAssignFromCash();
+    }
+    const refreshed = await refreshGlobalBudgetSummaryWithTimeout();
+    if (refreshed != null && Number.isFinite(refreshed.readyToAssign)) {
+      return roundMoney(refreshed.readyToAssign);
+    }
+    return pool;
   };
 
   const formatCurrency = (amount) => {
@@ -333,7 +499,7 @@ const PropertyMapView = () => {
     const row = {
     id: cat.id,
     name: cat.name,
-    assigned: toMoneyNumber(cat.assigned),
+    assigned: toMoneyNumber(cat.assigned ?? cat.budgeted_amount),
     activity: toMoneyNumber(cat.activity),
     available: toMoneyNumber(cat.available),
     previous_available: toMoneyNumber(cat.previous_available),
@@ -370,6 +536,11 @@ const PropertyMapView = () => {
       cat.underfunded != null && cat.underfunded !== undefined
         ? toMoneyNumber(cat.underfunded)
         : null;
+    const hasAuthoritativeEnvelope =
+      cat._envelopeFromSnapshot === true ||
+      (cat.previous_available !== undefined && cat.previous_available !== null) ||
+      (cat.spending !== undefined && cat.spending !== null) ||
+      (cat.budgeted_amount !== undefined && cat.budgeted_amount !== null);
     return {
       ...row,
       forecasted_need: rowForUnderfunded.forecasted_need,
@@ -377,8 +548,13 @@ const PropertyMapView = () => {
       goalType: cat.goalType ?? targetMeta.goalType,
       goalStatus: cat.goalStatus ?? targetMeta.status,
       goalProgress: cat.goalProgress ?? targetMeta.progress,
-      available: roundMoneyEnvelope(derived.available),
-      activity: roundMoneyEnvelope(derived.activity ?? row.activity),
+      available: hasAuthoritativeEnvelope
+        ? roundMoneyEnvelope(toMoneyNumber(cat.available))
+        : roundMoneyEnvelope(derived.available),
+      activity: hasAuthoritativeEnvelope
+        ? roundMoneyEnvelope(toMoneyNumber(cat.activity))
+        : roundMoneyEnvelope(derived.activity ?? row.activity),
+      _envelopeFromSnapshot: hasAuthoritativeEnvelope,
     };
   };
 
@@ -412,6 +588,7 @@ const PropertyMapView = () => {
   const withDerivedAvailable = (categories) =>
     categories.map((cat) => {
       if (!cat || isCategoryArchived(cat)) return cat;
+      if (cat._envelopeFromSnapshot) return cat;
       const derived = deriveAvailableFromCategoryRow(cat);
       return {
         ...cat,
@@ -446,39 +623,10 @@ const PropertyMapView = () => {
     }
   };
 
-  // ==================== READY TO ASSIGN CALCULATION ====================
+  // ==================== READY TO ASSIGN (GLOBAL POOL) ====================
   const calculateReadyToAssign = (categoriesOverride = null) => {
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('💰 CALCULATING READY TO ASSIGN (cash − Σ category available)');
-
-    const sourceCategories = Array.isArray(categoriesOverride)
-      ? categoriesOverride
-      : budgetData.categories;
-    const activeCategories = sourceCategories.filter((cat) => !isCategoryArchived(cat));
-
-    const sumCategoryAvailable = activeCategories.reduce(
-      (sum, cat) => sum + (Number(cat.available) || 0),
-      0
-    );
-    const cashInAccounts = totalCashInAccounts;
-    // YNAB-style: every dollar in on-budget cash accounts is either Ready to Assign or in a category envelope.
-    const readyToAssign = roundMoney(cashInAccounts - sumCategoryAvailable);
-
-    const totalAssigned = activeCategories.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0);
-    const totalActivity = activeCategories.reduce((sum, cat) => sum + (Number(cat.activity) || 0), 0);
-
-    console.log(`Total Cash (budget cash accounts): ${cashInAccounts}`);
-    console.log(`Σ Category Available: ${sumCategoryAvailable}`);
-    console.log(`Ready to Assign: ${readyToAssign}`);
-    console.log(`(reference) Total Assigned: ${totalAssigned}, Total Activity: ${totalActivity}`);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    setBudgetSummary({
-      totalAvailable: readyToAssign,
-      totalActivity: totalActivity,
-      totalAssigned: totalAssigned,
-      unassigned: readyToAssign
-    });
+    updateMonthMetricsFromCategories(categoriesOverride);
+    void refreshGlobalBudgetSummary();
   };
 
   const updateAllProgress = () => {
@@ -597,7 +745,7 @@ const PropertyMapView = () => {
     const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
 
     if (!snap?.categories?.length) {
-      const fromSession = loadSnapshotFromSession(userId, monthKey);
+      const fromSession = loadSnapshotFromSession(resolveBudgetUserId(), monthKey);
       if (fromSession) {
         lastGoodSnapshotRef.current = {
           categories: cloneCategoryRows(fromSession.categories),
@@ -611,7 +759,8 @@ const PropertyMapView = () => {
     }
     if (!snap?.categories?.length) return false;
 
-    if (snap.userId != null && userId != null && String(snap.userId) !== String(userId)) {
+    const activeUserId = resolveBudgetUserId();
+    if (snap.userId != null && activeUserId != null && String(snap.userId) !== String(activeUserId)) {
       return false;
     }
     if (snap.monthKey && monthKey && snap.monthKey !== monthKey) {
@@ -625,8 +774,8 @@ const PropertyMapView = () => {
       return true;
     }
 
-    const hasCategoryRows = (budgetData.categories?.length || 0) > 0;
-    if (hasCategoryRows) {
+    const hasUiCategoryRows = (budgetData.categories?.length || 0) > 0;
+    if (hasUiCategoryRows) {
       if ((categoryGroups?.length || 0) === 0 && snap.categoryGroups?.length) {
         setCategoryGroups(snap.categoryGroups.map((g) => ({ ...g })));
         return true;
@@ -674,34 +823,54 @@ const PropertyMapView = () => {
     setCategories(without);
   };
 
+  const hasKnownCategoryRows = () =>
+    (lastGoodSnapshotRef.current.categories?.length || 0) > 0 ||
+    (budgetData.categories?.length || 0) > 0;
+
   /** Never replace a populated table with an empty IPC response (unless allowEmpty). */
   const applyCategoriesFromDb = (dbCategories, monthKey, opts = {}) => {
+    const ownerId = resolveBudgetUserId(opts.userId);
     const patchedCategories = activeCategoriesFromDb(dbCategories);
+    const actualMonthChanged = Boolean(
+      monthKey &&
+        lastGoodSnapshotRef.current.monthKey &&
+        lastGoodSnapshotRef.current.monthKey !== monthKey,
+    );
     if (patchedCategories.length > 0) {
       const groups =
         (categoryGroups?.length || 0) > 0
           ? categoryGroups
           : lastGoodSnapshotRef.current.categoryGroups;
-      commitBudgetSnapshot(patchedCategories, groups, userId, monthKey);
+      commitBudgetSnapshot(patchedCategories, groups, ownerId, monthKey);
       return patchedCategories;
     }
     if (opts.allowEmpty) {
       lastGoodSnapshotRef.current = {
         categories: [],
         categoryGroups: lastGoodSnapshotRef.current.categoryGroups || [],
-        userId,
+        userId: ownerId,
         monthKey,
         at: Date.now()
       };
       hasEverLoadedSuccessRef.current = true;
-      saveSnapshotToSession(lastGoodSnapshotRef.current);
       setBudgetData((prev) => ({ ...prev, categories: [] }));
       setCategories([]);
       return [];
     }
-    if ((budgetData.categories?.length || 0) > 0) {
+    if (actualMonthChanged) {
+      setBudgetData((prev) => ({ ...prev, categories: [] }));
+      setCategories([]);
+      lastGoodSnapshotRef.current = {
+        ...lastGoodSnapshotRef.current,
+        categories: [],
+        monthKey,
+        userId: ownerId,
+        at: Date.now(),
+      };
+    }
+    if (hasKnownCategoryRows() && !actualMonthChanged) {
       console.warn('⚠️ Transient empty categories response — kept current table data.');
-      return null;
+      return lastGoodSnapshotRef.current.categories || budgetData.categories || null;
     }
     if (restoreFromLastGoodSnapshotIfNeeded()) {
       console.warn('⚠️ Transient empty categories response — restored last known snapshot.');
@@ -710,15 +879,18 @@ const PropertyMapView = () => {
     return null;
   };
 
-  const loadCategoryGroups = async () => {
+  const loadCategoryGroups = async (opts = {}) => {
     if (!window.electronAPI?.getCategoryGroups) {
       console.error('❌ electronAPI.getCategoryGroups is not available!');
       return;
     }
 
+    const ownerId = resolveBudgetUserId(opts.userId);
+    if (!ownerId) return;
+
     try {
       setLoading(true);
-      const result = await window.electronAPI.getCategoryGroups(userId);
+      const result = await window.electronAPI.getCategoryGroups(ownerId);
       if (result?.success && Array.isArray(result.data) && result.data.length > 0) {
         // Use ref first — budgetData React state can lag behind a just-finished load/archive.
         const cats =
@@ -727,15 +899,17 @@ const PropertyMapView = () => {
             : budgetData.categories;
         setCategoryGroups(result.data);
         if (cats?.length) {
-          commitBudgetSnapshot(cats, result.data, userId);
+          commitBudgetSnapshot(cats, result.data, ownerId);
         } else {
           lastGoodSnapshotRef.current = {
             ...lastGoodSnapshotRef.current,
             categoryGroups: result.data.map((g) => ({ ...g })),
-            userId,
+            userId: ownerId,
             at: Date.now()
           };
-          saveSnapshotToSession(lastGoodSnapshotRef.current);
+          if (lastGoodSnapshotRef.current.categories?.length) {
+            saveSnapshotToSession(lastGoodSnapshotRef.current);
+          }
         }
         return;
       }
@@ -763,7 +937,8 @@ const PropertyMapView = () => {
       console.error('❌ electronAPI.getCategories is not available!');
       return null;
     }
-    if (!userId) {
+    const ownerId = resolveBudgetUserId(opts.userId);
+    if (!ownerId) {
       console.warn('⚠️ No userId provided to loadCategoriesFromDB');
       return null;
     }
@@ -774,46 +949,61 @@ const PropertyMapView = () => {
     const monthDate = opts.monthDate ?? selectedMonthRef.current ?? selectedMonth;
     const monthKey = formatBudgetMonthKey(monthDate);
 
-    try {
-      setLoading(true);
+    const showLoading = opts.suppressLoading !== true;
+    const mapSnapshotCategories = (rows) =>
+      (rows || []).map((cat) =>
+        mapDbCategoryToBudgetRow({ ...cat, _envelopeFromSnapshot: true }),
+      );
 
-      if (window.electronAPI.getBudgetMonthSnapshot) {
-        const snap = await window.electronAPI.getBudgetMonthSnapshot(userId, monthKey);
-        if (snap && snap.success && snap.data && Array.isArray(snap.data.categories)) {
-          const dbCategories = snap.data.categories.map(mapDbCategoryToBudgetRow);
-          if (snap.data.underfundedTotal != null) {
-            lastGoodSnapshotRef.current = {
-              ...lastGoodSnapshotRef.current,
-              underfundedTotal: Number(snap.data.underfundedTotal) || 0,
-              underfundedBreakdown: snap.data.underfundedBreakdown || [],
-            };
-          }
-          const loaded = applyCategoriesFromDb(dbCategories, monthKey, opts);
-          setTimeout(() => {
-            loadCategoryGroups();
-          }, 100);
-          return loaded;
-        }
-        console.warn('⚠️ getBudgetMonthSnapshot failed or empty; falling back to getCategories', snap?.error);
+    try {
+      if (showLoading) {
+        setLoading(true);
       }
 
-      const result = await window.electronAPI.getCategories(userId);
+      if (window.electronAPI.getBudgetMonthSnapshot) {
+        const snap = await window.electronAPI.getBudgetMonthSnapshot(ownerId, monthKey);
+        if (snap?.success && snap.data && Array.isArray(snap.data.categories)) {
+          if (snap.data.categories.length > 0) {
+            const dbCategories = mapSnapshotCategories(snap.data.categories);
+            if (snap.data.underfundedTotal != null) {
+              lastGoodSnapshotRef.current = {
+                ...lastGoodSnapshotRef.current,
+                underfundedTotal: Number(snap.data.underfundedTotal) || 0,
+                underfundedBreakdown: snap.data.underfundedBreakdown || [],
+              };
+            }
+            const loaded = applyCategoriesFromDb(dbCategories, monthKey, { ...opts, userId: ownerId });
+            setTimeout(() => {
+              loadCategoryGroups({ userId: ownerId });
+            }, 100);
+            return loaded;
+          }
+          console.warn('⚠️ getBudgetMonthSnapshot returned zero categories; trying getCategories');
+        } else {
+          console.warn('⚠️ getBudgetMonthSnapshot failed; falling back to getCategories', snap?.error);
+        }
+      }
 
-      if (result && result.success && result.data) {
-        const dbCategories = result.data.map(mapDbCategoryToBudgetRow);
-        const loaded = applyCategoriesFromDb(dbCategories, monthKey, opts);
+      const result = await window.electronAPI.getCategories(ownerId, monthKey);
+
+      if (result && result.success && Array.isArray(result.data) && result.data.length > 0) {
+        const dbCategories = mapSnapshotCategories(result.data);
+        const loaded = applyCategoriesFromDb(dbCategories, monthKey, { ...opts, userId: ownerId });
         setTimeout(() => {
-          loadCategoryGroups();
+          loadCategoryGroups({ userId: ownerId });
         }, 100);
         return loaded;
       }
     } catch (error) {
       console.error('❌ Error loading categories:', error);
-      if (hasEverLoadedSuccessRef.current) {
-        restoreFromLastGoodSnapshotIfNeeded();
-      }
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
+    }
+
+    if (restoreFromLastGoodSnapshotIfNeeded()) {
+      return lastGoodSnapshotRef.current.categories || null;
     }
     return null;
   };
@@ -917,23 +1107,33 @@ const PropertyMapView = () => {
 
   const getGoalTooltip = (category) => {
     const targetInfo = calculateTargetProgress(category);
-    switch (targetInfo.status) {
-      case 'funded':
-        return `Monthly goal met! Assigned ${formatCurrency(category.assigned)} of ${formatCurrency(category.target_amount)}`;
-      case 'completed':
-        return `Goal achieved! ${formatCurrency(category.available)} of ${formatCurrency(category.target_amount)}`;
-      case 'partial':
-        return `Partially funded. Need ${formatCurrency(targetInfo.needed)} more to reach monthly goal`;
-      case 'unfunded':
-        return `No funds assigned yet. Need ${formatCurrency(targetInfo.needed)} to reach monthly goal`;
-      case 'in-progress':
-        return `Progress: ${Math.round(targetInfo.progress)}% toward ${formatCurrency(category.target_amount)}`;
-      default:
-        return 'Click 🎯 to set a goal';
-    }
+    const hasGoal = targetInfo.status !== 'no-target';
+    if (!hasGoal) return 'No Goal';
+    const statusLabel = (targetInfo.needed || 0) > 0 ? 'Underfunded' : 'Fully Funded';
+    return [
+      `Status: ${statusLabel}`,
+      `Target: ${formatCurrency(targetInfo.targetAmount || category.target_amount || 0)}`,
+      `Available: ${formatCurrency(targetInfo.currentAmount || category.available || 0)}`,
+      `Funding Needed: ${formatCurrency(targetInfo.needed || 0)}`,
+    ].join(' · ');
+  };
+
+  const getGoalStatusLabel = (targetInfo) => {
+    if (!targetInfo || targetInfo.status === 'no-target') return 'No Goal';
+    return (targetInfo.needed || 0) > 0 ? 'Underfunded' : 'Fully Funded';
+  };
+
+  const getGroupProgressLabel = (groupCategories, groupTotals) => {
+    const withGoals = groupCategories.filter(
+      (cat) => calculateTargetProgress(cat).status !== 'no-target',
+    );
+    if (withGoals.length === 0) return '—';
+    if ((groupTotals.underfunded || 0) <= 0) return '100% fully funded';
+    return `${formatCurrency(groupTotals.underfunded)} underfunded`;
   };
 
   const getProgressColor = (status) => {
+    if (status === 'no-target') return '#93C5FD';
     switch (status) {
       case 'funded':
       case 'completed':
@@ -1310,15 +1510,100 @@ const PropertyMapView = () => {
     }
   };
 
+  const handleUnassignMonth = async () => {
+    if (!userId) return;
+    if (!window.electronAPI?.unassignMonthBudget) {
+      alert('Unassign is not available in this build.');
+      return;
+    }
+
+    const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+    const monthLabel = selectedMonth.toLocaleString('default', {
+      month: 'long',
+      year: 'numeric',
+    });
+
+    await loadCategoriesFromDB(0, { monthDate: monthKeyToLocalDate(monthKey) });
+    const monthAssignedTotal = getMonthAssignedTotal();
+
+    if (monthAssignedTotal <= 0) {
+      alert(`No assigned amounts to clear for ${monthLabel}.`);
+      return;
+    }
+
+    if (
+      !confirm(
+        `Unassign all ${formatCurrency(monthAssignedTotal)} from ${monthLabel}?\n\n` +
+          `This clears Assigned for every category in this month and returns the same amount to Ready to Assign.`,
+      )
+    ) {
+      return;
+    }
+
+    setIsUnassigningMonth(true);
+    try {
+      const res = await window.electronAPI.unassignMonthBudget(userId, monthKey);
+      if (!res?.success) {
+        throw new Error(res?.error || 'Unassign failed');
+      }
+
+      const released = roundMoney(res.data?.totalReleased ?? monthAssignedTotal);
+      const count = res.data?.categoriesUpdated ?? 0;
+
+      const reloaded = await loadCategoriesFromDB(0, {
+        monthDate: selectedMonthRef.current || selectedMonth,
+      });
+      calculateReadyToAssign(
+        reloaded || lastGoodSnapshotRef.current.categories,
+      );
+
+      alert(
+        `✅ Unassigned ${formatCurrency(released)} from ${monthLabel}` +
+          (count > 0 ? ` (${count} categories).` : '.'),
+      );
+    } catch (err) {
+      console.error('Unassign month error:', err);
+      await loadCategoriesFromDB(0, {
+        monthDate: selectedMonthRef.current || selectedMonth,
+      });
+      calculateReadyToAssign();
+      alert(`❌ Error while unassigning: ${err.message}`);
+    } finally {
+      setIsUnassigningMonth(false);
+    }
+  };
+
   const handleQuickAssign = async (method) => {
-    if (budgetSummary.unassigned <= 0) {
-      alert('No funds available to assign');
+    if (isQuickAssigning) {
+      return;
+    }
+    if (isMonthBudgetLoading) {
+      alert('This month is still loading. Please wait a moment and try again.');
+      return;
+    }
+
+    setIsQuickAssigning(true);
+    try {
+    const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+    const freshRows = await loadCategoriesFromDB(0, {
+      monthDate: monthKeyToLocalDate(monthKey),
+      suppressLoading: true,
+    });
+    const activeCategories = getActiveBudgetCategories(freshRows);
+    if (!activeCategories.length) {
+      alert('No budget categories are loaded for this month. Try Refresh categories, then try again.');
+      return;
+    }
+
+    const pool = await resolveReadyToAssignPool();
+
+    if (pool <= 0) {
+      alertNoReadyToAssignForQuickAssign(pool);
       return;
     }
 
     let allocations = [];
-    let remainingFunds = budgetSummary.unassigned;
-    const activeCategories = budgetData.categories.filter((cat) => !isCategoryArchived(cat));
+    let remainingFunds = pool;
 
     switch (method) {
       case 'smart': {
@@ -1357,41 +1642,8 @@ const PropertyMapView = () => {
       }
 
       case 'underfunded': {
-        const overspent = activeCategories.filter((c) => (c.available || 0) < 0);
-        const withGoalGap = activeCategories
-          .map((c) => {
-            const targetInfo = calculateTargetProgress(c);
-            return { ...c, targetInfo, needed: targetInfo.underfunded ?? targetInfo.needed ?? 0 };
-          })
-          .filter((c) => c.needed > 0 && (c.available || 0) >= 0);
-
-        const monthlyGap = withGoalGap.filter((c) =>
-          ['monthly', 'monthly_debt_payment', 'monthly_savings'].includes(
-            String(c.target_type || '').toLowerCase()
-          )
-        );
-        const balanceGap = withGoalGap.filter((c) =>
-          ['balance', 'target_balance'].includes(String(c.target_type || '').toLowerCase())
-        );
-        const dateGap = withGoalGap.filter((c) =>
-          ['by_date', 'target_balance_by_date'].includes(String(c.target_type || '').toLowerCase())
-        );
-
-        const sortedCategories = [
-          ...overspent.map((c) => ({ ...c, urgency: 1, needed: Math.abs(c.available || 0) })),
-          ...monthlyGap.map((c) => ({ ...c, urgency: 2, needed: c.needed })),
-          ...balanceGap.map((c) => ({ ...c, urgency: 3, needed: c.needed })),
-          ...dateGap.map((c) => ({ ...c, urgency: 4, needed: c.needed })),
-        ].sort((a, b) => a.urgency - b.urgency);
-
-        for (const cat of sortedCategories) {
-          if (remainingFunds <= 0) break;
-          let amountToAssign = Math.min(cat.needed, remainingFunds);
-          if (amountToAssign > 0) {
-            allocations.push({ categoryId: cat.id, amount: amountToAssign, reason: `Funding ${cat.name}` });
-            remainingFunds -= amountToAssign;
-          }
-        }
+        const plan = computeFundUnderfundedPlan(activeCategories, { pool });
+        allocations = plan.allocations;
         break;
       }
 
@@ -1421,12 +1673,33 @@ const PropertyMapView = () => {
     }
 
     if (allocations.length > 0) {
+      const totalAssign = allocations.reduce((sum, a) => sum + a.amount, 0);
       const previewMessage = allocations.map(a => `${a.reason}: ${formatCurrency(a.amount)}`).join('\n');
-      if (!confirm(`Ready to assign ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${allocations.length} categories:\n\n${previewMessage}\n\nProceed?`)) {
+      const fundingSummary =
+        method === 'underfunded'
+          ? (() => {
+              const summary = getFundUnderfundedSummary(activeCategories);
+              const parts = [];
+              if (summary.overspentTotal > 0) {
+                parts.push(`${formatCurrency(summary.overspentTotal)} overspent`);
+              }
+              if (summary.goalUnderfundedTotal > 0) {
+                parts.push(`${formatCurrency(summary.goalUnderfundedTotal)} goal gaps`);
+              }
+              return parts.length
+                ? `\n\nFunding need: ${parts.join(' + ')} = ${formatCurrency(summary.totalFundingNeed)}`
+                : '';
+            })()
+          : '';
+
+      if (
+        !confirm(
+          `Assign ${formatCurrency(totalAssign)} from Ready to Assign (${formatCurrency(pool)}) to ${allocations.length} categories:${fundingSummary}\n\n${previewMessage}\n\nProceed?`,
+        )
+      ) {
         return;
       }
 
-      const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
       const deltaByCategoryId = new Map();
       for (const allocation of allocations) {
         const categoryId = String(allocation.categoryId);
@@ -1435,19 +1708,6 @@ const PropertyMapView = () => {
           (deltaByCategoryId.get(categoryId) || 0) + allocation.amount
         );
       }
-
-      setBudgetData((prev) => ({
-        ...prev,
-        categories: withDerivedAvailable(
-          prev.categories.map((cat) => {
-            const delta = Array.from(deltaByCategoryId.entries()).find(([id]) =>
-              sameCategoryId(id, cat.id)
-            )?.[1];
-            if (delta == null) return cat;
-            return { ...cat, assigned: roundMoney((Number(cat.assigned) || 0) + delta) };
-          }),
-        ),
-      }));
 
       try {
         const bulkAssignments = Array.from(deltaByCategoryId.entries()).map(
@@ -1462,7 +1722,11 @@ const PropertyMapView = () => {
             userId,
             monthKey,
             bulkAssignments,
-            { mode: 'delta' },
+            {
+              mode: 'delta',
+              totalCash: totalCashInAccounts,
+              auditSource: method === 'underfunded' ? 'fund_underfunded' : 'quick_assign',
+            },
           );
           if (!bulkRes?.success) {
             throw new Error(bulkRes?.error || 'Bulk assign failed');
@@ -1481,25 +1745,35 @@ const PropertyMapView = () => {
           }
         }
 
+        await refreshGlobalBudgetSummary();
         const reloadedCategories = await loadCategoriesFromDB(0, {
-          monthDate: selectedMonthRef.current || selectedMonth,
+          monthDate: monthKeyToLocalDate(monthKey),
+          forceMonthReplace: true,
+          suppressLoading: true,
         });
+        await refreshGlobalBudgetSummary();
         calculateReadyToAssign(
-          reloadedCategories || lastGoodSnapshotRef.current.categories || budgetData.categories,
+          reloadedCategories || lastGoodSnapshotRef.current.categories,
         );
-        alert(`✅ Assigned ${formatCurrency(allocations.reduce((sum, a) => sum + a.amount, 0))} to ${deltaByCategoryId.size} categories`);
+        alert(`✅ Assigned ${formatCurrency(totalAssign)} to ${deltaByCategoryId.size} categories`);
       } catch (err) {
         console.error('Quick assign error:', err);
         const reloadedCategories = await loadCategoriesFromDB(0, {
-          monthDate: selectedMonthRef.current || selectedMonth,
+          monthDate: monthKeyToLocalDate(monthKey),
+          forceMonthReplace: true,
+          suppressLoading: true,
         });
+        await refreshGlobalBudgetSummary();
         calculateReadyToAssign(
-          reloadedCategories || lastGoodSnapshotRef.current.categories || budgetData.categories,
+          reloadedCategories || lastGoodSnapshotRef.current.categories,
         );
         alert(`❌ Error while saving assignments: ${err.message}`);
       }
     } else {
-      alert('No categories need funding based on current criteria');
+      alert('No categories need funding based on current criteria for this month.');
+    }
+    } finally {
+      setIsQuickAssigning(false);
     }
   };
 
@@ -1566,62 +1840,245 @@ const PropertyMapView = () => {
     }
   };
 
-  const handleMoveMoney = async () => {
-    const amount = parseFloat(moveMoneyData.amount);
-    if (isNaN(amount) || amount <= 0) {
-      alert('Please enter a valid amount');
+  const activeCategories = (budgetData.categories || []).filter((c) => !isCategoryArchived(c));
+  const normalizedMoveMoneyQuery = moveMoneySearchQuery.trim().toLowerCase();
+  const filteredMoveMoneyCategories = normalizedMoveMoneyQuery
+    ? activeCategories.filter((cat) =>
+        String(cat.name || '').toLowerCase().includes(normalizedMoveMoneyQuery),
+      )
+    : activeCategories;
+
+  const getCategoryById = (categoryId) =>
+    (budgetData.categories || []).find((c) => sameCategoryId(c.id, categoryId));
+
+  const getMoveMoneyValidationError = (candidateForm) => {
+    const amount = parseMoneyInput(candidateForm.amount);
+    const toReadyToAssign = isReadyToAssignDestination(candidateForm.toCategoryId);
+    if (!Number.isFinite(amount) || amount <= 0) return 'Amount must be greater than 0.';
+    if (!candidateForm.fromCategoryId || !candidateForm.toCategoryId) {
+      return 'Select both source and destination categories.';
+    }
+    if (sameCategoryId(candidateForm.fromCategoryId, candidateForm.toCategoryId)) {
+      return 'Source and destination categories must be different.';
+    }
+    const fromCategory = getCategoryById(candidateForm.fromCategoryId);
+    const toCategory = toReadyToAssign ? null : getCategoryById(candidateForm.toCategoryId);
+    if (!fromCategory || (!toReadyToAssign && !toCategory)) return 'Selected categories are unavailable.';
+    if (isCategoryArchived(fromCategory) || (toCategory && isCategoryArchived(toCategory))) {
+      return 'Archived categories cannot be used for Move Money.';
+    }
+    if ((Number(fromCategory.available) || 0) < amount) {
+      return 'Insufficient funds available in selected category.';
+    }
+    const fromReadyToAssign = String(candidateForm.fromCategoryId || '') === READY_TO_ASSIGN_ID;
+    if (fromReadyToAssign && amount > getGlobalReadyToAssign() + 0.005) {
+      return 'Insufficient Ready to Assign funds.';
+    }
+    return '';
+  };
+
+  const isReadyToAssignDestination = (toCategoryId) =>
+    String(toCategoryId || '') === READY_TO_ASSIGN_ID;
+
+  const getSuggestedMoveMoneySources = (toCategoryId) => {
+    const toCategory = getCategoryById(toCategoryId);
+    const toGroupId = normalizeGroupId(toCategory?.groupId ?? toCategory?.group_id);
+    const scored = activeCategories
+      .filter((cat) => (Number(cat.available) || 0) > 0 && !sameCategoryId(cat.id, toCategoryId))
+      .map((cat) => {
+        const available = Number(cat.available) || 0;
+        const sameGroup =
+          toGroupId && normalizeGroupId(cat.groupId ?? cat.group_id) === toGroupId ? 1 : 0;
+        const recentBoost = moveMoneyRecentlyUsedSourceIds.includes(String(cat.id)) ? 1 : 0;
+        const rankScore = available * 1000 + sameGroup * 100 + recentBoost * 10;
+        return { cat, rankScore };
+      })
+      .sort((a, b) => b.rankScore - a.rankScore);
+    return scored.slice(0, 5).map((entry) => entry.cat);
+  };
+
+  const openMoveMoneyModal = ({
+    fromCategoryId = '',
+    toCategoryId = '',
+    amount = '',
+    source = 'manual',
+  } = {}) => {
+    const suggestedAmount =
+      amount ||
+      (toCategoryId
+        ? Math.abs(Math.min(0, Number(getCategoryById(toCategoryId)?.available) || 0))
+        : '');
+    const suggestions = getSuggestedMoveMoneySources(toCategoryId);
+    const effectiveFromCategoryId = fromCategoryId || suggestions[0]?.id || '';
+    setMoveMoneyData({
+      amount: suggestedAmount ? formatMoneyInput(suggestedAmount) : '',
+      fromCategoryId: effectiveFromCategoryId,
+      toCategoryId,
+      source,
+    });
+    setMoveMoneySearchQuery('');
+    setMoveMoneyError('');
+    setShowMoveMoneyModal(true);
+  };
+
+  const persistMoveMoneyToDatabase = async (fromCategoryId, toCategoryId, amount, monthKey) => {
+    const toReadyToAssign = isReadyToAssignDestination(toCategoryId);
+    const fromReadyToAssign = String(fromCategoryId || '') === READY_TO_ASSIGN_ID;
+    if (window.electronAPI?.bulkAssignMonthBudget) {
+      const deltas = [];
+      if (!fromReadyToAssign) {
+        deltas.push({ categoryId: fromCategoryId, delta: -amount });
+      }
+      if (!toReadyToAssign) {
+        deltas.push({ categoryId: toCategoryId, delta: amount });
+      }
+      const bulkResult = await window.electronAPI.bulkAssignMonthBudget(
+        userId,
+        monthKey,
+        deltas,
+        {
+          mode: 'delta',
+          totalCash: totalCashInAccounts,
+          auditSource: 'move_money',
+        },
+      );
+      if (!bulkResult?.success) {
+        throw new Error(bulkResult?.error || 'Move Money failed');
+      }
       return;
     }
-    if (!moveMoneyData.fromCategoryId || !moveMoneyData.toCategoryId) {
-      alert('Please select both source and destination categories');
-      return;
+    if (!fromReadyToAssign) {
+      const fromCategory = getCategoryById(fromCategoryId);
+      const r1 = await window.electronAPI.updateCategory(fromCategoryId, {
+        assigned: roundMoney((Number(fromCategory?.assigned) || 0) - amount),
+        budget_month: monthKey,
+      });
+      if (!r1?.success) throw new Error(r1?.error || 'Failed to update source category');
     }
-    if (moveMoneyData.fromCategoryId === moveMoneyData.toCategoryId) {
-      alert('Source and destination categories must be different');
-      return;
+    if (!toReadyToAssign) {
+      const toCategory = getCategoryById(toCategoryId);
+      const r2 = await window.electronAPI.updateCategory(toCategoryId, {
+        assigned: roundMoney((Number(toCategory?.assigned) || 0) + amount),
+        budget_month: monthKey,
+      });
+      if (!r2?.success) throw new Error(r2?.error || 'Failed to update destination category');
     }
-    const fromCategory = budgetData.categories.find(c => c.id === moveMoneyData.fromCategoryId);
-    const toCategory = budgetData.categories.find(c => c.id === moveMoneyData.toCategoryId);
-    if (!fromCategory || !toCategory) return;
-    if (fromCategory.available < amount) {
-      alert(`Source category only has ${formatCurrency(fromCategory.available)} available`);
-      return;
-    }
+  };
+
+  const applyMoveLocally = (rows, fromCategoryId, toCategoryId, amount) =>
+    withDerivedAvailable(
+      (rows || []).map((cat) => {
+        if (String(fromCategoryId || '') !== READY_TO_ASSIGN_ID && sameCategoryId(cat.id, fromCategoryId)) {
+          return {
+            ...cat,
+            assigned: roundMoney((Number(cat.assigned) || 0) - amount),
+          };
+        }
+        if (!isReadyToAssignDestination(toCategoryId) && sameCategoryId(cat.id, toCategoryId)) {
+          return {
+            ...cat,
+            assigned: roundMoney((Number(cat.assigned) || 0) + amount),
+          };
+        }
+        return cat;
+      }),
+    );
+
+  const runMoveMoney = async ({
+    fromCategoryId,
+    toCategoryId,
+    amount,
+    source = 'manual',
+    recordEvent = true,
+    closeModal = true,
+  }) => {
     const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
-    const fromAssigned = (fromCategory.assigned || 0) - amount;
-    const toAssigned = (toCategory.assigned || 0) + amount;
+    const previousRows = cloneCategoryRows(budgetData.categories || []);
+    const nextRows = applyMoveLocally(previousRows, fromCategoryId, toCategoryId, amount);
+
+    setBudgetData((prev) => ({ ...prev, categories: nextRows }));
+    setCategories(nextRows);
+    commitBudgetSnapshot(nextRows, categoryGroups, userId, monthKey);
+    calculateReadyToAssign(nextRows);
 
     try {
-      const r1 = await window.electronAPI.updateCategory(
-        moveMoneyData.fromCategoryId,
-        {
-          assigned: fromAssigned,
-          budget_month: monthKey
+      await persistMoveMoneyToDatabase(fromCategoryId, toCategoryId, amount, monthKey);
+      const fromCategory = getCategoryById(fromCategoryId);
+      const toCategory = getCategoryById(toCategoryId);
+      const fromReadyToAssign = String(fromCategoryId || '') === READY_TO_ASSIGN_ID;
+      const toReadyToAssign = isReadyToAssignDestination(toCategoryId);
+      if (recordEvent) {
+        const moveEvent = {
+          id: `${Date.now()}-${fromCategoryId}-${toCategoryId}`,
+          userId,
+          timestamp: new Date().toISOString(),
+          monthKey,
+          amount,
+          source,
+          fromCategoryId,
+          toCategoryId,
+          fromCategoryName: fromReadyToAssign ? READY_TO_ASSIGN_LABEL : fromCategory?.name || 'Unknown',
+          toCategoryName: toReadyToAssign ? READY_TO_ASSIGN_LABEL : toCategory?.name || 'Unknown',
+        };
+        setMoveMoneyActivity((prev) => [moveEvent, ...prev].slice(0, 250));
+        setPendingUndoMove(moveEvent);
+        if (!fromReadyToAssign) {
+          setMoveMoneyRecentlyUsedSourceIds((prev) => [
+            String(fromCategoryId),
+            ...prev.filter((id) => id !== String(fromCategoryId)),
+          ].slice(0, 10));
         }
-      );
-      const r2 = await window.electronAPI.updateCategory(
-        moveMoneyData.toCategoryId,
-        {
-          assigned: toAssigned,
-          budget_month: monthKey
-        }
-      );
-      if (!r1.success || !r2.success) {
-        alert(`❌ Could not move money: ${r1.error || r2.error || 'Unknown error'}`);
-        return;
       }
-      setMoveMoneyData({
-        amount: '',
-        fromCategoryId: '',
-        toCategoryId: ''
-      });
-      setShowMoveMoneyModal(false);
-      await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
-      calculateReadyToAssign();
-      alert(`✅ $${amount.toFixed(2)} moved from ${fromCategory.name} to ${toCategory.name}`);
+      if (closeModal) {
+        setShowMoveMoneyModal(false);
+        setMoveMoneyData(EMPTY_MOVE_MONEY_FORM);
+      }
+      setMoveMoneyError('');
+      return true;
     } catch (error) {
-      console.error('Error moving money:', error);
-      alert(`❌ Error moving money: ${error.message}`);
+      console.error('Move Money failed, rolling back:', error);
+      setBudgetData((prev) => ({ ...prev, categories: previousRows }));
+      setCategories(previousRows);
+      commitBudgetSnapshot(previousRows, categoryGroups, userId, monthKey);
+      calculateReadyToAssign(previousRows);
+      setMoveMoneyError(error.message || 'Move Money failed');
+      return false;
+    }
+  };
+
+  const handleMoveMoneySubmit = async () => {
+    const validationError = getMoveMoneyValidationError(moveMoneyData);
+    if (validationError) {
+      setMoveMoneyError(validationError);
+      return;
+    }
+    const amount = parseMoneyInput(moveMoneyData.amount);
+    await runMoveMoney({
+      fromCategoryId: moveMoneyData.fromCategoryId,
+      toCategoryId: moveMoneyData.toCategoryId,
+      amount,
+      source: moveMoneyData.source || 'manual',
+      recordEvent: true,
+      closeModal: true,
+    });
+  };
+
+  const handleUndoMoveMoney = async () => {
+    if (!pendingUndoMove) return;
+    const undoFromCategoryId = isReadyToAssignDestination(pendingUndoMove.toCategoryId)
+      ? READY_TO_ASSIGN_ID
+      : pendingUndoMove.toCategoryId;
+    const reverted = await runMoveMoney({
+      fromCategoryId: undoFromCategoryId,
+      toCategoryId: pendingUndoMove.fromCategoryId,
+      amount: pendingUndoMove.amount,
+      source: 'undo',
+      recordEvent: false,
+      closeModal: false,
+    });
+    if (reverted) {
+      setMoveMoneyActivity((prev) => prev.filter((entry) => entry.id !== pendingUndoMove.id));
+      setPendingUndoMove(null);
     }
   };
   
@@ -1706,7 +2163,7 @@ const PropertyMapView = () => {
           userId,
           monthKey,
           bulkAssignments,
-          { mode: 'delta' },
+          { mode: 'delta', totalCash: totalCashInAccounts, auditSource: 'auto_assign' },
         );
         if (!bulkRes?.success) {
           throw new Error(bulkRes?.error || 'Auto assign failed');
@@ -1797,55 +2254,106 @@ const PropertyMapView = () => {
     (entry) => entry.categories.length > 0,
   );
   const tableTotals = sumDisplayedGroupTotals(groupsWithCategoryTotals);
+  const overspentCategories = activeCategories.filter((cat) => (Number(cat.available) || 0) < 0);
 
   // ==================== EFFECTS FOR PROGRESS & CALCULATIONS ====================
   useEffect(() => {
-    calculateReadyToAssign();
-  }, [budgetData.categories, totalCashInAccounts, selectedMonth]);
+    if (!initialLoadComplete) return;
+    if (rtaRefreshTimerRef.current) {
+      clearTimeout(rtaRefreshTimerRef.current);
+    }
+    rtaRefreshTimerRef.current = setTimeout(() => {
+      calculateReadyToAssign();
+    }, 400);
+    return () => {
+      if (rtaRefreshTimerRef.current) {
+        clearTimeout(rtaRefreshTimerRef.current);
+      }
+    };
+  }, [budgetData.categories, totalCashInAccounts, selectedMonth, initialLoadComplete]);
+
+  const skipSelectedMonthReloadRef = useRef(true);
+  useEffect(() => {
+    if (!userId || !window.electronAPI?.getBudgetMonthSnapshot) return;
+    if (skipSelectedMonthReloadRef.current) {
+      skipSelectedMonthReloadRef.current = false;
+      return;
+    }
+    setIsQuickAssigning(false);
+    setIsMonthBudgetLoading(true);
+    void loadCategoriesFromDB(0, {
+      monthDate: selectedMonthRef.current || selectedMonth,
+      forceMonthReplace: true,
+      suppressLoading: true,
+    }).finally(() => {
+      setIsMonthBudgetLoading(false);
+    });
+  }, [selectedMonth, userId]);
 
   useEffect(() => {
     updateAllProgress();
   }, [budgetData.categories.map(cat => cat.available + cat.assigned + (cat.activity || 0)).join(',')]);
 
+  // Persist last good table snapshot when leaving Prosperity Map (sidebar navigation unmounts this view).
+  useEffect(() => {
+    return () => {
+      const snap = lastGoodSnapshotRef.current;
+      if (snap?.categories?.length) {
+        saveSnapshotToSession(snap);
+      }
+    };
+  }, []);
+
   // ==================== INITIALIZATION & REALTIME ====================
   useEffect(() => {
     const initializeData = async () => {
-      if (!userId) return;
-
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
       if (!(await ensureElectronAPI())) {
         console.error('❌ Electron preload API did not become available in time.');
         setLoading(false);
+        setInitialLoadComplete(true);
         return;
       }
 
       try {
         setLoading(true);
+        setInitialLoadComplete(false);
 
         const userResult = await window.electronAPI.getCurrentUser();
-        if (userResult?.success && userResult?.data?.id != null && userResult.data.id !== userId) {
-          setUserId(userResult.data.id);
-          return;
+        let ownerId = resolveBudgetUserId();
+        if (userResult?.success && userResult?.data?.id != null) {
+          ownerId = userResult.data.id;
+          userIdRef.current = ownerId;
+          if (String(ownerId) !== String(userId)) {
+            setUserId(ownerId);
+          }
         }
+        if (!ownerId) return;
 
         const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
-        hydrateSnapshotFromSession(userId, monthKey);
+        hydrateSnapshotFromSession(ownerId, monthKey);
 
-        await loadCategoryGroups();
-        await loadCategoriesFromDB();
+        await loadCategoryGroups({ userId: ownerId });
+        await loadCategoriesFromDB(0, {
+          userId: ownerId,
+          monthDate: selectedMonthRef.current || selectedMonth,
+        });
         await loadArchivedCategories();
 
         if (userResult?.success && userResult?.data) {
-          const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+          const accountsResult = await window.electronAPI.getAccountsSummary(ownerId);
           if (accountsResult?.success) {
             setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
           }
         }
+        await refreshGlobalBudgetSummary();
       } catch (error) {
         console.error('❌ Error during initialization:', error);
+        restoreFromLastGoodSnapshotIfNeeded();
       } finally {
         setLoading(false);
+        setInitialLoadComplete(true);
       }
     };
 
@@ -1859,6 +2367,7 @@ const PropertyMapView = () => {
     'prosperity:updated',
     'budget:assigned',
     'budget:bulkAssigned',
+    'budget:unassigned',
     'budget:repaired',
     'budget:consolidated',
     'category:updated',
@@ -1875,10 +2384,11 @@ const PropertyMapView = () => {
       }
       try {
         const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
-        hydrateSnapshotFromSession(userId, monthKey);
 
         await loadCategoryGroups();
-        await loadCategoriesFromDB();
+        const reloaded = await loadCategoriesFromDB(0, {
+          monthDate: monthKeyToLocalDate(monthKey),
+        });
         await loadArchivedCategories();
         const userResult = await window.electronAPI.getCurrentUser();
         if (userResult?.success && userResult?.data) {
@@ -1887,10 +2397,13 @@ const PropertyMapView = () => {
             setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
           }
         }
+        await refreshGlobalBudgetSummary();
+        calculateReadyToAssign(
+          reloaded || lastGoodSnapshotRef.current.categories,
+        );
       } catch (e) {
         console.warn('prosperity:updated refresh:', e);
       }
-      calculateReadyToAssign();
     })();
   });
 
@@ -1900,7 +2413,7 @@ const PropertyMapView = () => {
       void (async () => {
         try {
           await loadCategoryGroups();
-          await loadCategoriesFromDB();
+          const reloaded = await loadCategoriesFromDB();
           await loadArchivedCategories();
           const userResult = await window.electronAPI.getCurrentUser();
           if (userResult?.success && userResult?.data) {
@@ -1909,10 +2422,12 @@ const PropertyMapView = () => {
               setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
             }
           }
+          calculateReadyToAssign(
+            reloaded || lastGoodSnapshotRef.current.categories,
+          );
         } catch (e) {
           console.warn('refresh-prosperity-map:', e);
         }
-        calculateReadyToAssign();
       })();
     };
     window.addEventListener('refresh-prosperity-map', handleRefresh);
@@ -1924,12 +2439,82 @@ const PropertyMapView = () => {
   useEffect(() => {
     window.onAddIncomeClick = () => setShowAddIncomeModal(true);
     window.onRecordPaymentClick = () => setShowRecordPaymentModal(true);
-    window.onMoveMoneyClick = () => setShowMoveMoneyModal(true);
+    const openMoveMoneyFromPlanner = (event) => {
+      const amount = Number(event?.detail?.amount) > 0 ? Number(event.detail.amount) : '';
+      openMoveMoneyModal({
+        amount,
+        source: 'planner',
+      });
+    };
+    window.addEventListener('open-move-money', openMoveMoneyFromPlanner);
     return () => {
       window.onAddIncomeClick = null;
       window.onRecordPaymentClick = null;
-      window.onMoveMoneyClick = null;
+      window.removeEventListener('open-move-money', openMoveMoneyFromPlanner);
     };
+  }, [budgetData.categories, moveMoneyRecentlyUsedSourceIds]);
+
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      const raw = localStorage.getItem(`intentflow.moveMoneyActivity.${userId}`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setMoveMoneyActivity(parsed);
+      }
+    } catch (_) {
+      // ignore malformed cache
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      localStorage.setItem(
+        `intentflow.moveMoneyActivity.${userId}`,
+        JSON.stringify(moveMoneyActivity.slice(0, 250)),
+      );
+    } catch (_) {
+      // localStorage may be unavailable
+    }
+  }, [moveMoneyActivity, userId]);
+
+  useEffect(() => {
+    const handleFocusBudgetCategory = (event) => {
+      const { categoryId, groupId, groupName } = event?.detail || {};
+      if (groupId != null) {
+        setCollapsedGroups((prev) => ({ ...prev, [groupId]: false }));
+      } else if (groupName) {
+        const match = categoryGroups.find(
+          (g) => String(g.name || '').toLowerCase() === String(groupName).toLowerCase(),
+        );
+        if (match?.id != null) {
+          setCollapsedGroups((prev) => ({ ...prev, [match.id]: false }));
+        }
+      }
+      if (categoryId != null) {
+        const id = String(categoryId);
+        setFocusCategoryId(id);
+        window.setTimeout(() => {
+          const row = document.querySelector(`[data-category-id="${id}"]`);
+          row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 150);
+        window.setTimeout(() => setFocusCategoryId(null), 5000);
+      }
+    };
+    window.addEventListener('focus-budget-category', handleFocusBudgetCategory);
+    return () => window.removeEventListener('focus-budget-category', handleFocusBudgetCategory);
+  }, [categoryGroups]);
+
+  useEffect(() => {
+    const syncViewport = () => {
+      if (typeof window === 'undefined') return;
+      setIsMobileViewport(window.innerWidth < 768);
+    };
+    syncViewport();
+    window.addEventListener('resize', syncViewport);
+    return () => window.removeEventListener('resize', syncViewport);
   }, []);
 
   // ==================== RENDER ====================
@@ -1941,6 +2526,18 @@ const PropertyMapView = () => {
       aria-busy={loading}
     >
       <div className="space-y-6 min-w-0 overflow-hidden xl:min-w-0">
+        {pendingUndoMove && (
+          <div className="rounded-2xl border border-emerald-300/35 bg-emerald-900/35 px-4 py-3 text-sm text-emerald-100">
+            Money moved successfully.{' '}
+            <button
+              type="button"
+              className="font-semibold underline underline-offset-2"
+              onClick={handleUndoMoveMoney}
+            >
+              Undo
+            </button>
+          </div>
+        )}
         <section className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35 min-w-0 overflow-hidden">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
@@ -1969,20 +2566,61 @@ const PropertyMapView = () => {
                 <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-[#0047AB] to-[#001a40] text-2xl text-[#F0F9FF] shadow-lg shadow-[#0047AB]/30">
                   💰
                 </div>
-                <div>
+                <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold uppercase tracking-[0.3em] text-[#F0F9FF]/65">Ready to Assign</p>
                   <p className={`mt-3 text-4xl font-semibold ${budgetSummary.unassigned < 0 ? 'text-rose-400' : 'text-[#F0F9FF]'}`}>
+                    {budgetSummary.unassigned < 0 && <span className="mr-2" aria-hidden>⚠️</span>}
                     {formatCurrency(budgetSummary.unassigned)}
                   </p>
-                  <p className="mt-2 text-sm text-[#F0F9FF]/75">
-                    {budgetSummary.unassigned === 0
-                      ? 'Every dollar has a job! 🎯'
-                      : budgetSummary.unassigned < 0
-                        ? `Overspent by ${formatCurrency(Math.abs(budgetSummary.unassigned))}`
-                        : `Available for ${selectedMonth.toLocaleString('default', { month: 'long' })}`}
+                  <p className={`mt-2 text-sm ${budgetSummary.unassigned < 0 ? 'text-rose-300' : 'text-[#F0F9FF]/75'}`}>
+                    {budgetSummary.unassigned < 0
+                      ? 'You have assigned more money than is available.'
+                      : budgetSummary.unassigned === 0
+                        ? 'Every dollar has a job! 🎯'
+                        : 'Shared across all months — same pool everywhere you budget.'}
                   </p>
+                  {(budgetSummary.futureAssigned || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowFutureReservedPanel((open) => !open)}
+                      className="mt-3 inline-flex items-center gap-2 rounded-full border border-amber-300/35 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-400/20"
+                    >
+                      Reserved in Future: {formatCurrency(budgetSummary.futureAssigned)}
+                      <span className="text-[#F0F9FF]/60">{showFutureReservedPanel ? '▼' : '▶'}</span>
+                    </button>
+                  )}
                 </div>
               </div>
+              {showFutureReservedPanel && (budgetSummary.futureBreakdown || []).length > 0 && (
+                <div className="mt-5 rounded-2xl border border-white/20 bg-[#0047AB]/80 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#F0F9FF]/65">
+                    Future allocations
+                  </p>
+                  <div className="mt-3 max-h-48 overflow-y-auto">
+                    <table className="w-full text-left text-sm text-[#F0F9FF]/90">
+                      <thead>
+                        <tr className="text-xs uppercase tracking-wide text-[#F0F9FF]/55">
+                          <th className="pb-2 pr-3 font-medium">Month</th>
+                          <th className="pb-2 pr-3 font-medium">Category</th>
+                          <th className="pb-2 text-right font-medium">Assigned</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {budgetSummary.futureBreakdown.map((row, idx) => (
+                          <tr key={`${row.monthKey}-${row.categoryId}-${idx}`} className="border-t border-white/10">
+                            <td className="py-2 pr-3">{formatMonthKeyLabel(row.monthKey)}</td>
+                            <td className="py-2 pr-3">{row.categoryName}</td>
+                            <td className="py-2 text-right font-medium">{formatCurrency(row.assignedAmount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-3 border-t border-white/15 pt-3 text-sm font-semibold text-[#F0F9FF]">
+                    Total Future Reserved: {formatCurrency(budgetSummary.futureAssigned)}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="rounded-[1.75rem] border border-white/25 bg-[#0047AB]/95 p-6 overflow-hidden">
@@ -1993,31 +2631,55 @@ const PropertyMapView = () => {
                 </div>
               </div>
               <div className="mt-5 grid gap-3">
-                <Button variant="pmSecondary" onClick={() => handleQuickAssign('smart')}>
-                  🧠 Smart Assign
+                <Button
+                  variant="pmSecondary"
+                  disabled={isQuickAssigning || isMonthBudgetLoading}
+                  onClick={() => void handleQuickAssign('smart')}
+                >
+                  {isQuickAssigning ? 'Assigning…' : isMonthBudgetLoading ? 'Loading month…' : '🧠 Smart Assign'}
                 </Button>
-                <Button variant="pmSecondary" onClick={() => handleQuickAssign('underfunded')}>
-                  🎯 Fund Underfunded ({formatCurrency(getTotalUnderfunded())})
+                <Button
+                  variant="pmSecondary"
+                  disabled={isQuickAssigning || isMonthBudgetLoading}
+                  onClick={() => void handleQuickAssign('underfunded')}
+                >
+                  {getFundUnderfundedButtonLabel()}
                 </Button>
-                <Button variant="pmSecondary" onClick={() => handleQuickAssign('last-month')}>
-                  📅 Last Month
+                <Button
+                  variant="pmSecondary"
+                  disabled={isQuickAssigning || isMonthBudgetLoading}
+                  onClick={() => void handleQuickAssign('last-month')}
+                >
+                  {isQuickAssigning ? 'Assigning…' : isMonthBudgetLoading ? 'Loading month…' : '📅 Last Month'}
                 </Button>
-                <Button variant="pmSecondary" onClick={() => handleQuickAssign('average')}>
-                  📊 Average Spending
+                <Button
+                  variant="pmSecondary"
+                  disabled={isQuickAssigning || isMonthBudgetLoading}
+                  onClick={() => void handleQuickAssign('average')}
+                >
+                  {isQuickAssigning ? 'Assigning…' : isMonthBudgetLoading ? 'Loading month…' : '📊 Average Spending'}
+                </Button>
+                <Button
+                  variant="pmSecondary"
+                  disabled={isUnassigningMonth || getMonthAssignedTotal() <= 0}
+                  onClick={() => void handleUnassignMonth()}
+                >
+                  {isUnassigningMonth
+                    ? 'Unassigning…'
+                    : `↩ Unassign Month (${formatCurrency(getMonthAssignedTotal())})`}
                 </Button>
               </div>
             </div>
           </div>
 
           <div className="mt-6 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="inline-flex items-center gap-3 rounded-3xl border border-white/25 bg-[#0047AB] px-4 py-3 text-sm text-[#F0F9FF]/90">
+            <div className="inline-flex flex-wrap items-center gap-3 rounded-3xl border border-white/25 bg-[#0047AB] px-4 py-3 text-sm text-[#F0F9FF]/90">
               <button
                 type="button"
                 onClick={() => {
                   const newDate = new Date(selectedMonth);
                   newDate.setMonth(selectedMonth.getMonth() - 1);
                   setSelectedMonth(newDate);
-                  void loadCategoriesFromDB(0, { monthDate: newDate });
                 }}
                 className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
               >◀</button>
@@ -2028,7 +2690,6 @@ const PropertyMapView = () => {
                   const newDate = new Date(selectedMonth);
                   newDate.setMonth(selectedMonth.getMonth() + 1);
                   setSelectedMonth(newDate);
-                  void loadCategoriesFromDB(0, { monthDate: newDate });
                 }}
                 className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
               >▶</button>
@@ -2052,6 +2713,32 @@ Ready to Assign: $${totalCash - totalAssigned}`);
               </Button>
             </div>
           </div>
+
+          {overspentCategories.length > 0 && (
+            <div className="mt-6 rounded-2xl border border-rose-300/35 bg-rose-900/30 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-rose-100">
+                  {overspentCategories.length} categories are overspent. Cover overspending to restore budget balance.
+                </div>
+                <Button
+                  variant="pmDanger"
+                  onClick={() =>
+                    openMoveMoneyModal({
+                      toCategoryId: overspentCategories[0]?.id,
+                      source:
+                        overspentCategories[0]?.overspending_type === 'credit'
+                          ? 'overspending-banner-credit'
+                          : 'overspending-banner-cash',
+                    })
+                  }
+                >
+                  {overspentCategories[0]?.overspending_type === 'credit'
+                    ? 'Cover Credit Overspending'
+                    : 'Cover Overspending'}
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="mt-6 overflow-hidden rounded-[1.75rem] border border-white/25 bg-[#0047AB]">
             <div className="overflow-x-auto">
@@ -2081,19 +2768,37 @@ Ready to Assign: $${totalCash - totalAssigned}`);
 
                     return (
                       <React.Fragment key={uniqueGroupKey}>
-                        <tr className="bg-[#0047AB]/90">
-                          <td colSpan="6" className="px-4 py-4 text-[#F0F9FF]">
+                        <tr
+                          data-testid="pm-category-group-row"
+                          style={{ backgroundColor: PM.categoryGroupRowBg }}
+                        >
+                          <td colSpan="6" className="px-4 py-4" style={{ color: PM.categoryGroupRowText }}>
                             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                                 <button
                                   type="button"
                                   onClick={() => toggleGroupCollapse(group.id)}
-                                  className="shrink-0 rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
+                                  className="shrink-0 rounded-full border px-3 py-2 transition hover:brightness-95"
+                                  style={{
+                                    borderColor: PM.categoryGroupRowBorder,
+                                    backgroundColor: PM.categoryGroupRowBg,
+                                    color: PM.categoryGroupRowText,
+                                  }}
                                 >
-                                  {collapsedGroups[group.id] ? '▶' : '▼'}
+                                  {isGroupCollapsed(group.id) ? '▶' : '▼'}
                                 </button>
-                                <span className="min-w-0 text-base font-semibold text-[#F0F9FF]">{group.name}</span>
-                                <span className="shrink-0 rounded-full bg-[#0047AB] px-3 py-1 text-xs uppercase tracking-[0.2em] text-[#F0F9FF]/75">{groupCategories.length} categories</span>
+                                <span className="min-w-0 text-base font-semibold" style={{ color: PM.categoryGroupRowText }}>
+                                  {group.name}
+                                </span>
+                                <span
+                                  className="shrink-0 rounded-full px-3 py-1 text-xs uppercase tracking-[0.2em]"
+                                  style={{
+                                    backgroundColor: 'rgba(12, 35, 64, 0.08)',
+                                    color: PM.categoryGroupRowTextMuted,
+                                  }}
+                                >
+                                  {groupCategories.length} categories
+                                </span>
                               </div>
                               <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
                                 {!isUncategorizedGroup && (
@@ -2108,7 +2813,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                           </td>
                         </tr>
 
-                        {!collapsedGroups[group.id] &&
+                        {!isGroupCollapsed(group.id) &&
                           (groupCategories.length > 0 ? (
                               groupCategories.map((cat, catIndex) => {
                                 const targetInfo = getTargetInfo(cat);
@@ -2134,12 +2839,34 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                 }
 
                                 return (
-                                  <tr key={categoryKey} className="border-t border-white/25">
+                                  <tr
+                                    key={categoryKey}
+                                    data-category-id={cat.id}
+                                    className={`border-t border-white/25 ${
+                                      focusCategoryId && String(focusCategoryId) === String(cat.id)
+                                        ? 'ring-2 ring-inset ring-amber-300/80 bg-amber-400/10'
+                                        : ''
+                                    }`}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      openMoveMoneyModal({
+                                        toCategoryId: cat.id,
+                                        source: 'row-context',
+                                      });
+                                    }}
+                                  >
                                     <td className="px-4 py-4 align-top">
                                       <div className="flex max-w-md flex-col gap-3">
                                         <div className="flex flex-wrap items-center gap-2">
                                           <span className="text-sm font-semibold text-[#F0F9FF]">{cat.name}</span>
-                                          {hasTarget && <span className="rounded-full bg-[#0047AB] px-2 py-1 text-xs text-[#F0F9FF]/75">{targetInfo.status}</span>}
+                                          {hasTarget && (
+                                            <span
+                                              className="rounded-full bg-[#0047AB] px-2 py-1 text-xs text-[#F0F9FF]/75"
+                                              title={getGoalTooltip(cat)}
+                                            >
+                                              {getGoalStatusLabel(targetInfo)}
+                                            </span>
+                                          )}
                                         </div>
                                         <details className="group/actions relative w-fit">
                                           <summary className="cursor-pointer list-none rounded-full border border-white/30 bg-[#0047AB] px-3 py-1.5 text-xs font-medium text-[#F0F9FF]/95 outline-none ring-white/30 hover:brightness-110 focus-visible:ring-2 [&::-webkit-details-marker]:hidden">
@@ -2174,6 +2901,35 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                               onClick={(e) => {
                                                 const root = e.currentTarget.closest('details');
                                                 if (root) root.open = false;
+                                                openMoveMoneyModal({
+                                                  toCategoryId: cat.id,
+                                                  source: 'category-action-menu',
+                                                });
+                                              }}
+                                            >
+                                              Move Money
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
+                                                openMoveMoneyModal({
+                                                  fromCategoryId: cat.id,
+                                                  toCategoryId: READY_TO_ASSIGN_ID,
+                                                  source: 'reduce-assignment',
+                                                });
+                                              }}
+                                            >
+                                              Move to Ready to Assign
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
                                                 handleArchiveCategory(cat);
                                               }}
                                             >
@@ -2197,11 +2953,41 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                     <td className="px-4 py-4 align-top whitespace-nowrap">{formatCurrency(cat.assigned || 0)}</td>
                                     <td className="px-4 py-4 align-top whitespace-nowrap">{formatCurrency(cat.activity || 0)}</td>
                                     <td className="px-4 py-4 align-top">
-                                      <div className={`${(cat.available || 0) < 0 ? 'text-rose-400' : (cat.available || 0) === 0 ? 'text-amber-300' : 'text-emerald-400'} font-semibold`}>{formatCurrency(cat.available || 0)}</div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          openMoveMoneyModal({
+                                            toCategoryId: cat.id,
+                                            source: (cat.available || 0) < 0 ? 'negative-available-click' : 'available-click',
+                                          })
+                                        }
+                                        className={`${(cat.available || 0) < 0 ? 'text-rose-400' : (cat.available || 0) === 0 ? 'text-amber-300' : 'text-emerald-400'} font-semibold underline decoration-dotted underline-offset-4 hover:brightness-110`}
+                                      >
+                                        {formatCurrency(cat.available || 0)}
+                                      </button>
                                       {(cat.available || 0) < 0 && (
                                         <div className="mt-1 text-xs text-rose-300">
                                           {cat.overspending_type === 'credit' ? 'Credit overspending' : 'Overspent'}
                                         </div>
+                                      )}
+                                      {(cat.available || 0) < 0 && (
+                                        <button
+                                          type="button"
+                                          className="mt-2 rounded-full border border-rose-300/40 px-2 py-1 text-xs text-rose-200 hover:bg-rose-300/10"
+                                          onClick={() =>
+                                            openMoveMoneyModal({
+                                              toCategoryId: cat.id,
+                                              source:
+                                                cat.overspending_type === 'credit'
+                                                  ? 'cover-credit-overspending'
+                                                  : 'cover-cash-overspending',
+                                            })
+                                          }
+                                        >
+                                          {cat.overspending_type === 'credit'
+                                            ? 'Cover Credit Overspending'
+                                            : 'Cover Overspending'}
+                                        </button>
                                       )}
                                       {(cat.available || 0) === 0 && <div className="mt-1 text-xs text-amber-300">Fully allocated</div>}
                                     </td>
@@ -2211,7 +2997,9 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                           <div className="relative h-3 overflow-hidden rounded-full bg-[#0047AB]/70">
                                             <div className="h-full rounded-full" style={{ width: `${Math.min(100, targetInfo.progress || 0)}%`, backgroundColor: getProgressColor(targetInfo.status) }} />
                                           </div>
-                                          <div className="text-xs text-[#F0F9FF]/75">{Math.min(100, Math.round(targetInfo.progress || 0))}%</div>
+                                          <div className="text-xs text-[#F0F9FF]/75">
+                                            {Math.min(100, Math.round(targetInfo.progress || 0))}% · {getGoalStatusLabel(targetInfo)}
+                                          </div>
                                         </div>
                                       ) : (
                                         <div className="text-[#F0F9FF]/65">—</div>
@@ -2221,6 +3009,12 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                       {cat.target_amount != null && cat.target_amount !== undefined ? (
                                         <div className="space-y-1">
                                           <div className="font-semibold text-[#F0F9FF]">{formatCurrency(cat.target_amount)}</div>
+                                          <div className="text-xs text-[#F0F9FF]/75">
+                                            Available: {formatCurrency(cat.available || 0)}
+                                          </div>
+                                          <div className="text-xs text-[#F0F9FF]/75">
+                                            Funding Needed: {formatCurrency(targetInfo.needed || 0)}
+                                          </div>
                                           <div className="text-xs text-[#F0F9FF]/75">
                                             {cat.target_type === 'by_date' && cat.target_date
                                               ? `${getCategoryGoalTypeLabel(cat.target_type)} · ${formatDateForInput(cat.target_date)}`
@@ -2248,7 +3042,9 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                             <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(totals.assigned)}</td>
                             <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(totals.activity)}</td>
                             <td className="px-4 py-4 font-semibold text-[#F0F9FF]">{formatCurrency(totals.available)}</td>
-                            <td className="px-4 py-4 text-sm text-[#F0F9FF]/75">{formatCurrency(totals.underfunded)} underfunded</td>
+                            <td className="px-4 py-4 text-sm text-[#F0F9FF]/75">
+                              {getGroupProgressLabel(groupCategories, totals)}
+                            </td>
                             <td className="px-4 py-4 text-[#F0F9FF]/75">—</td>
                           </tr>
                         )}
@@ -2278,6 +3074,10 @@ Ready to Assign: $${totalCash - totalAssigned}`);
             totalActivity={budgetSummary.totalActivity}
             totalAssigned={budgetSummary.totalAssigned}
             unassigned={budgetSummary.unassigned}
+            totalCash={budgetSummary.totalCash}
+            futureAssigned={budgetSummary.futureAssigned}
+            futureBreakdown={budgetSummary.futureBreakdown}
+            month={selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
             categories={budgetData.categories || []}
             onAutoAssign={handleAutoAssign}
             underfundedTotal={getTotalUnderfunded()}
@@ -2286,11 +3086,63 @@ Ready to Assign: $${totalCash - totalAssigned}`);
         </div>
 
         <div className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35">
-          <AutoAssignView readyToAssign={budgetSummary.unassigned} underfundedTotal={getTotalUnderfunded()} underfundedCategories={calculateUnderfundedCategories()} />
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold text-[#F0F9FF]">Move Money</h3>
+              <p className="mt-1 text-xs text-[#F0F9FF]/70">
+                Reallocate budgeted funds between categories without creating transactions.
+              </p>
+            </div>
+            <Button
+              variant="pmSecondary"
+              onClick={() => openMoveMoneyModal({ source: 'sidebar-card' })}
+            >
+              Move
+            </Button>
+          </div>
+          {moveMoneyError && (
+            <div className="mt-3 rounded-xl border border-rose-300/35 bg-rose-900/25 px-3 py-2 text-xs text-rose-100">
+              {moveMoneyError}
+            </div>
+          )}
+          <div className="mt-4 space-y-2">
+            <p className="text-xs uppercase tracking-[0.2em] text-[#F0F9FF]/60">Suggested Sources</p>
+            {getSuggestedMoveMoneySources(moveMoneyData.toCategoryId || '').slice(0, 3).map((cat) => (
+              <button
+                key={`suggestion-${cat.id}`}
+                type="button"
+                className="flex w-full items-center justify-between rounded-xl border border-white/20 px-3 py-2 text-left text-sm text-[#F0F9FF] hover:bg-white/5"
+                onClick={() =>
+                  setMoveMoneyData((prev) => ({
+                    ...prev,
+                    fromCategoryId: cat.id,
+                  }))
+                }
+              >
+                <span>{cat.name}</span>
+                <span className="text-[#F0F9FF]/70">{formatCurrency(cat.available || 0)}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35">
-          <FutureMonthsView futureAssignments={2340.50} nextMonthTarget={5000} monthsAhead={1.5} />
+          <h3 className="text-base font-semibold text-[#F0F9FF]">Move Money Activity</h3>
+          <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+            {moveMoneyActivity.length === 0 && (
+              <p className="text-sm text-[#F0F9FF]/65">No move activity yet.</p>
+            )}
+            {moveMoneyActivity.slice(0, 20).map((entry) => (
+              <div key={entry.id} className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs text-[#F0F9FF]/90">
+                <div className="font-semibold">
+                  Moved {formatCurrency(entry.amount)} from {entry.fromCategoryName} to {entry.toCategoryName}
+                </div>
+                <div className="mt-1 text-[#F0F9FF]/65">
+                  {new Date(entry.timestamp).toLocaleString()} · user {entry.userId}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </aside>
 
@@ -2360,12 +3212,166 @@ Ready to Assign: $${totalCash - totalAssigned}`);
 
       {showMoveMoneyModal && (
         <div style={styles.modalOverlay} onClick={() => setShowMoveMoneyModal(false)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Move Money Between Categories</h3>
-            <div style={styles.formGroup}><label style={styles.label}>Amount</label><input type="number" style={styles.input} value={moveMoneyData.amount} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, amount: e.target.value })} placeholder="0.00" step="0.01" min="0" autoFocus /></div>
-            <div style={styles.formGroup}><label style={styles.label}>From Category</label><select style={styles.select} value={moveMoneyData.fromCategoryId} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, fromCategoryId: e.target.value })}><option value="">Select source category</option>{budgetData.categories.filter((c) => !isCategoryArchived(c) && (c.available || 0) > 0).map((cat) => (<option key={cat.id} value={cat.id}>{cat.name} ({formatCurrency(cat.available)} available)</option>))}</select></div>
-            <div style={styles.formGroup}><label style={styles.label}>To Category</label><select style={styles.select} value={moveMoneyData.toCategoryId} onChange={(e) => setMoveMoneyData({ ...moveMoneyData, toCategoryId: e.target.value })}><option value="">Select destination category</option>{budgetData.categories.filter((c) => !isCategoryArchived(c) && c.id !== moveMoneyData.fromCategoryId).map((cat) => (<option key={cat.id} value={cat.id}>{cat.name}</option>))}</select></div>
-            <div style={styles.modalActions}><button style={styles.saveButton} onClick={handleMoveMoney}>Move Money</button><button style={styles.cancelButton} onClick={() => setShowMoveMoneyModal(false)}>Cancel</button></div>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pm-move-money-title"
+            style={{
+              ...styles.moveMoneyModalContent,
+              ...(isMobileViewport ? styles.moveMoneyModalContentMobile : {}),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="pm-move-money-title" style={styles.modalTitle}>Move Money Between Categories</h3>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Search Categories</label>
+              <input
+                type="text"
+                style={styles.input}
+                value={moveMoneySearchQuery}
+                onChange={(e) => setMoveMoneySearchQuery(e.target.value)}
+                placeholder="Search category name"
+                aria-label="Search categories"
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Amount</label>
+              <input
+                type="text"
+                style={styles.input}
+                value={moveMoneyData.amount}
+                onChange={(e) => {
+                  setMoveMoneyData({ ...moveMoneyData, amount: e.target.value });
+                  setMoveMoneyError('');
+                }}
+                placeholder="50.00"
+                autoFocus
+                aria-label="Move amount"
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>From Category</label>
+              <select
+                style={styles.select}
+                value={moveMoneyData.fromCategoryId}
+                onChange={(e) => {
+                  setMoveMoneyData({ ...moveMoneyData, fromCategoryId: e.target.value });
+                  setMoveMoneyError('');
+                }}
+                aria-label="Move from category"
+              >
+                <option value="">Select source category</option>
+                {filteredMoveMoneyCategories
+                  .filter((c) => (c.available || 0) > 0 && !sameCategoryId(c.id, moveMoneyData.toCategoryId))
+                  .map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name} ({formatCurrency(cat.available)} available)
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>To Category</label>
+              <select
+                style={styles.select}
+                value={moveMoneyData.toCategoryId}
+                onChange={(e) => {
+                  setMoveMoneyData({ ...moveMoneyData, toCategoryId: e.target.value });
+                  setMoveMoneyError('');
+                }}
+                aria-label="Move to category"
+              >
+                <option value="">Select destination category</option>
+                <option value={READY_TO_ASSIGN_ID}>
+                  {READY_TO_ASSIGN_LABEL} ({formatCurrency(budgetSummary.unassigned || 0)})
+                </option>
+                {filteredMoveMoneyCategories
+                  .filter((c) => !sameCategoryId(c.id, moveMoneyData.fromCategoryId))
+                  .map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name} ({formatCurrency(cat.available)})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div style={styles.previewCard}>
+              <div style={styles.previewHeading}>Balance Preview</div>
+              <div style={styles.previewGrid}>
+                <div>Current</div>
+                <div>
+                  {(getCategoryById(moveMoneyData.fromCategoryId)?.name || 'Source')}: {formatCurrency(getCategoryById(moveMoneyData.fromCategoryId)?.available || 0)}
+                </div>
+                <div>
+                  {isReadyToAssignDestination(moveMoneyData.toCategoryId)
+                    ? `${READY_TO_ASSIGN_LABEL}: ${formatCurrency(budgetSummary.unassigned || 0)}`
+                    : `${getCategoryById(moveMoneyData.toCategoryId)?.name || 'Destination'}: ${formatCurrency(getCategoryById(moveMoneyData.toCategoryId)?.available || 0)}`}
+                </div>
+              </div>
+              <div style={styles.previewGrid}>
+                <div>After Move</div>
+                <div>
+                  {(getCategoryById(moveMoneyData.fromCategoryId)?.name || 'Source')}:{' '}
+                  {formatCurrency(
+                    (Number(getCategoryById(moveMoneyData.fromCategoryId)?.available) || 0) -
+                      (parseMoneyInput(moveMoneyData.amount) || 0),
+                  )}
+                </div>
+                <div>
+                  {isReadyToAssignDestination(moveMoneyData.toCategoryId)
+                    ? `${READY_TO_ASSIGN_LABEL}: ${formatCurrency(
+                        (Number(budgetSummary.unassigned) || 0) + (parseMoneyInput(moveMoneyData.amount) || 0),
+                      )}`
+                    : `${getCategoryById(moveMoneyData.toCategoryId)?.name || 'Destination'}: ${formatCurrency(
+                        (Number(getCategoryById(moveMoneyData.toCategoryId)?.available) || 0) +
+                          (parseMoneyInput(moveMoneyData.amount) || 0),
+                      )}`}
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Suggested Categories</label>
+              <div className="flex flex-wrap gap-2">
+                {isReadyToAssignDestination(moveMoneyData.toCategoryId)
+                  ? []
+                  : getSuggestedMoveMoneySources(moveMoneyData.toCategoryId).slice(0, 3).map((cat) => (
+                  <button
+                    key={`move-suggestion-${cat.id}`}
+                    type="button"
+                    className="rounded-full border border-white/25 px-3 py-1 text-xs text-[#F0F9FF]"
+                    onClick={() =>
+                      setMoveMoneyData((prev) => ({
+                        ...prev,
+                        fromCategoryId: cat.id,
+                      }))
+                    }
+                  >
+                    {cat.name} ({formatCurrency(cat.available)})
+                  </button>
+                ))}
+              </div>
+            </div>
+            {moveMoneyError && <div style={styles.errorText}>{moveMoneyError}</div>}
+            <div style={styles.modalActions}>
+              <button
+                style={styles.saveButton}
+                onClick={handleMoveMoneySubmit}
+                disabled={Boolean(getMoveMoneyValidationError(moveMoneyData))}
+                aria-label="Confirm move money"
+              >
+                Move Money
+              </button>
+              <button
+                style={styles.cancelButton}
+                onClick={() => {
+                  setShowMoveMoneyModal(false);
+                  setMoveMoneyError('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2465,6 +3471,27 @@ const styles = {
     boxShadow: PM.shadow,
     color: PM.text
   },
+  moveMoneyModalContent: {
+    backgroundColor: PM.fg,
+    borderRadius: '16px',
+    padding: '24px',
+    width: '92%',
+    maxWidth: '640px',
+    maxHeight: '92vh',
+    overflowY: 'auto',
+    border: '1px solid ' + PM.border,
+    boxShadow: PM.shadow,
+    color: PM.text
+  },
+  moveMoneyModalContentMobile: {
+    width: '100%',
+    height: '100%',
+    maxWidth: 'none',
+    maxHeight: 'none',
+    borderRadius: 0,
+    paddingTop: '16px',
+    paddingBottom: '24px',
+  },
   modalTitle: {
     color: PM.text,
     fontSize: '20px',
@@ -2531,7 +3558,32 @@ const styles = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontWeight: '600'
-  }
+  },
+  previewCard: {
+    border: '1px solid ' + PM.border,
+    backgroundColor: PM.well,
+    borderRadius: '12px',
+    padding: '12px',
+    marginBottom: '12px',
+  },
+  previewHeading: {
+    fontSize: '12px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.1em',
+    color: PM.textMuted,
+    marginBottom: '8px',
+  },
+  previewGrid: {
+    display: 'grid',
+    gap: '6px',
+    marginBottom: '8px',
+    fontSize: '13px',
+  },
+  errorText: {
+    color: '#fecaca',
+    fontSize: '12px',
+    marginTop: '4px',
+  },
 };
 
 export default PropertyMapView;

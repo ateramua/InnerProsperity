@@ -38,6 +38,8 @@ class TransactionService {
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.user_id = ?
                   AND (t.is_deleted IS NULL OR t.is_deleted = 0)
+                  AND (a.is_active IS NULL OR a.is_active != 0)
+                  AND (a.account_status IS NULL OR a.account_status = 'active')
             `;
             const params = [userId];
 
@@ -126,10 +128,15 @@ class TransactionService {
                 effectiveUpdates = filtered;
             }
 
+            if (Object.prototype.hasOwnProperty.call(effectiveUpdates, 'cleared')) {
+                effectiveUpdates.is_cleared = effectiveUpdates.cleared;
+                delete effectiveUpdates.cleared;
+            }
+
             const allowedUpdates = [
                 'date', 'description', 'amount', 'category_id',
                 'payee', 'memo', 'check_number', 'is_cleared',
-                'linked_transaction_id', 'direction', 'is_reconciled'
+                'linked_transaction_id', 'direction', 'is_reconciled', 'is_flagged'
             ];
 
             const setClauses = [];
@@ -318,6 +325,118 @@ class TransactionService {
 
         return {
             deleted: processed.size,
+            accountIds: [...accountIds],
+            dates,
+        };
+    }
+
+    /**
+     * Apply the same field updates to many transactions in one DB transaction.
+     * @param {(string|number)[]} ids
+     * @param {string|number} userId
+     * @param {object} updates
+     */
+    async bulkUpdateTransactions(ids, userId, updates = {}) {
+        const db = await this.getDb();
+        const uniqueIds = [...new Set((ids || []).map((id) => String(id)).filter(Boolean))];
+        if (!uniqueIds.length) {
+            return { updated: 0, skipped: 0, accountIds: [], dates: [] };
+        }
+
+        let effectiveUpdates = { ...updates };
+        if (Object.prototype.hasOwnProperty.call(effectiveUpdates, 'cleared')) {
+            effectiveUpdates.is_cleared = effectiveUpdates.cleared;
+            delete effectiveUpdates.cleared;
+        }
+        if (Object.prototype.hasOwnProperty.call(effectiveUpdates, 'categoryId')) {
+            effectiveUpdates.category_id = effectiveUpdates.categoryId;
+            delete effectiveUpdates.categoryId;
+        }
+
+        const allowedUpdates = [
+            'date', 'description', 'amount', 'category_id',
+            'payee', 'memo', 'check_number', 'is_cleared',
+            'linked_transaction_id', 'direction', 'is_reconciled', 'is_flagged',
+        ];
+
+        const baseEntries = Object.entries(effectiveUpdates).filter(([key]) =>
+            allowedUpdates.includes(key)
+        );
+        if (!baseEntries.length) {
+            return { updated: 0, skipped: uniqueIds.length, accountIds: [], dates: [] };
+        }
+
+        const { filterPlaidTransactionUpdates } = require('../../utils/plaidTransactionUtils.cjs');
+
+        const accountIds = new Set();
+        const dates = [];
+        let updated = 0;
+        let skipped = 0;
+
+        await db.run('BEGIN TRANSACTION');
+        try {
+            for (const id of uniqueIds) {
+                const row = await db.get(
+                    `SELECT * FROM transactions WHERE id = ? AND user_id = ?
+                     AND (is_deleted IS NULL OR is_deleted = 0)`,
+                    [id, userId]
+                );
+                if (!row) {
+                    skipped += 1;
+                    continue;
+                }
+                if (isSystemTransaction(row)) {
+                    skipped += 1;
+                    continue;
+                }
+
+                let rowUpdates = Object.fromEntries(baseEntries);
+                if (row.plaid_transaction_id) {
+                    const { updates: filtered, removed } = filterPlaidTransactionUpdates(row, rowUpdates);
+                    if (removed.length && !Object.keys(filtered).length) {
+                        skipped += 1;
+                        continue;
+                    }
+                    rowUpdates = filtered;
+                }
+
+                const setClauses = [];
+                const values = [];
+                for (const [key, value] of Object.entries(rowUpdates)) {
+                    if (allowedUpdates.includes(key)) {
+                        setClauses.push(`${key} = ?`);
+                        values.push(value);
+                    }
+                }
+                if (!setClauses.length) {
+                    skipped += 1;
+                    continue;
+                }
+
+                setClauses.push('updated_at = datetime("now")');
+                values.push(id, userId);
+                await db.run(
+                    `UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`,
+                    values
+                );
+
+                accountIds.add(row.account_id);
+                if (row.date) dates.push(row.date);
+                updated += 1;
+            }
+            await db.run('COMMIT');
+        } catch (err) {
+            await db.run('ROLLBACK');
+            throw err;
+        }
+
+        for (const accountId of accountIds) {
+            await this.updateAccountBalances(accountId);
+        }
+
+        return {
+            updated,
+            skipped,
             accountIds: [...accountIds],
             dates,
         };

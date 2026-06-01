@@ -73,8 +73,8 @@ export default function CategoryBudgetEditRow({
     }
 
     const parsedTarget = parseMoneyInput(draft.targetAmountInput);
-    if (!Number.isFinite(parsedTarget) || parsedTarget < 0) {
-      setError('Goal target must be a valid amount (0 or greater).');
+    if (!Number.isFinite(parsedTarget) || parsedTarget <= 0) {
+      setError('Goal target must be a valid amount greater than 0.');
       return;
     }
 

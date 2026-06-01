@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import PM from '../constants/pmTheme.jsx';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -306,10 +307,22 @@ export default function BudgetVsActual({ categories, transactions, categoryGroup
               {(viewType === 'category' ? categoryData : 
                 viewType === 'group' ? groupData : monthlyData).map((item, index) => {
                 const isOver = item.variance < 0;
+                const isCategoryGroupRow = viewType === 'group';
+                const rowStyle = {
+                  borderBottom: '1px solid #2d3748',
+                  ...(isCategoryGroupRow
+                    ? {
+                        backgroundColor: PM.categoryGroupRowBg,
+                        color: PM.categoryGroupRowText,
+                      }
+                    : {}),
+                };
                 
                 return (
-                  <tr key={index} style={{ borderBottom: '1px solid #2d3748' }}>
-                    <td style={{ padding: '10px' }}>{item.name || item.month}</td>
+                  <tr key={index} style={rowStyle}>
+                    <td style={{ padding: '10px', color: isCategoryGroupRow ? PM.categoryGroupRowText : undefined }}>
+                      {item.name || item.month}
+                    </td>
                     <td style={{ padding: '10px', textAlign: 'right' }}>
                       {formatCurrency(item.budgeted || 0)}
                     </td>

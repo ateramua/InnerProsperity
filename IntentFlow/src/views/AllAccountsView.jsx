@@ -1,874 +1,474 @@
-// src/views/AllAccountsView.jsx
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { showAppToast } from '../components/AppToast';
-import ConnectBankCTA from '../components/ConnectBankCTA';
-import EditAccountModal from './EditAccountModal';
-import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
-import {
-  deleteAccountViaApi,
-  formatAccountDeleteError,
-  getAccountDeleteConfirmMessage,
-  loadAllAccountsViaApi,
-  normalizeAccountId,
-} from '../utils/cashAccountUtils';
-import {
-  formatAccountTypeLabel,
-  formatCreditDeleteError,
-  getCreditAccountDeleteConfirmMessage,
-  permanentlyDeleteCreditAccountViaApi,
-  resolveDisplayAccountType,
-} from '../utils/creditAccountUtils.jsx';
-import { coerceStoredAccountType } from '../utils/accountTypeOptions.jsx';
-import {
-  formatLoanDeleteError,
-  getLoanAccountDeleteConfirmMessage,
-  permanentlyDeleteLoanAccountViaApi,
-} from '../utils/loanAccountUtils.jsx';
-const AllAccountsView = () => {
-  const [accounts, setAccounts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [editingAccount, setEditingAccount] = useState(null);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [selectedType, setSelectedType] = useState('all');
-  const [deletingAccountId, setDeletingAccountId] = useState(null);
+// src/views/AllAccountsView.jsx — YNAB-style consolidated transaction register (all accounts)
+import React, { useState, useCallback, useMemo } from 'react';
+import { useRouter } from 'next/router';
+import TransactionManager from '../components/TransactionManager';
+import TransactionImportModal from '../components/TransactionImportModal';
+import useConsolidatedTransactions from '../hooks/useConsolidatedTransactions';
+import { createTransactionRegisterHandlers } from '../hooks/useTransactionRegisterHandlers.jsx';
 
-  // Add style injection
-  useEffect(() => {
-    const styleId = "spin-animation-style";
-    
-    if (typeof document !== 'undefined' && !document.getElementById(styleId)) {
-      const styleSheet = document.createElement("style");
-      styleSheet.id = styleId;
-      styleSheet.textContent = `
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `;
-      document.head.appendChild(styleSheet);
-    }
-    
-    return () => {
-      if (typeof document !== 'undefined') {
-        const existing = document.getElementById(styleId);
-        if (existing) {
-          document.head.removeChild(existing);
-        }
-      }
-    };
-  }, []);
+const PAGE_DEFAULT = 25;
 
-  const fetchAccounts = useCallback(async ({ quiet = false } = {}) => {
-    if (!quiet) {
-      setLoading(true);
-      setError(null);
-    }
+const styles = {
+  container: {
+    padding: '1.25rem 1.5rem',
+    maxWidth: '1600px',
+    margin: '0 auto',
+    color: '#F3F4F6',
+  },
+  header: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '1rem',
+    marginBottom: '1.25rem',
+  },
+  title: {
+    fontSize: '1.75rem',
+    fontWeight: 700,
+    margin: 0,
+    color: '#F9FAFB',
+  },
+  subtitle: {
+    fontSize: '0.875rem',
+    color: '#9CA3AF',
+    marginTop: '0.35rem',
+    maxWidth: '42rem',
+    lineHeight: 1.45,
+  },
+  headerActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.5rem',
+  },
+  btnPrimary: {
+    padding: '0.5rem 1rem',
+    borderRadius: '0.375rem',
+    border: 'none',
+    background: '#2563EB',
+    color: '#fff',
+    fontWeight: 600,
+    cursor: 'pointer',
+    fontSize: '0.875rem',
+  },
+  btnSecondary: {
+    padding: '0.5rem 1rem',
+    borderRadius: '0.375rem',
+    border: '1px solid #475569',
+    background: 'transparent',
+    color: '#E5E7EB',
+    fontWeight: 600,
+    cursor: 'pointer',
+    fontSize: '0.875rem',
+  },
+  metaRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '1rem',
+    marginBottom: '1rem',
+    fontSize: '0.8125rem',
+    color: '#9CA3AF',
+  },
+  loading: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '320px',
+    color: '#9CA3AF',
+  },
+  empty: {
+    textAlign: 'center',
+    padding: '3rem 1.5rem',
+    background: '#1F2937',
+    borderRadius: '0.75rem',
+    border: '1px solid #374151',
+  },
+  modalOverlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.65)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10000,
+    padding: '1rem',
+  },
+  modal: {
+    background: '#0f172a',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    maxWidth: '480px',
+    width: '100%',
+    border: '1px solid #374151',
+    color: '#F3F4F6',
+  },
+  formGroup: { marginBottom: '1rem' },
+  label: { display: 'block', fontSize: '0.8rem', color: '#9CA3AF', marginBottom: '0.35rem' },
+  input: {
+    width: '100%',
+    padding: '0.5rem',
+    borderRadius: '0.375rem',
+    border: '1px solid #374151',
+    background: '#1F2937',
+    color: 'white',
+    fontSize: '0.875rem',
+    boxSizing: 'border-box',
+  },
+  modalActions: { display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' },
+};
 
-    try {
-      const result = await loadAllAccountsViaApi();
-      if (result.success) {
-        setAccounts(result.data || []);
-        if (!quiet) setError(null);
-      } else if (!quiet) {
-        setError(result.error || 'Failed to load accounts');
-      }
-    } catch (err) {
-      console.error('❌ Error fetching accounts:', err);
-      if (!quiet) setError('Failed to load accounts: ' + err.message);
-    } finally {
-      if (!quiet) setLoading(false);
-    }
-  }, []);
+function AllAccountsView({ onNavigate }) {
+  const router = useRouter();
+  const {
+    activeAccounts,
+    transactions,
+    categories,
+    loading,
+    error,
+    reload,
+  } = useConsolidatedTransactions({ activeOnly: true });
 
-  const fetchAccountsRef = useRef(fetchAccounts);
-  fetchAccountsRef.current = fetchAccounts;
+  const handlers = useMemo(() => createTransactionRegisterHandlers(reload), [reload]);
 
-  useEffect(() => {
-    fetchAccounts();
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showImportPicker, setShowImportPicker] = useState(false);
+  const [importAccountId, setImportAccountId] = useState('');
+  const [showImportModal, setShowImportModal] = useState(false);
 
-    const handleAccountsChanged = () => {
-      fetchAccountsRef.current({ quiet: true });
-    };
+  const [addForm, setAddForm] = useState({
+    accountId: '',
+    date: new Date().toISOString().slice(0, 10),
+    payee: '',
+    amount: '',
+    type: 'outflow',
+    categoryId: '',
+    memo: '',
+    cleared: false,
+  });
 
-    window.addEventListener('accounts-changed', handleAccountsChanged);
-    window.addEventListener('accounts-updated', handleAccountsChanged);
-    const unsubIpc = window.electronAPI?.onAccountsUpdated?.(handleAccountsChanged);
-
-    return () => {
-      window.removeEventListener('accounts-changed', handleAccountsChanged);
-      window.removeEventListener('accounts-updated', handleAccountsChanged);
-      if (typeof unsubIpc === 'function') unsubIpc();
-    };
-  }, [fetchAccounts]);
-
-  // Handle update account
-  const handleUpdateAccount = async (accountId, updates) => {
-    try {
-      console.log('📝 Updating account:', accountId, updates);
-      
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('You must be logged in');
+  const navigateToAccount = useCallback(
+    (accountId) => {
+      const id = String(accountId);
+      if (onNavigate) {
+        onNavigate(`account-${id}`);
         return;
       }
-      
-      const userId = userResult.data.id;
-      
-      const result = await window.electronAPI.updateAccount(accountId, userId, updates);
-      
-      if (result.success) {
-        console.log('✅ Account updated successfully');
-        await fetchAccounts();
-        setEditingAccount(null);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert('✅ Account updated successfully!');
-      } else {
-        throw new Error(result.error);
+      if (router?.push) {
+        router.push(`/accounts/${id}`);
       }
-    } catch (error) {
-      console.error('❌ Error updating account:', error);
-      alert('Failed to update account: ' + error.message);
-    }
-  };
-
-  const resolveAccount = useCallback(
-    (accountOrId) => {
-      if (accountOrId && typeof accountOrId === 'object') return accountOrId;
-      const id = normalizeAccountId(accountOrId);
-      return accounts.find((a) => normalizeAccountId(a.id) === id) || null;
     },
-    [accounts]
+    [onNavigate, router]
   );
 
-  /** Route delete by resolved type (matches Cash / Credit / Loan managers). */
-  const handleDeleteAccount = async (accountOrId) => {
-    const account = resolveAccount(accountOrId);
-    const id = normalizeAccountId(account?.id ?? accountOrId);
-    if (!id || deletingAccountId === id) return;
-
-    const displayType = resolveDisplayAccountType(account);
-    const isCredit = displayType === 'credit';
-    const isLoan = displayType === 'loan';
-
-    const confirmMessage = isCredit
-      ? getCreditAccountDeleteConfirmMessage(account)
-      : isLoan
-        ? getLoanAccountDeleteConfirmMessage(account)
-        : getAccountDeleteConfirmMessage(account);
-    if (!window.confirm(confirmMessage)) {
+  const handleAddTransaction = async () => {
+    const amountValue = parseFloat(addForm.amount);
+    if (!addForm.accountId) {
+      alert('Please select an account');
       return;
     }
-
-    setDeletingAccountId(id);
-    try {
-      let result;
-      if (isCredit) {
-        result = await permanentlyDeleteCreditAccountViaApi(account || id);
-      } else if (isLoan) {
-        result = await permanentlyDeleteLoanAccountViaApi(account || id);
-      } else {
-        result = await deleteAccountViaApi(account || id);
-      }
-
-      if (result?.success) {
-        setAccounts((prev) => prev.filter((a) => normalizeAccountId(a.id) !== id));
-        setShowEditModal(false);
-        setEditingAccount(null);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        await fetchAccounts({ quiet: true });
-        const toastLabel = isCredit
-          ? 'Credit card deleted'
-          : isLoan
-            ? 'Loan deleted'
-            : 'Account removed';
-        showAppToast(toastLabel, 'success');
-      } else {
-        const err = isCredit
-          ? formatCreditDeleteError(result)
-          : isLoan
-            ? formatLoanDeleteError(result)
-            : formatAccountDeleteError(result);
-        alert('Failed to delete account: ' + err);
-        await fetchAccounts({ quiet: true });
-      }
-    } catch (error) {
-      console.error('❌ Error deleting account:', error);
-      const msg =
-        error?.code === 'PLAID_ACCOUNT_DELETE_BLOCKED'
-          ? 'This account is linked via Plaid. Use Linked Banks to manage the connection, or remove it from Cash Accounts if it is checking/savings.'
-          : error.message || 'Delete failed';
-      alert('Failed to delete account: ' + msg);
-    } finally {
-      setDeletingAccountId(null);
+    if (!Number.isFinite(amountValue) || amountValue === 0) {
+      alert('Please enter a valid amount');
+      return;
+    }
+    const signedAmount =
+      addForm.type === 'outflow' ? -Math.abs(amountValue) : Math.abs(amountValue);
+    const result = await window.electronAPI.addTransaction({
+      accountId: addForm.accountId,
+      date: addForm.date,
+      payee: addForm.payee,
+      description: addForm.payee,
+      amount: signedAmount,
+      categoryId: addForm.categoryId || null,
+      memo: addForm.memo,
+      cleared: addForm.cleared ? 1 : 0,
+      is_cleared: addForm.cleared ? 1 : 0,
+    });
+    if (result?.success) {
+      setShowAddModal(false);
+      setAddForm({
+        accountId: '',
+        date: new Date().toISOString().slice(0, 10),
+        payee: '',
+        amount: '',
+        type: 'outflow',
+        categoryId: '',
+        memo: '',
+        cleared: false,
+      });
+      await reload({ quiet: true });
+    } else {
+      alert(result?.error || 'Failed to add transaction');
     }
   };
 
-  // Handle edit button click
-  const handleEditClick = (account) => {
-    console.log('✏️ Editing account:', account);
-    setEditingAccount(account);
-    setShowEditModal(true);
+  const openImportFlow = () => {
+    if (!activeAccounts.length) {
+      alert('Create or link an account first (Cash Accounts or Linked Banks).');
+      return;
+    }
+    if (activeAccounts.length === 1) {
+      setImportAccountId(String(activeAccounts[0].id));
+      setShowImportModal(true);
+      return;
+    }
+    setShowImportPicker(true);
   };
 
-  // Handle save edit from modal
-  const handleSaveEdit = async (accountId, updatedData) => {
-    console.log('💾 Saving edit for account:', accountId, updatedData);
-    await handleUpdateAccount(accountId, updatedData);
-    setShowEditModal(false);
-    setEditingAccount(null);
-  };
-
-  // Format currency
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(Math.abs(amount || 0));
-  };
-
-  // Get account icon
-  const getAccountIcon = (type) => {
-    const icons = {
-      checking: '💳',
-      savings: '🏦',
-      credit: '💳',
-      loan: '📝',
-      investment: '📈',
-      cash: '💰',
-      other: '📦'
-    };
-    return icons[type] || '💰';
-  };
-
-  // Get account color
-  const getAccountColor = (type) => {
-    const colors = {
-      checking: '#0047AB',
-      savings: '#10B981',
-      credit: '#F59E0B',
-      loan: '#EF4444',
-      investment: '#8B5CF6',
-      cash: '#6B7280',
-      other: '#9CA3AF'
-    };
-    return colors[type] || '#9CA3AF';
-  };
-
-  /** accounts.type from DB (via getAccountsSummary on each load). */
-  const accountStoredType = useCallback((acc) => {
-    const raw = acc?.type;
-    if (raw == null || String(raw).trim() === '') return '';
-    return coerceStoredAccountType(raw);
-  }, []);
-
-  const formatTypeColumnLabel = useCallback(
-    (acc) => {
-      const key = accountStoredType(acc);
-      if (!key) return '—';
-      return formatAccountTypeLabel(key);
-    },
-    [accountStoredType]
+  const hasTransactions = transactions.some(
+    (tx) => tx.is_deleted !== 1 && tx.is_deleted !== true
   );
-
-  // Filter accounts (by stored DB type)
-  const filteredAccounts = selectedType === 'all'
-    ? accounts
-    : accounts.filter((acc) => accountStoredType(acc) === selectedType);
-
-  const accountsByInstitution = useMemo(() => {
-    const map = new Map();
-    for (const acc of filteredAccounts) {
-      const key = (acc.institution || 'No institution').trim() || 'No institution';
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(acc);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [filteredAccounts]);
-
-  // Calculate totals by type
-  const totals = accounts.reduce((sums, acc) => {
-    const balance = Math.abs(acc.balance || 0);
-    const type = accountStoredType(acc);
-    if (type === 'checking') sums.checking = (sums.checking || 0) + balance;
-    if (type === 'savings') sums.savings = (sums.savings || 0) + balance;
-    if (type === 'credit') sums.credit = (sums.credit || 0) + balance;
-    if (type === 'loan') sums.loan = (sums.loan || 0) + balance;
-    if (type === 'investment') sums.investment = (sums.investment || 0) + balance;
-    sums.total += balance;
-    return sums;
-  }, { checking: 0, savings: 0, credit: 0, loan: 0, investment: 0, total: 0 });
 
   if (loading) {
     return (
-      <div style={styles.loadingContainer}>
-        <div style={styles.spinner}></div>
-        <p>Loading your accounts...</p>
+      <div style={styles.container}>
+        <div style={styles.loading}>Loading all account transactions…</div>
       </div>
     );
   }
 
   return (
     <div style={styles.container}>
-      {/* Header */}
       <div style={styles.header}>
         <div>
-          <h1 style={styles.title}>💰 All Accounts</h1>
-          <p style={styles.subtitle}>Manage all your financial accounts in one place</p>
-        </div>
-      </div>
-
-      {/* Summary Cards - FIXED: Added text overflow handling */}
-      <div style={styles.summaryGrid}>
-        <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>💳</div>
-          <div style={styles.summaryContent}>
-            <span style={styles.summaryLabel}>Checking</span>
-            <span style={styles.summaryValue}>{formatCurrency(totals.checking)}</span>
-          </div>
-        </div>
-        <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>🏦</div>
-          <div style={styles.summaryContent}>
-            <span style={styles.summaryLabel}>Savings</span>
-            <span style={styles.summaryValue}>{formatCurrency(totals.savings)}</span>
-          </div>
-        </div>
-        <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>💳</div>
-          <div style={styles.summaryContent}>
-            <span style={styles.summaryLabel}>Credit Cards</span>
-            <span style={styles.summaryValue}>{formatCurrency(totals.credit)}</span>
-          </div>
-        </div>
-        <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>📝</div>
-          <div style={styles.summaryContent}>
-            <span style={styles.summaryLabel}>Loans</span>
-            <span style={styles.summaryValue}>{formatCurrency(totals.loan)}</span>
-          </div>
-        </div>
-        <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>📈</div>
-          <div style={styles.summaryContent}>
-            <span style={styles.summaryLabel}>Investments</span>
-            <span style={styles.summaryValue}>{formatCurrency(totals.investment)}</span>
-          </div>
-        </div>
-        <div style={styles.summaryCard}>
-          <div style={styles.summaryIcon}>💰</div>
-          <div style={styles.summaryContent}>
-            <span style={styles.summaryLabel}>Total Assets</span>
-            <span style={styles.summaryValue}>{formatCurrency(totals.total)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Filter Tabs */}
-      <div style={styles.filterSection}>
-        <div style={styles.filterTabs}>
-          <button
-            onClick={() => setSelectedType('all')}
-            style={{
-              ...styles.filterTab,
-              ...(selectedType === 'all' ? styles.activeFilterTab : {})
-            }}
-          >
-            All ({accounts.length})
-          </button>
-          <button
-            onClick={() => setSelectedType('checking')}
-            style={{
-              ...styles.filterTab,
-              ...(selectedType === 'checking' ? styles.activeFilterTab : {})
-            }}
-          >
-            Checking ({accounts.filter((a) => accountStoredType(a) === 'checking').length})
-          </button>
-          <button
-            onClick={() => setSelectedType('savings')}
-            style={{
-              ...styles.filterTab,
-              ...(selectedType === 'savings' ? styles.activeFilterTab : {})
-            }}
-          >
-            Savings ({accounts.filter((a) => accountStoredType(a) === 'savings').length})
-          </button>
-          <button
-            onClick={() => setSelectedType('credit')}
-            style={{
-              ...styles.filterTab,
-              ...(selectedType === 'credit' ? styles.activeFilterTab : {})
-            }}
-          >
-            Credit Cards ({accounts.filter((a) => accountStoredType(a) === 'credit').length})
-          </button>
-          <button
-            onClick={() => setSelectedType('loan')}
-            style={{
-              ...styles.filterTab,
-              ...(selectedType === 'loan' ? styles.activeFilterTab : {})
-            }}
-          >
-            Loans ({accounts.filter((a) => accountStoredType(a) === 'loan').length})
-          </button>
-          <button
-            onClick={() => setSelectedType('investment')}
-            style={{
-              ...styles.filterTab,
-              ...(selectedType === 'investment' ? styles.activeFilterTab : {})
-            }}
-          >
-            Investments ({accounts.filter((a) => accountStoredType(a) === 'investment').length})
-          </button>
-        </div>
-      </div>
-
-      {/* Accounts Table */}
-      {error ? (
-        <div style={styles.errorContainer}>
-          <p style={styles.errorText}>Error: {error}</p>
-          <button onClick={fetchAccounts} style={styles.retryButton}>Retry</button>
-        </div>
-      ) : filteredAccounts.length === 0 ? (
-        <div style={styles.emptyState}>
-          <div style={styles.emptyStateIcon}>🏦</div>
-          <h3 style={styles.emptyStateTitle}>No accounts found</h3>
-          <p style={styles.emptyStateText}>
-            {selectedType === 'all' ? (
-              <ConnectBankCTA label="accounts" />
-            ) : (
-              `No ${selectedType} accounts found. Add one to get started.`
-            )}
+          <h1 style={styles.title}>All Accounts</h1>
+          <p style={styles.subtitle}>
+            Consolidated register across every active account. Transactions are stored on each
+            account only—this view aggregates them without creating duplicates.
           </p>
         </div>
+        <div style={styles.headerActions}>
+          {onNavigate && (
+            <button
+              type="button"
+              style={styles.btnSecondary}
+              onClick={() => onNavigate('accounts')}
+            >
+              Cash accounts
+            </button>
+          )}
+          <button type="button" style={styles.btnSecondary} onClick={openImportFlow}>
+            Import CSV
+          </button>
+          <button
+            type="button"
+            style={styles.btnPrimary}
+            onClick={() => setShowAddModal(true)}
+          >
+            + Add Transaction
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <p style={{ color: '#F87171', marginBottom: '1rem' }}>
+          {error}{' '}
+          <button type="button" style={styles.btnSecondary} onClick={() => reload()}>
+            Retry
+          </button>
+        </p>
+      )}
+
+      <div style={styles.metaRow}>
+        <span>{activeAccounts.length} active account(s)</span>
+        <span>
+          {transactions.filter((t) => t.is_deleted !== 1).length} transaction(s) loaded
+        </span>
+        <span>Reconciliation and bank linking are managed per account</span>
+      </div>
+
+      {!hasTransactions ? (
+        <div style={styles.empty}>
+          <p style={{ fontSize: '1.05rem', marginBottom: '1.25rem' }}>
+            Transactions from all accounts will appear here.
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button type="button" style={styles.btnPrimary} onClick={() => setShowAddModal(true)}>
+              Add Transaction
+            </button>
+            <button type="button" style={styles.btnSecondary} onClick={openImportFlow}>
+              Import Transactions
+            </button>
+          </div>
+        </div>
       ) : (
-        <div style={styles.tableContainer}>
-          <table style={styles.table}>
-            <thead>
-              <tr style={styles.tableHeader}>
-                <th style={styles.th}>Account</th>
-                <th style={styles.th}>Type</th>
-                <th style={styles.th}>Institution</th>
-                <th style={styles.th}>Balance</th>
-                <th style={styles.th}>Details</th>
-                <th style={styles.th}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accountsByInstitution.map(([institution, group]) => (
-                <React.Fragment key={institution}>
-                  <tr style={styles.institutionHeaderRow}>
-                    <td colSpan={6} style={styles.institutionHeader}>
-                      {institution}
-                      <span style={styles.institutionCount}> ({group.length})</span>
-                    </td>
-                  </tr>
-                  {group.map((account) => {
-                const storedType = accountStoredType(account);
-                const typeForStyle = storedType || 'other';
-                return (
-                <tr key={account.id} style={styles.tableRow}>
-                  <td style={styles.td}>
-                    <div style={styles.accountNameCell}>
-                      <span style={styles.accountIcon}>{getAccountIcon(typeForStyle)}</span>
-                      <strong>
-                        {account.name}
-                        <PlaidLinkedBadge account={account} />
-                      </strong>
-                    </div>
-                  </td>
-                  <td style={styles.td}>
-                    <span style={{
-                      ...styles.typeBadge,
-                      background: `${getAccountColor(typeForStyle)}20`,
-                      color: getAccountColor(typeForStyle)
-                    }}
-                    title={account.type != null && String(account.type).trim() !== ''
-                      ? `accounts.type: ${account.type}`
-                      : 'No type set in database'}
-                    >
-                      {formatTypeColumnLabel(account)}
-                    </span>
-                  </td>
-                  <td style={styles.td}>
-                    {account.institution || '—'}
-                  </td>
-                  <td style={styles.td}>
-                    <span style={{
-                      ...styles.balance,
-                      color: storedType === 'credit' || storedType === 'loan' ? '#EF4444' : '#4ADE80'
-                    }}>
-                      {formatCurrency(account.balance)}
-                    </span>
-                  </td>
-                  <td style={styles.td}>
-                    <div style={styles.detailsList}>
-                      {account.credit_limit && (
-                        <span style={styles.detailBadge}>
-                          Limit: {formatCurrency(account.credit_limit)}
-                        </span>
-                      )}
-                      {account.interest_rate && (
-                        <span style={styles.detailBadge}>
-                          {account.interest_rate}% APR
-                        </span>
-                      )}
-                      {account.due_date && (
-                        <span style={styles.detailBadge}>
-                          Due: {account.due_date}
-                        </span>
-                      )}
-                      {account.apr && !account.interest_rate && (
-                        <span style={styles.detailBadge}>
-                          {account.apr}% APR
-                        </span>
-                      )}
-                      {account.account_number && (
-                        <span style={styles.detailBadge}>
-                          Acct: ••••{account.account_number.slice(-4)}
-                        </span>
-                      )}
-                      {account.account_holder_name && (
-                        <span style={styles.detailBadge}>
-                          Holder: {account.account_holder_name}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td style={styles.td}>
-                    <div style={styles.actionButtons}>
-                      <button
-                        onClick={() => handleEditClick(account)}
-                        style={styles.editButton}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteAccount(account)}
-                        style={styles.deleteButton}
-                        disabled={deletingAccountId === normalizeAccountId(account.id)}
-                      >
-                        {deletingAccountId === normalizeAccountId(account.id)
-                          ? 'Removing…'
-                          : 'Delete'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-                );
-                  })}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
+        <TransactionManager
+          transactions={transactions}
+          categories={categories}
+          accounts={activeAccounts}
+          onUpdateTransaction={handlers.handleUpdateTransaction}
+          onDeleteTransaction={handlers.handleDeleteTransaction}
+          onToggleCleared={handlers.handleToggleCleared}
+          onBulkDelete={handlers.handleBulkDelete}
+          onBulkUpdate={handlers.handleBulkUpdate}
+          showAccountColumn
+          multiAccountFilter
+          enablePagination
+          enableVirtualScroll
+          defaultPageSize={PAGE_DEFAULT}
+          enableBulkSelection
+          enableInlineEdit
+          onNavigateToAccount={navigateToAccount}
+        />
+      )}
+
+      {showAddModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowAddModal(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Add Transaction</h3>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Account *</label>
+              <select
+                value={addForm.accountId}
+                onChange={(e) => setAddForm({ ...addForm, accountId: e.target.value })}
+                style={styles.input}
+              >
+                <option value="">Select account</option>
+                {activeAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Date *</label>
+              <input
+                type="date"
+                value={addForm.date}
+                onChange={(e) => setAddForm({ ...addForm, date: e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Payee *</label>
+              <input
+                type="text"
+                value={addForm.payee}
+                onChange={(e) => setAddForm({ ...addForm, payee: e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Amount *</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={addForm.amount}
+                onChange={(e) => setAddForm({ ...addForm, amount: e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Type</label>
+              <select
+                value={addForm.type}
+                onChange={(e) => setAddForm({ ...addForm, type: e.target.value })}
+                style={styles.input}
+              >
+                <option value="outflow">Outflow (expense)</option>
+                <option value="inflow">Inflow (income)</option>
+              </select>
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Category</label>
+              <select
+                value={addForm.categoryId}
+                onChange={(e) => setAddForm({ ...addForm, categoryId: e.target.value })}
+                style={styles.input}
+              >
+                <option value="">Uncategorized</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Memo</label>
+              <input
+                type="text"
+                value={addForm.memo}
+                onChange={(e) => setAddForm({ ...addForm, memo: e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem' }}>
+              <input
+                type="checkbox"
+                checked={addForm.cleared}
+                onChange={(e) => setAddForm({ ...addForm, cleared: e.target.checked })}
+              />
+              Cleared
+            </label>
+            <div style={styles.modalActions}>
+              <button type="button" style={styles.btnSecondary} onClick={() => setShowAddModal(false)}>
+                Cancel
+              </button>
+              <button type="button" style={styles.btnPrimary} onClick={handleAddTransaction}>
+                Save
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Edit Account Modal */}
-      <EditAccountModal
-        isOpen={showEditModal}
-        onClose={() => {
-          setShowEditModal(false);
-          setEditingAccount(null);
-        }}
-        onSave={handleSaveEdit}
-        onDelete={handleDeleteAccount}
-        account={editingAccount}
-        allowDeleteWhenPlaidLinked
-        deleteButtonLabel={
-          resolveDisplayAccountType(editingAccount) === 'credit'
-            ? 'Delete Credit Card Account'
-            : resolveDisplayAccountType(editingAccount) === 'loan'
-              ? 'Delete Loan Account'
-              : 'Delete Account'
-        }
-      />
+      {showImportPicker && (
+        <div style={styles.modalOverlay} onClick={() => setShowImportPicker(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Import into which account?</h3>
+            <p style={{ color: '#9CA3AF', fontSize: '0.85rem' }}>
+              CSV import is per account. Imported rows appear here automatically.
+            </p>
+            <select
+              value={importAccountId}
+              onChange={(e) => setImportAccountId(e.target.value)}
+              style={styles.input}
+            >
+              <option value="">Select account</option>
+              {activeAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+            <div style={styles.modalActions}>
+              <button type="button" style={styles.btnSecondary} onClick={() => setShowImportPicker(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                style={styles.btnPrimary}
+                disabled={!importAccountId}
+                onClick={() => {
+                  setShowImportPicker(false);
+                  setShowImportModal(true);
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportModal && importAccountId && (
+        <TransactionImportModal
+          isOpen={showImportModal}
+          onClose={() => {
+            setShowImportModal(false);
+            setImportAccountId('');
+          }}
+          fixedAccountId={importAccountId}
+          accounts={activeAccounts}
+          title="Import transactions (account-specific)"
+          onComplete={() => reload({ quiet: true })}
+        />
+      )}
     </div>
   );
-};
-
-const styles = {
-  container: {
-    padding: '2rem',
-    maxWidth: '1400px',
-    margin: '0 auto',
-    color: '#0047AB'
-  },
-  loadingContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '400px',
-    color: '#9CA3AF'
-  },
-  spinner: {
-    width: '40px',
-    height: '40px',
-    border: '3px solid #374151',
-    borderTopColor: '#0047AB',
-    borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
-    marginBottom: '1rem'
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '2rem',
-    flexWrap: 'wrap',
-    gap: '1rem'
-  },
-  title: {
-    fontSize: '2rem',
-    fontWeight: 'bold',
-    margin: 0,
-    color: '#0047AB'
-  },
-  subtitle: {
-    fontSize: '0.875rem',
-    color: '#9CA3AF',
-    marginTop: '0.5rem'
-  },
-  summaryGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-    gap: '1rem',
-    marginBottom: '2rem'
-  },
-  summaryCard: {
-    background: '#0047AB',
-    padding: '1.25rem',
-    borderRadius: '0.75rem',
-    border: '1px solid #374151',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '1rem',
-    minWidth: 0, // Allows flex item to shrink below content size
-    overflow: 'hidden' // Prevents overflow
-  },
-  summaryIcon: {
-    fontSize: '2rem',
-    flexShrink: 0 // Prevents icon from shrinking
-  },
-  summaryContent: {
-    flex: 1,
-    minWidth: 0, // Allows text truncation
-    overflow: 'hidden' // Prevents overflow
-  },
-  summaryLabel: {
-    fontSize: '0.75rem',
-    color: 'rgba(255,255,255,0.75)',
-    marginBottom: '0.25rem',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    display: 'block',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis'
-  },
-  summaryValue: {
-    fontSize: '1.25rem',
-    fontWeight: 'bold',
-    display: 'block',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    color: '#FFFFFF'
-  },
-  filterSection: {
-    marginBottom: '2rem'
-  },
-  filterTabs: {
-    display: 'flex',
-    gap: '0.5rem',
-    borderBottom: '1px solid #374151',
-    paddingBottom: '0.5rem',
-    flexWrap: 'wrap'
-  },
-  filterTab: {
-    padding: '0.5rem 1rem',
-    background: 'none',
-    border: 'none',
-    color: '#9CA3AF',
-    cursor: 'pointer',
-    fontSize: '0.875rem',
-    fontWeight: '500',
-    borderRadius: '0.375rem',
-    transition: 'all 0.2s'
-  },
-  activeFilterTab: {
-    color: '#0047AB',
-    background: 'rgba(59, 130, 246, 0.1)'
-  },
-  tableContainer: {
-    overflowX: 'auto',
-    background: '#0047AB',
-    borderRadius: '0.75rem',
-    border: '1px solid #374151'
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    minWidth: '800px'
-  },
-  tableHeader: {
-    borderBottom: '1px solid #374151',
-    background: '#0047AB'
-  },
-  th: {
-    padding: '1rem',
-    textAlign: 'left',
-    color: '#9CA3AF',
-    fontWeight: '600',
-    fontSize: '0.875rem'
-  },
-  institutionHeaderRow: {
-    background: '#1F2937',
-  },
-  institutionHeader: {
-    padding: '0.65rem 1rem',
-    fontSize: '0.8rem',
-    fontWeight: 700,
-    color: '#93C5FD',
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
-  },
-  institutionCount: {
-    fontWeight: 500,
-    color: '#6B7280',
-    textTransform: 'none',
-  },
-  tableRow: {
-    borderBottom: '1px solid #374151',
-    transition: 'background 0.2s',
-    ':hover': {
-      background: '#2D3748'
-    }
-  },
-  td: {
-    padding: '1rem',
-    verticalAlign: 'middle'
-  },
-  accountNameCell: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.75rem'
-  },
-  accountIcon: {
-    fontSize: '1.25rem'
-  },
-  typeBadge: {
-    padding: '0.25rem 0.75rem',
-    borderRadius: '0.375rem',
-    fontSize: '0.75rem',
-    fontWeight: '600',
-    textTransform: 'capitalize',
-    display: 'inline-block'
-  },
-  balance: {
-    fontWeight: '600',
-    fontSize: '1rem',
-    whiteSpace: 'nowrap'
-  },
-  detailsList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.25rem'
-  },
-  detailBadge: {
-    fontSize: '0.75rem',
-    color: '#9CA3AF',
-    background: '#374151',
-    padding: '0.125rem 0.5rem',
-    borderRadius: '0.25rem',
-    display: 'inline-block',
-    width: 'fit-content',
-    whiteSpace: 'nowrap'
-  },
-  actionButtons: {
-    display: 'flex',
-    gap: '0.5rem'
-  },
-  editButton: {
-    padding: '0.25rem 0.75rem',
-    background: '#0047AB',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.375rem',
-    cursor: 'pointer',
-    fontSize: '0.75rem',
-    transition: 'all 0.2s',
-    ':hover': {
-      background: '#001a40'
-    }
-  },
-  deleteButton: {
-    padding: '0.25rem 0.75rem',
-    background: '#EF4444',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.375rem',
-    cursor: 'pointer',
-    fontSize: '0.75rem',
-    transition: 'all 0.2s',
-    ':hover': {
-      background: '#DC2626'
-    }
-  },
-  editInput: {
-    padding: '0.25rem 0.5rem',
-    background: '#0047AB',
-    border: '1px solid #0047AB',
-    borderRadius: '0.375rem',
-    color: 'white',
-    fontSize: '0.875rem',
-    outline: 'none'
-  },
-  emptyState: {
-    textAlign: 'center',
-    padding: '3rem',
-    background: '#0047AB',
-    borderRadius: '0.75rem',
-    border: '1px solid #374151'
-  },
-  emptyStateIcon: {
-    fontSize: '4rem',
-    marginBottom: '1rem'
-  },
-  emptyStateTitle: {
-    fontSize: '1.25rem',
-    fontWeight: '600',
-    margin: '0 0 0.5rem 0',
-    color: 'white'
-  },
-  emptyStateText: {
-    color: '#9CA3AF',
-    marginBottom: '1.5rem'
-  },
-  errorContainer: {
-    textAlign: 'center',
-    padding: '2rem',
-    background: '#0047AB',
-    borderRadius: '0.75rem',
-    border: '1px solid #EF4444'
-  },
-  errorText: {
-    color: '#EF4444',
-    marginBottom: '1rem'
-  },
-  retryButton: {
-    padding: '0.5rem 1rem',
-    background: '#374151',
-    color: 'white',
-    border: 'none',
-    borderRadius: '0.375rem',
-    cursor: 'pointer'
-  }
-};
+}
 
 export default AllAccountsView;

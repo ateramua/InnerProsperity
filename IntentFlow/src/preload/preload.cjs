@@ -97,6 +97,9 @@ try {
     bulkDeleteTransactions: (ids) =>
       ipcRenderer.invoke('transactions:bulkDelete', ids),
 
+    bulkUpdateTransactions: (ids, updates) =>
+      ipcRenderer.invoke('transactions:bulkUpdate', { ids, updates }),
+
     getAccountTransactions: (accountId) =>
       ipcRenderer.invoke('getAccountTransactions', accountId),
 
@@ -106,9 +109,16 @@ try {
       ipcRenderer.invoke('transactions:previewImport', payload),
     executeTransactionImport: (payload) =>
       ipcRenderer.invoke('transactions:executeImport', payload),
-    getImportCategoryMappings: () => ipcRenderer.invoke('import-get-category-mappings'),
-    saveImportCategoryMappings: (mappings) =>
-      ipcRenderer.invoke('import-save-category-mappings', mappings),
+    getImportCategoryMappings: (institutionKey) =>
+      ipcRenderer.invoke('import-get-category-mappings', { institutionKey: institutionKey || '' }),
+    listImportCategoryMappings: () => ipcRenderer.invoke('import-list-category-mappings'),
+    deleteImportCategoryMapping: (institutionKey, bankCategory) =>
+      ipcRenderer.invoke('import-delete-category-mapping', { institutionKey, bankCategory }),
+    saveImportCategoryMappings: (mappings, institutionKey) =>
+      ipcRenderer.invoke('import-save-category-mappings', {
+        mappings,
+        institutionKey: institutionKey || '',
+      }),
 
     toggleTransactionCleared: (id, clearedStatus) =>
       ipcRenderer.invoke('toggleTransactionCleared', id, clearedStatus),
@@ -154,11 +164,17 @@ try {
       ipcRenderer.invoke('accounts:getCreditCardDetails', accountId, userId),
 
     // ==================== CATEGORIES ====================
-    getCategories: (userId) =>
-      ipcRenderer.invoke('getCategories', userId),
+    getCategories: (userId, monthKey) =>
+      ipcRenderer.invoke('getCategories', userId, monthKey),
 
     getBudgetMonthSnapshot: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getMonthSnapshot', userId, monthKey),
+
+    getBudgetGlobalSummary: (userId) =>
+      ipcRenderer.invoke('budget:getGlobalSummary', userId),
+
+    getBudgetAssignmentAudit: (userId, opts) =>
+      ipcRenderer.invoke('budget:getAssignmentAudit', userId, opts),
 
     getBudgetUnderfundedSummary: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getUnderfundedSummary', userId, monthKey),
@@ -174,6 +190,9 @@ try {
 
     resetBudgetEnvelopes: (userId, monthKey) =>
       ipcRenderer.invoke('budget:resetEnvelopes', userId, monthKey),
+
+    unassignMonthBudget: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:unassignMonth', userId, monthKey),
 
     exportProsperityTable: (payload) =>
       ipcRenderer.invoke('budget:exportProsperityTable', payload),

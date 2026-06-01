@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ImportTransactionPreview from './transactions/ImportTransactionPreview.jsx';
+import ImportCategoryMappingStep from './transactions/ImportCategoryMappingStep.jsx';
+import ImportCategoryMappingsManager from './transactions/ImportCategoryMappingsManager.jsx';
+import { notifyAccountsChanged } from '../utils/accountRefreshEvents.jsx';
 
 const FIELD_KEYS = ['date', 'payee', 'amount', 'direction', 'outflow', 'inflow', 'category', 'memo'];
 
@@ -13,8 +16,6 @@ const FIELD_LABELS = {
   category: 'Bank category column',
   memo: 'Memo / Notes',
 };
-
-const READY_TO_ASSIGN_VALUE = 'inflow_ready_to_assign';
 
 const styles = {
   overlay: {
@@ -193,8 +194,12 @@ export default function TransactionImportModal({
   const [bankCategories, setBankCategories] = useState([]);
   const [categoryMappings, setCategoryMappings] = useState({});
   const [saveCategoryMappings, setSaveCategoryMappings] = useState(true);
+  const [institutionKey, setInstitutionKey] = useState('');
+  const [institutionLabel, setInstitutionLabel] = useState('');
+  const [showMappingsManager, setShowMappingsManager] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /** pick | account | map-columns | map-categories | review */
   const [step, setStep] = useState('pick');
   const categoryRefreshTimer = useRef(null);
 
@@ -213,6 +218,9 @@ export default function TransactionImportModal({
       setBankCategories([]);
       setCategoryMappings({});
       setSaveCategoryMappings(true);
+      setInstitutionKey('');
+      setInstitutionLabel('');
+      setShowMappingsManager(false);
       setError('');
       setStep('pick');
     }
@@ -241,7 +249,11 @@ export default function TransactionImportModal({
     if (mergeMappings) {
       setCategoryMappings((prev) => mergeSuggestedMappings(prev, d.suggestedCategoryMappings));
     }
-    setStep('map');
+    setInstitutionKey(d.institutionKey || d.detectedProfile?.id || '');
+    setInstitutionLabel(d.institutionLabel || d.detectedProfile?.name || '');
+    setStep((current) =>
+      current === 'pick' || current === 'account' ? 'map-columns' : current
+    );
     setError('');
   }, []);
 
@@ -257,6 +269,7 @@ export default function TransactionImportModal({
         columnMap: map,
         categoryMappings: mappings,
         fileName,
+        institutionKey,
       });
       if (!res?.success) {
         setError(res?.error || 'Preview failed');
@@ -264,7 +277,7 @@ export default function TransactionImportModal({
       }
       applyPreviewData(res.data, mergeMappings);
     },
-    [applyPreviewData, fileName]
+    [applyPreviewData, fileName, institutionKey]
   );
 
   const scheduleCategoryPreviewRefresh = useCallback(
@@ -363,6 +376,33 @@ export default function TransactionImportModal({
     });
   };
 
+  const hasCategoryColumnMapped = Boolean(columnMap.category);
+  const showCategoryMappingTable = hasCategoryColumnMapped && bankCategories.length > 0;
+  const canOfferCategoryStep = showCategoryMappingTable;
+
+  const goToReview = async () => {
+    if (!accountId || !fileContent) return;
+    setBusy(true);
+    try {
+      await runPreview(fileContent, accountId, columnMap, categoryMappings, false);
+      setStep('review');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const skipCategoryMapping = () => {
+    goToReview();
+  };
+
+  const continueToCategoryMapping = () => {
+    if (canOfferCategoryStep) {
+      setStep('map-categories');
+    } else {
+      goToReview();
+    }
+  };
+
   const handleImport = async () => {
     if (!accountId || !fileContent) {
       setError('Account and file are required');
@@ -377,6 +417,7 @@ export default function TransactionImportModal({
         columnMap,
         categoryMappings,
         saveCategoryMappings,
+        institutionKey,
         fileName,
       });
       if (!res?.success) {
@@ -385,7 +426,7 @@ export default function TransactionImportModal({
       }
       const d = res.data || {};
       onComplete?.(d);
-      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      notifyAccountsChanged({ reason: 'transaction-import' });
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
       onClose();
       alert(
@@ -401,29 +442,46 @@ export default function TransactionImportModal({
   if (!isOpen) return null;
 
   const showAccountPicker = !fixedAccountId && (step === 'account' || (step === 'pick' && !accountId));
-  const showCategoryMappingSection = step === 'map';
-  const hasCategoryColumnMapped = Boolean(columnMap.category);
-  const showCategoryMappingTable =
-    hasCategoryColumnMapped && bankCategories.length > 0;
-  const showImportPreview = step === 'map' && previewTransactions.length > 0;
+  const showColumnMapping = step === 'map-columns';
+  const showCategoryStep = step === 'map-categories';
+  const showImportPreview = step === 'review' && previewTransactions.length > 0;
   const mappedCount = bankCategories.filter((item) => {
     const mapped = categoryMappings[item.key];
     return mapped != null && mapped !== '';
   }).length;
 
+  const stepLabels = {
+    pick: '1. Choose file',
+    account: '2. Select account',
+    'map-columns': '3. Map columns',
+    'map-categories': '4. Map categories (optional)',
+    review: canOfferCategoryStep ? '5. Review & import' : '4. Review & import',
+  };
+
   return (
     <div style={styles.overlay} onClick={onClose}>
       <div
-        style={{ ...styles.modal, ...(showImportPreview || showCategoryMappingTable ? styles.modalWide : null) }}
+        style={{
+          ...styles.modal,
+          ...(showImportPreview || showCategoryStep || showCategoryMappingTable
+            ? styles.modalWide
+            : null),
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <h3 style={styles.title}>{title}</h3>
         <p style={styles.hint}>
           CSV export from your bank. Supported institutions: Wells Fargo, PNC Bank, Capital One,
           Navy Federal Credit Union, American Express, and Bank of America. Map a{' '}
-          <strong>Debit/Credit</strong> column when Amount is always positive (Navy Federal). Optionally
-          map bank categories to IntentFlow budget categories. Duplicates are skipped.
+          <strong>Debit/Credit</strong> column when Amount is always positive (Navy Federal). Use the
+          optional category mapping step to align bank categories with your budget. Duplicates are
+          skipped.
         </p>
+        {step !== 'pick' && step !== 'account' ? (
+          <p style={styles.stat}>
+            Step: <strong>{stepLabels[step] || step}</strong>
+          </p>
+        ) : null}
         <p style={styles.supportedBanks}>
           After import, transactions appear in the standard table with search, filters, and recent ranges.
         </p>
@@ -468,19 +526,27 @@ export default function TransactionImportModal({
           </p>
         )}
 
-        {step === 'map' && headers.length > 0 && (
+        {(showColumnMapping || showCategoryStep || showImportPreview) && headers.length > 0 && (
+          <p style={styles.stat}>
+            {validCount} of {totalRows} rows ready to import
+            {importBalancePreview != null && Number.isFinite(importBalancePreview) ? (
+              <>
+                {' '}
+                · Net from file:{' '}
+                <strong style={{ color: importBalancePreview >= 0 ? '#4ade80' : '#f87171' }}>
+                  {formatCurrency(importBalancePreview)}
+                </strong>
+              </>
+            ) : null}
+          </p>
+        )}
+
+        {showColumnMapping && headers.length > 0 && (
           <>
-            <p style={styles.stat}>
-              {validCount} of {totalRows} rows ready to import
-              {importBalancePreview != null && Number.isFinite(importBalancePreview) ? (
-                <>
-                  {' '}
-                  · Net from file:{' '}
-                  <strong style={{ color: importBalancePreview >= 0 ? '#4ade80' : '#f87171' }}>
-                    {formatCurrency(importBalancePreview)}
-                  </strong>
-                </>
-              ) : null}
+            <h4 style={styles.sectionTitle}>Map CSV columns</h4>
+            <p style={styles.sectionHint}>
+              Match each field to a column in your file. Select <strong>Bank category column</strong> if
+              your export includes spending categories (recommended for automatic mapping).
             </p>
             {FIELD_KEYS.map((field) => (
               <div key={field} style={styles.row}>
@@ -507,83 +573,32 @@ export default function TransactionImportModal({
             >
               Refresh preview
             </button>
+          </>
+        )}
 
-            {showCategoryMappingSection && (
-              <>
-                <h4 style={styles.sectionTitle}>Map bank categories (optional)</h4>
-                {!hasCategoryColumnMapped && (
-                  <p style={styles.sectionHint}>
-                    Choose your CSV&apos;s category column in <strong>Bank category column</strong> above
-                    (e.g. Category, Spending Category). The mapping table appears after the file is
-                    refreshed. If your bank export has no category column, you can skip this step.
-                  </p>
-                )}
-                {hasCategoryColumnMapped && !showCategoryMappingTable && (
-                  <p style={styles.sectionHint}>
-                    Column <strong>{columnMap.category}</strong> is selected, but no category values were
-                    found in the file. Try a different column, or click <strong>Refresh preview</strong>.
-                  </p>
-                )}
-                {showCategoryMappingTable && (
-                  <>
-                    <p style={styles.sectionHint}>
-                      {mappedCount} of {bankCategories.length} bank categories mapped. Unmapped rows import
-                      without a budget category. Names that exactly match an IntentFlow category are filled in
-                      automatically; saved mappings from past imports are reused when available.
-                    </p>
-                    <table style={styles.categoryMapTable}>
-                      <thead>
-                        <tr>
-                          <th style={styles.th}>Bank category</th>
-                          <th style={styles.th}>Rows</th>
-                          <th style={styles.th}>IntentFlow category</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bankCategories.map((item) => (
-                          <tr key={item.key} style={styles.categoryMapRow}>
-                            <td style={styles.categoryMapBank}>{item.name}</td>
-                            <td style={styles.categoryMapCount}>{item.count}</td>
-                            <td style={{ padding: '0.35rem 0' }}>
-                              <select
-                                style={styles.categoryMapSelect}
-                                value={categoryMappings[item.key] ?? ''}
-                                onChange={(e) => handleCategoryMappingChange(item.key, e.target.value)}
-                              >
-                                <option value="">— Unmapped —</option>
-                                <option value={READY_TO_ASSIGN_VALUE}>Ready to Assign (inflow)</option>
-                                {(budgetCategories || []).map((cat) => (
-                                  <option key={cat.id} value={cat.id}>
-                                    {cat.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <label style={styles.checkboxRow}>
-                      <input
-                        type="checkbox"
-                        checked={saveCategoryMappings}
-                        onChange={(e) => setSaveCategoryMappings(e.target.checked)}
-                      />
-                      Remember these mappings for future CSV imports
-                    </label>
-                  </>
-                )}
-              </>
-            )}
+        {showCategoryStep && (
+          <ImportCategoryMappingStep
+            institutionLabel={institutionLabel}
+            hasCategoryColumnMapped={hasCategoryColumnMapped}
+            categoryColumnName={columnMap.category}
+            bankCategories={bankCategories}
+            categoryMappings={categoryMappings}
+            onCategoryMappingChange={handleCategoryMappingChange}
+            budgetCategories={budgetCategories}
+            saveCategoryMappings={saveCategoryMappings}
+            onSaveCategoryMappingsChange={setSaveCategoryMappings}
+            mappedCount={mappedCount}
+            onManageSavedMappings={() => setShowMappingsManager(true)}
+          />
+        )}
 
-            {showImportPreview && (
-              <ImportTransactionPreview
-                transactions={previewTransactions}
-                categories={budgetCategories}
-                title="Preview (same layout as imported transactions)"
-              />
-            )}
-
+        {showImportPreview && (
+          <>
+            <ImportTransactionPreview
+              transactions={previewTransactions}
+              categories={budgetCategories}
+              title="Preview (categories reflect your mappings)"
+            />
             {parseErrors.length > 0 && (
               <p style={styles.error}>
                 {parseErrors.length} row(s) could not be parsed (see line numbers in file).
@@ -610,16 +625,82 @@ export default function TransactionImportModal({
               Continue
             </button>
           )}
-          {step === 'map' && validCount > 0 && (
-            <button type="button" style={styles.primary} onClick={handleImport} disabled={busy}>
-              {busy ? 'Importing…' : `Import ${validCount} transaction(s)`}
-            </button>
+          {showColumnMapping && validCount > 0 && (
+            <>
+              <button
+                type="button"
+                style={styles.primary}
+                onClick={continueToCategoryMapping}
+                disabled={busy}
+              >
+                {canOfferCategoryStep ? 'Next: Map categories' : 'Next: Review'}
+              </button>
+              {canOfferCategoryStep && (
+                <button
+                  type="button"
+                  style={styles.secondary}
+                  onClick={skipCategoryMapping}
+                  disabled={busy}
+                >
+                  Skip category mapping
+                </button>
+              )}
+            </>
+          )}
+          {showCategoryStep && (
+            <>
+              <button
+                type="button"
+                style={styles.secondary}
+                onClick={() => setStep('map-columns')}
+                disabled={busy}
+              >
+                Back
+              </button>
+              <button type="button" style={styles.primary} onClick={goToReview} disabled={busy}>
+                {busy ? 'Updating preview…' : 'Continue to review'}
+              </button>
+              <button
+                type="button"
+                style={styles.secondary}
+                onClick={skipCategoryMapping}
+                disabled={busy}
+              >
+                Skip & use defaults
+              </button>
+            </>
+          )}
+          {step === 'review' && validCount > 0 && (
+            <>
+              <button
+                type="button"
+                style={styles.secondary}
+                onClick={() => setStep(canOfferCategoryStep ? 'map-categories' : 'map-columns')}
+                disabled={busy}
+              >
+                Back
+              </button>
+              <button type="button" style={styles.primary} onClick={handleImport} disabled={busy}>
+                {busy ? 'Importing…' : `Import ${validCount} transaction(s)`}
+              </button>
+            </>
           )}
           <button type="button" style={styles.secondary} onClick={onClose} disabled={busy}>
             Cancel
           </button>
         </div>
       </div>
+
+      <ImportCategoryMappingsManager
+        isOpen={showMappingsManager}
+        onClose={() => setShowMappingsManager(false)}
+        budgetCategories={budgetCategories}
+        onMappingsChanged={async () => {
+          if (accountId && fileContent) {
+            await runPreview(fileContent, accountId, columnMap, categoryMappings, true);
+          }
+        }}
+      />
     </div>
   );
 }

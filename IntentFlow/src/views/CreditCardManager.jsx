@@ -16,6 +16,14 @@ import {
 } from '../utils/creditAccountUtils.jsx';
 import { normalizeAccountId } from '../utils/cashAccountUtils.jsx';
 import TransactionImportModal from '../components/TransactionImportModal';
+import CreditCardSmartPayModal from '../components/CreditCardSmartPayModal';
+import {
+  allocateAndNavigateToPaymentCategory,
+  calculateAcceleratorPayment,
+  getAcceleratorMonthsForCard,
+  loadAcceleratorMonthsByCard,
+  saveAcceleratorMonthsForCard,
+} from '../utils/creditCardSmartPayUtils.jsx';
 
 function CreditCardManager({
   onNavigate,
@@ -37,10 +45,29 @@ function CreditCardManager({
 
   // State for Zero Interest Accelerator
   const [showAccelerator, setShowAccelerator] = useState(false);
-  const [targetMonths, setTargetMonths] = useState(12);
+  const [userId, setUserId] = useState(null);
+  const [targetMonthsByCard, setTargetMonthsByCard] = useState({});
+  const [acceleratorDraftByCard, setAcceleratorDraftByCard] = useState({});
   const [acceleratorPlan, setAcceleratorPlan] = useState(null);
+  const [smartPayModal, setSmartPayModal] = useState(null);
+  const [isAllocatingBudget, setIsAllocatingBudget] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [qrValue, setQrValue] = useState('');
+
+  useEffect(() => {
+    const loadUserAndAcceleratorSettings = async () => {
+      try {
+        const userResult = await window.electronAPI?.getCurrentUser?.();
+        const uid = userResult?.data?.id;
+        if (!uid) return;
+        setUserId(uid);
+        setTargetMonthsByCard(loadAcceleratorMonthsByCard(uid));
+      } catch (error) {
+        console.warn('Failed to load accelerator settings:', error);
+      }
+    };
+    void loadUserAndAcceleratorSettings();
+  }, []);
 
   // Debug: log cards when they change
   useEffect(() => {
@@ -58,12 +85,40 @@ function CreditCardManager({
     }
   }, [cards]);
 
-  // Calculate Zero Interest Accelerator plan for a card
-  const calculateAcceleratorPlan = (card) => {
+  const getSavedTargetMonths = (cardId) =>
+    getAcceleratorMonthsForCard(userId, cardId, targetMonthsByCard);
+
+  const cardKey = (cardId) => String(normalizeAccountId(cardId) ?? cardId);
+
+  const isSameCard = (leftId, rightId) => cardKey(leftId) === cardKey(rightId);
+
+  const getDraftMonths = (cardId) => {
+    const key = cardKey(cardId);
+    if (acceleratorDraftByCard[key] != null) {
+      return Number(acceleratorDraftByCard[key]);
+    }
+    return getSavedTargetMonths(cardId);
+  };
+
+  const setDraftMonths = (cardId, months) => {
+    const safeMonths = Math.max(1, Math.min(60, Number(months) || 12));
+    setAcceleratorDraftByCard((prev) => ({
+      ...prev,
+      [cardKey(cardId)]: safeMonths,
+    }));
+  };
+
+  const calculateAcceleratorPlan = (card, monthsOverride = null) => {
+    const months =
+      monthsOverride ??
+      (showAccelerator && isSameCard(selectedCard, card.id)
+        ? getDraftMonths(card.id)
+        : getSavedTargetMonths(card.id));
     const balance = Math.abs(card.balance || 0);
     const aprValue = card.interest_rate ?? card.apr ?? 18.99;
     const monthlyRate = aprValue / 100 / 12;
     const minPayment = card.minimum_payment || card.minimumPayment || Math.max(25, balance * 0.02);
+    const accelerated = calculateAcceleratorPayment(card, months);
 
     let monthsWithMin = 0;
     let totalInterestMin = 0;
@@ -71,52 +126,35 @@ function CreditCardManager({
     if (monthlyRate === 0) {
       monthsWithMin = Math.ceil(balance / minPayment);
       totalInterestMin = 0;
-    } else {
-      if (minPayment > balance * monthlyRate) {
-        monthsWithMin = Math.ceil(
-          -Math.log(1 - (balance * monthlyRate) / minPayment) / Math.log(1 + monthlyRate)
-        );
-      } else {
-        monthsWithMin = Infinity;
-      }
+    } else if (minPayment > balance * monthlyRate) {
+      monthsWithMin = Math.ceil(
+        -Math.log(1 - (balance * monthlyRate) / minPayment) / Math.log(1 + monthlyRate),
+      );
       totalInterestMin = monthsWithMin * minPayment - balance;
+    } else {
+      monthsWithMin = Infinity;
+      totalInterestMin = 999999;
     }
 
-    let targetPayment = null;
-    let targetTotalInterest = null;
-    let canAchieve = true;
-
-    if (targetMonths > 0 && monthlyRate > 0) {
-      const r = monthlyRate;
-      const n = targetMonths;
-      targetPayment = (r * balance) / (1 - Math.pow(1 + r, -n));
-      if (targetPayment < minPayment) {
-        targetPayment = minPayment;
-        canAchieve = false;
-      }
-      targetTotalInterest = targetPayment * n - balance;
-    } else if (targetMonths > 0) {
-      targetPayment = balance / targetMonths;
-      targetTotalInterest = 0;
-      if (targetPayment < minPayment) canAchieve = false;
-    }
-
-    const interestSaved = totalInterestMin - targetTotalInterest;
+    const targetPayment = accelerated.targetPayment;
+    const targetTotalInterest =
+      targetPayment != null ? targetPayment * months - balance : null;
+    const interestSaved = totalInterestMin - (targetTotalInterest || 0);
     const extraPerMonth = targetPayment ? targetPayment - minPayment : 0;
-    const monthsSaved = monthsWithMin - targetMonths;
 
     return {
       balance,
       minPayment,
+      targetMonths: months,
       monthsWithMin: isFinite(monthsWithMin) ? monthsWithMin : 999,
       totalInterestMin: isFinite(totalInterestMin) ? totalInterestMin : 999999,
       targetPayment,
       targetTotalInterest,
       interestSaved: Math.max(0, interestSaved),
       extraPerMonth: Math.max(0, extraPerMonth),
-      monthsSaved: Math.max(0, monthsSaved),
-      canAchieve,
-      aprValue
+      monthsSaved: Math.max(0, monthsWithMin - months),
+      canAchieve: accelerated.canAchieve,
+      aprValue,
     };
   };
 
@@ -156,31 +194,77 @@ function CreditCardManager({
     };
   };
 
-  // SMART PAY EXECUTOR
-  const handleSmartPay = (card, type, amount) => {
-    const payment = buildPaymentIntent(card, type, amount);
-    if (!payment) return;
-
-    console.log('⚡ Smart Pay Executed:', payment);
-
-    if (!payment.bankUrl) {
-      const qrData = JSON.stringify({
-        cardName: payment.cardName,
-        amount: payment.amount,
-        paymentType: payment.paymentType,
-        last4: payment.last4,
-        timestamp: payment.timestamp
+  const allocatePaymentInBudget = async (card, amount, successMessage) => {
+    if (isAllocatingBudget) return false;
+    setIsAllocatingBudget(true);
+    try {
+      await allocateAndNavigateToPaymentCategory({
+        userId,
+        card,
+        amount,
+        onNavigate,
       });
-      setQrValue(qrData);
-      setShowQR(true);
+      alert(successMessage);
+      return true;
+    } catch (error) {
+      console.error('Budget allocation failed:', error);
+      alert(`❌ ${error.message || 'Failed to allocate budget.'}`);
+      return false;
+    } finally {
+      setIsAllocatingBudget(false);
+    }
+  };
+
+  const handleSmartFaster = async (card) => {
+    const accelerator = calculateAcceleratorPlan(card, getSavedTargetMonths(card.id));
+    const amount = accelerator.targetPayment || accelerator.minPayment;
+    if (!amount || amount <= 0) {
+      alert('No accelerated payment amount is available for this card.');
       return;
     }
+    await allocatePaymentInBudget(
+      card,
+      amount,
+      `✅ Allocated ${formatCurrency(amount)} to ${card.name} in Credit Card Payments for this month.`,
+    );
+  };
 
-    if (window.electronAPI?.openExternal) {
-      window.electronAPI.openExternal(payment.bankUrl);
-    } else {
-      window.open(payment.bankUrl, '_blank');
-    }
+  const handleSmartMinClick = (card, stats) => {
+    setSmartPayModal({
+      type: 'min',
+      card,
+      defaults: {
+        balance: Math.abs(card.balance || 0),
+        explicitMin: card.minimum_payment || card.minimumPayment || stats.minPayment || '',
+        minPercent: 2,
+        minFloor: 25,
+      },
+    });
+  };
+
+  const handleSmartStatementClick = (card, stats) => {
+    setSmartPayModal({
+      type: 'statement',
+      card,
+      defaults: {
+        balance: Math.abs(card.balance || 0),
+        statementBalance: stats.statementBalance,
+        explicitStatement: stats.statementBalance,
+        previousBalance: Math.abs(card.lastStatementBalance || card.balance || 0),
+      },
+    });
+  };
+
+  const handleSmartPayModalConfirm = async (amount) => {
+    if (!smartPayModal?.card) return;
+    const label =
+      smartPayModal.type === 'min' ? 'minimum payment' : 'statement balance payment';
+    const ok = await allocatePaymentInBudget(
+      smartPayModal.card,
+      amount,
+      `✅ Allocated ${formatCurrency(amount)} (${label}) to ${smartPayModal.card.name} in Credit Card Payments.`,
+    );
+    if (ok) setSmartPayModal(null);
   };
 
   // Legacy handlers for compatibility
@@ -210,39 +294,46 @@ function CreditCardManager({
 
   // Handle card selection and calculate accelerator plan
   const handleCardSelect = (card) => {
-    setSelectedCard(selectedCard === card.id ? null : card.id);
-    if (selectedCard !== card.id) {
-      const plan = calculateAcceleratorPlan(card);
-      setAcceleratorPlan(plan);
+    if (isSameCard(selectedCard, card.id)) {
+      setSelectedCard(null);
+      setShowAccelerator(false);
+      return;
     }
+    setSelectedCard(card.id);
+    setAcceleratorPlan(calculateAcceleratorPlan(card));
   };
 
-  // Handle opening accelerator for a card
   const handleOpenAccelerator = (e, card) => {
     e.stopPropagation();
-    const plan = calculateAcceleratorPlan(card);
+    const savedMonths = getSavedTargetMonths(card.id);
+    setDraftMonths(card.id, savedMonths);
+    const plan = calculateAcceleratorPlan(card, savedMonths);
     setAcceleratorPlan(plan);
     setSelectedCard(card.id);
     setShowAccelerator(true);
   };
 
-  // Handle applying accelerator payment
-  const handleApplyAccelerator = async (card) => {
-    if (!acceleratorPlan || !acceleratorPlan.targetPayment) return;
+  const handleApplyAccelerator = async (e, card) => {
+    e?.stopPropagation?.();
+    const draftMonths = getDraftMonths(card.id);
+    const plan = calculateAcceleratorPlan(card, draftMonths);
+    if (!plan?.targetPayment) return;
 
-    if (onMakePayment) {
-      const result = await onMakePayment({
-        cardId: card.id,
-        amount: acceleratorPlan.targetPayment,
-        date: new Date().toISOString().split('T')[0],
-        accountId: card.id,
-        isAccelerated: true
-      });
-      if (result?.success) {
-        setShowAccelerator(false);
-        window.dispatchEvent(new CustomEvent('accounts-updated'));
-        alert(`✅ Accelerated payment of $${acceleratorPlan.targetPayment.toFixed(2)} scheduled! You'll save $${acceleratorPlan.interestSaved.toFixed(2)} in interest.`);
-      }
+    if (userId) {
+      saveAcceleratorMonthsForCard(userId, card.id, draftMonths);
+      setTargetMonthsByCard((prev) => ({
+        ...prev,
+        [cardKey(card.id)]: draftMonths,
+      }));
+    }
+
+    const ok = await allocatePaymentInBudget(
+      card,
+      plan.targetPayment,
+      `✅ Saved ${draftMonths}-month payoff plan and allocated ${formatCurrency(plan.targetPayment)} to ${card.name}. Estimated interest saved: ${formatCurrency(plan.interestSaved)}.`,
+    );
+    if (ok) {
+      setShowAccelerator(false);
     }
   };
 
@@ -641,8 +732,12 @@ function CreditCardManager({
         <div style={styles.cardsGrid}>
           {filteredCards.map(card => {
             const stats = calculateCardStats(card);
-            const isSelected = selectedCard === card.id;
-            const accelerator = calculateAcceleratorPlan(card);
+            const isSelected = isSameCard(selectedCard, card.id);
+            const draftMonths = getDraftMonths(card.id);
+            const accelerator = calculateAcceleratorPlan(
+              card,
+              showAccelerator && isSelected ? draftMonths : null,
+            );
             const issuer = getCardIssuerIcon(card.account_number);
 
             return (
@@ -723,27 +818,30 @@ function CreditCardManager({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSmartPay(card, "MIN", stats.minPayment);
+                      handleSmartMinClick(card, stats);
                     }}
                     style={styles.smartPayButton}
+                    disabled={isAllocatingBudget}
                   >
                     💰 Smart Min
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSmartPay(card, "STATEMENT", stats.statementBalance);
+                      handleSmartStatementClick(card, stats);
                     }}
                     style={styles.smartPayButton}
+                    disabled={isAllocatingBudget}
                   >
                     💳 Smart Statement
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSmartPay(card, "ACCELERATED", accelerator.targetPayment || stats.minPayment);
+                      void handleSmartFaster(card);
                     }}
                     style={styles.smartPayButton}
+                    disabled={isAllocatingBudget}
                   >
                     ⚡ Smart Faster
                   </button>
@@ -811,7 +909,11 @@ function CreditCardManager({
 
                 {/* Expanded Details */}
                 {isSelected && (
-                  <div style={styles.expandedDetails}>
+                  <div
+                    style={styles.expandedDetails}
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
                     <h4 style={styles.expandedTitle}>Payment Strategy</h4>
                     <div style={styles.strategyGrid}>
                       <div style={styles.strategyCard}>
@@ -836,7 +938,7 @@ function CreditCardManager({
                         <div style={styles.strategyCard}>
                           <div style={styles.strategyLabel}>⚡ Accelerated Payoff</div>
                           <div style={styles.strategyValue}>
-                            {targetMonths} months
+                            {accelerator.targetMonths} months
                           </div>
                           <div style={styles.strategyNote}>
                             Save {formatCurrency(accelerator.interestSaved)} in interest
@@ -846,8 +948,12 @@ function CreditCardManager({
                     </div>
 
                     {/* Zero Interest Accelerator Detailed View */}
-                    {showAccelerator && selectedCard === card.id && (
-                      <div style={styles.acceleratorPlan}>
+                    {showAccelerator && isSelected && (
+                      <div
+                        style={styles.acceleratorPlan}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
                         <h4 style={styles.expandedTitle}>⚡ Zero Interest Accelerator Plan</h4>
                         <div style={styles.acceleratorControls}>
                           <label style={styles.acceleratorLabel}>
@@ -856,14 +962,18 @@ function CreditCardManager({
                               type="range"
                               min="1"
                               max="60"
-                              value={targetMonths}
+                              value={draftMonths}
                               onChange={(e) => {
-                                setTargetMonths(Number(e.target.value));
-                                setAcceleratorPlan(calculateAcceleratorPlan(card));
+                                e.stopPropagation();
+                                const nextMonths = Number(e.target.value);
+                                setDraftMonths(card.id, nextMonths);
+                                setAcceleratorPlan(calculateAcceleratorPlan(card, nextMonths));
                               }}
+                              onClick={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
                               style={styles.acceleratorSlider}
                             />
-                            <span style={styles.acceleratorValue}>{targetMonths} months</span>
+                            <span style={styles.acceleratorValue}>{draftMonths} months</span>
                           </label>
                         </div>
 
@@ -879,6 +989,11 @@ function CreditCardManager({
                             <div style={styles.acceleratorNote}>+{formatCurrency(accelerator.extraPerMonth)} more per month</div>
                           </div>
                           <div style={styles.acceleratorItem}>
+                            <div style={styles.acceleratorLabel}>Saved Payoff Target</div>
+                            <div style={styles.acceleratorAmount}>{draftMonths} months</div>
+                            <div style={styles.acceleratorNote}>Applies when you click Apply Accelerated Payment Plan</div>
+                          </div>
+                          <div style={styles.acceleratorItem}>
                             <div style={styles.acceleratorLabel}>Interest Saved</div>
                             <div style={{ ...styles.acceleratorAmount, color: '#10B981', fontSize: '1.25rem' }}>{formatCurrency(accelerator.interestSaved)}</div>
                             <div style={styles.acceleratorNote}>Pay off {accelerator.monthsSaved} months sooner</div>
@@ -886,7 +1001,7 @@ function CreditCardManager({
                         </div>
 
                         <button
-                          onClick={() => handleApplyAccelerator(card)}
+                          onClick={(e) => handleApplyAccelerator(e, card)}
                           style={styles.applyAcceleratorButton}
                         >
                           ⚡ Apply Accelerated Payment Plan
@@ -914,6 +1029,15 @@ function CreditCardManager({
           })}
         </div>
       )}
+
+      <CreditCardSmartPayModal
+        isOpen={Boolean(smartPayModal)}
+        type={smartPayModal?.type}
+        card={smartPayModal?.card}
+        defaults={smartPayModal?.defaults || {}}
+        onClose={() => setSmartPayModal(null)}
+        onConfirm={handleSmartPayModalConfirm}
+      />
 
       <TransactionImportModal
         isOpen={showImportModal}

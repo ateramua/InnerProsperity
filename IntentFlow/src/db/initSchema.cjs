@@ -126,9 +126,11 @@ async function ensureSchema(db) {
       payee TEXT,
       memo TEXT,
       is_cleared INTEGER DEFAULT 0,
+      cleared INTEGER DEFAULT 0,
       is_system INTEGER DEFAULT 0,
       is_adjustment INTEGER DEFAULT 0,
       is_reconciled INTEGER DEFAULT 0,
+      is_flagged INTEGER DEFAULT 0,
       is_transfer INTEGER DEFAULT 0,
       transfer_group_id TEXT,
       linked_transaction_id TEXT,
@@ -227,10 +229,11 @@ async function ensureSchema(db) {
 
     CREATE TABLE IF NOT EXISTS import_category_mappings (
       user_id INTEGER NOT NULL,
+      institution_key TEXT NOT NULL DEFAULT '',
       bank_category TEXT NOT NULL,
       category_id TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (user_id, bank_category),
+      PRIMARY KEY (user_id, institution_key, bank_category),
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (category_id) REFERENCES categories(id)
     );
@@ -297,6 +300,8 @@ async function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_plaid_items_user_id ON plaid_items(user_id);
     CREATE INDEX IF NOT EXISTS idx_plaid_category_mappings_user_id ON plaid_category_mappings(user_id);
     CREATE INDEX IF NOT EXISTS idx_import_category_mappings_user_id ON import_category_mappings(user_id);
+    CREATE INDEX IF NOT EXISTS idx_import_category_mappings_institution
+      ON import_category_mappings(user_id, institution_key);
     CREATE INDEX IF NOT EXISTS idx_monthly_budgets_category_id ON monthly_budgets(category_id);
     CREATE INDEX IF NOT EXISTS idx_monthly_budgets_month ON monthly_budgets(month);
   `);

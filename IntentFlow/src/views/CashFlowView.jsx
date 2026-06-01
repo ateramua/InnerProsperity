@@ -1,5 +1,6 @@
 // src/views/CashFlowView.jsx
 import React, { useState, useEffect } from 'react';
+import PM from '../constants/pmTheme.jsx';
 
 const CashFlowView = ({ 
   budgetData = { categories: [] },
@@ -55,7 +56,7 @@ const CashFlowView = ({
   const toggleGroup = (groupId) => {
     setExpandedGroups(prev => ({
       ...prev,
-      [groupId]: !prev[groupId]
+      [groupId]: prev[groupId] === true ? false : true,
     }));
   };
 
@@ -164,7 +165,7 @@ const CashFlowView = ({
           budgeted: groupBudgeted,
           actual: groupActual,
           variance: groupVariance,
-          isExpanded: expandedGroups[group.id] !== false // Default to expanded
+          isExpanded: expandedGroups[group.id] === true
         };
       }).filter(group => group.categories.length > 0); // Only show groups with categories
 
@@ -306,7 +307,8 @@ const CashFlowView = ({
           {cashFlowData.groupedData.map(group => (
             <React.Fragment key={group.id}>
               {/* Group Header Row */}
-              <div 
+              <div
+                data-testid="cashflow-category-group-row"
                 style={styles.groupHeaderRow}
                 onClick={() => toggleGroup(group.id)}
               >
@@ -697,11 +699,13 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '2fr 1fr 1fr 1fr',
     padding: '0.75rem',
-    background: '#1E3A8A',
+    background: PM.categoryGroupRowBg,
+    color: PM.categoryGroupRowText,
     borderRadius: '0.5rem',
     cursor: 'pointer',
     alignItems: 'center',
-    transition: 'background 0.2s'
+    transition: 'background 0.2s',
+    border: `1px solid ${PM.categoryGroupRowBorder}`,
   },
   groupHeaderLeft: {
     display: 'flex',
@@ -710,30 +714,32 @@ const styles = {
   },
   expandIcon: {
     fontSize: '10px',
-    color: '#9CA3AF'
+    color: PM.categoryGroupRowTextMuted,
   },
   groupName: {
     fontWeight: '600',
-    color: '#60A5FA'
+    color: PM.categoryGroupRowText,
   },
   categoryCount: {
     fontSize: '11px',
-    color: '#9CA3AF'
+    color: PM.categoryGroupRowTextMuted,
   },
   groupHeaderTotals: {
     display: 'contents'
   },
   groupBudgeted: {
     textAlign: 'right',
-    fontWeight: '500'
+    fontWeight: '500',
+    color: PM.categoryGroupRowText,
   },
   groupActual: {
     textAlign: 'right',
-    fontWeight: '500'
+    fontWeight: '500',
+    color: PM.categoryGroupRowText,
   },
   groupVariance: {
     textAlign: 'right',
-    fontWeight: '500'
+    fontWeight: '500',
   },
   categoryRows: {
     marginLeft: '24px'

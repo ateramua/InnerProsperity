@@ -718,24 +718,12 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         );
 
       case 'accounts':
-        console.log('🔵 Rendering CashAccountsView with accounts:', accounts);
-        return <CashAccountsView accounts={accounts} />;
+        return <CashAccountsView />;
 
       case 'allAccounts':
       case 'all-accounts':
-        console.log('🔵 Rendering AllAccountsView with accounts:', accounts);
-        const handleAccountUpdate = (accountId, updates) => {
-          console.log('📝 Account updated:', accountId, updates);
-        };
-        const handleAccountDelete = (accountId) => {
-          console.log('🗑️ Account deleted:', accountId);
-        };
         return (
-          <AllAccountsView
-            accounts={accounts}
-            onAccountUpdate={handleAccountUpdate}
-            onAccountDelete={handleAccountDelete}
-          />
+          <AllAccountsView onNavigate={onNavigate} />
         );
 
       case 'propertyMap':
