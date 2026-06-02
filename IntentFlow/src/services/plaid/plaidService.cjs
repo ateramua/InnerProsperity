@@ -104,7 +104,10 @@ function plaidBalanceToAppBalance(plaidAccount, rawBalance) {
   const type = String(plaidAccount?.type || '').toLowerCase();
   const subtype = normalizePlaidSubtype(plaidAccount?.subtype);
   if (type === 'credit' || type === 'loan' || isCreditLikeSubtype(subtype) || isLoanLikeSubtype(subtype)) {
-    return value > 0 ? -Math.abs(value) : value;
+    // Plaid: positive current = amount owed; negative current = credit balance (overpayment)
+    if (value > 0) return -Math.abs(value);
+    if (value < 0) return Math.abs(value);
+    return 0;
   }
   return Math.abs(value);
 }

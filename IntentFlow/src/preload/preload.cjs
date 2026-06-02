@@ -100,6 +100,27 @@ try {
     bulkUpdateTransactions: (ids, updates) =>
       ipcRenderer.invoke('transactions:bulkUpdate', { ids, updates }),
 
+    getUncategorizedSummary: () =>
+      ipcRenderer.invoke('transactions:getUncategorizedSummary'),
+
+    pairTransferTransactions: () => ipcRenderer.invoke('transactions:pairTransfers'),
+
+    getCategoryMlModelStatus: () => ipcRenderer.invoke('transactions:getMlModelStatus'),
+
+    retrainCategoryMl: () => ipcRenderer.invoke('transactions:retrainCategoryMl'),
+
+    getTransactionMlSuggestion: (transactionId) =>
+      ipcRenderer.invoke('transactions:getMlSuggestion', transactionId),
+
+    getTransactionSplits: (transactionId) =>
+      ipcRenderer.invoke('transactions:getSplits', transactionId),
+
+    setTransactionSplits: (transactionId, splits) =>
+      ipcRenderer.invoke('transactions:setSplits', { transactionId, splits }),
+
+    clearTransactionSplits: (transactionId, categoryId = null) =>
+      ipcRenderer.invoke('transactions:clearSplits', { transactionId, categoryId }),
+
     getAccountTransactions: (accountId) =>
       ipcRenderer.invoke('getAccountTransactions', accountId),
 
@@ -169,6 +190,12 @@ try {
 
     getBudgetMonthSnapshot: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getMonthSnapshot', userId, monthKey),
+
+    getCategoryActivityTransactionIds: (userId, categoryId, monthKey) =>
+      ipcRenderer.invoke('budget:getCategoryActivityTransactionIds', userId, categoryId, monthKey),
+
+    getBudgetTimelineMonths: (userId) =>
+      ipcRenderer.invoke('budget:listTimelineMonths', userId),
 
     getBudgetGlobalSummary: (userId) =>
       ipcRenderer.invoke('budget:getGlobalSummary', userId),

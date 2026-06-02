@@ -127,6 +127,9 @@ async function runMigrations(existingDb) {
             '026_transactions_is_flagged.cjs',
             '027_import_category_mappings_institution.cjs',
             '028_budget_assignment_audit.cjs',
+            '029_transaction_categorization.cjs',
+            '030_category_ml_models.cjs',
+            '031_payee_category_learning.cjs',
         ];
 
         for (const migration of migrations) {

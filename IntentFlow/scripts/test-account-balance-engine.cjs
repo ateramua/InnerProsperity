@@ -74,4 +74,31 @@ function tx(amount, opts = {}) {
 assert.strictEqual(signedStartingBalanceAmount('credit', 500), -500);
 assert.strictEqual(signedStartingBalanceAmount('checking', 500), 500);
 
-console.log('✅ account balance engine tests passed (6 scenarios)');
+// Credit card overpayment: charges -200, payment +230 → credit balance +30
+{
+  const account = { type: 'credit', initial_balance: 0 };
+  const txs = [tx(-200), tx(230, { cleared: true })];
+  const bal = computeAccountBalances(account, txs);
+  assert.strictEqual(bal.working_balance, 30);
+}
+
+// Purchase consumes credit first: balance +30, charge -10 → +20
+{
+  const account = { type: 'credit', initial_balance: 0 };
+  const txs = [tx(-200), tx(230), tx(-10)];
+  const bal = computeAccountBalances(account, txs);
+  assert.strictEqual(bal.working_balance, 20);
+}
+
+// Register must include initial_balance (omit → wrong working balance)
+{
+  const account = { type: 'credit', initial_balance: -30.28 };
+  const txs = [tx(533.41), tx(-642.55), tx(169.7)];
+  const correct = computeAccountBalances(account, txs);
+  const missingInitial = computeAccountBalances({ type: 'credit', initial_balance: 0 }, txs);
+  assert.ok(Math.abs(correct.working_balance - 30.28) < 0.02);
+  assert.ok(Math.abs(missingInitial.working_balance - 60.56) < 0.02);
+  assert.ok(Math.abs(correct.working_balance - missingInitial.working_balance) > 25);
+}
+
+console.log('✅ account balance engine tests passed (9 scenarios)');

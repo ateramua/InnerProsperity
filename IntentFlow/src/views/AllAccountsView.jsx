@@ -4,7 +4,15 @@ import { useRouter } from 'next/router';
 import TransactionManager from '../components/TransactionManager';
 import TransactionImportModal from '../components/TransactionImportModal';
 import useConsolidatedTransactions from '../hooks/useConsolidatedTransactions';
+import useActivityDrilldown from '../hooks/useActivityDrilldown.jsx';
 import { createTransactionRegisterHandlers } from '../hooks/useTransactionRegisterHandlers.jsx';
+import { TransactionCategorySelectOptions } from '../components/transactions/TransactionCategorySelectOptions.jsx';
+import {
+  isReadyToAssignSentinel,
+  READY_TO_ASSIGN_CATEGORY_ID,
+  READY_TO_ASSIGN_VALIDATION_MSG,
+  validateReadyToAssignSelection,
+} from '../utils/readyToAssignCategory.jsx';
 
 const PAGE_DEFAULT = 25;
 
@@ -14,6 +22,17 @@ const styles = {
     maxWidth: '1600px',
     margin: '0 auto',
     color: '#F3F4F6',
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: 0,
+    height: '100%',
+    boxSizing: 'border-box',
+  },
+  registerWrap: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
   },
   header: {
     display: 'flex',
@@ -127,9 +146,33 @@ function AllAccountsView({ onNavigate }) {
     loading,
     error,
     reload,
+    patchTransaction,
+    removeTransaction,
   } = useConsolidatedTransactions({ activeOnly: true });
 
-  const handlers = useMemo(() => createTransactionRegisterHandlers(reload), [reload]);
+  const {
+    drilldown,
+    highlightIdSet,
+    confirmedActivityIds,
+    focusTransactionId,
+    focusPayeeLabel,
+    initialFilters,
+    bannerLabel,
+    idsLoading: drilldownIdsLoading,
+    prepareReturnToBudget,
+    clearDrilldown,
+    emptyDrilldownMessage,
+  } = useActivityDrilldown({ categories, transactions });
+
+  const activityDrilldownConfig = useMemo(
+    () => (drilldown && initialFilters ? { initialFilters } : null),
+    [drilldown, initialFilters]
+  );
+
+  const handlers = useMemo(
+    () => createTransactionRegisterHandlers(reload, { patchTransaction, removeTransaction }),
+    [reload, patchTransaction, removeTransaction]
+  );
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportPicker, setShowImportPicker] = useState(false);
@@ -173,13 +216,24 @@ function AllAccountsView({ onNavigate }) {
     }
     const signedAmount =
       addForm.type === 'outflow' ? -Math.abs(amountValue) : Math.abs(amountValue);
+    const rtaCheck = validateReadyToAssignSelection(addForm.categoryId, {
+      isIncome: addForm.type === 'inflow',
+      isTransfer: false,
+    });
+    if (!rtaCheck.ok) {
+      alert(rtaCheck.message || READY_TO_ASSIGN_VALIDATION_MSG);
+      return;
+    }
+    const categoryId = isReadyToAssignSentinel(addForm.categoryId)
+      ? READY_TO_ASSIGN_CATEGORY_ID
+      : addForm.categoryId || null;
     const result = await window.electronAPI.addTransaction({
       accountId: addForm.accountId,
       date: addForm.date,
       payee: addForm.payee,
       description: addForm.payee,
       amount: signedAmount,
-      categoryId: addForm.categoryId || null,
+      categoryId,
       memo: addForm.memo,
       cleared: addForm.cleared ? 1 : 0,
       is_cleared: addForm.cleared ? 1 : 0,
@@ -238,6 +292,18 @@ function AllAccountsView({ onNavigate }) {
           </p>
         </div>
         <div style={styles.headerActions}>
+          {drilldown && onNavigate && (
+            <button
+              type="button"
+              style={styles.btnSecondary}
+              onClick={() => {
+                prepareReturnToBudget();
+                onNavigate(drilldown.returnView || 'propertyMap');
+              }}
+            >
+              ← Back to Budget
+            </button>
+          )}
           {onNavigate && (
             <button
               type="button"
@@ -277,7 +343,7 @@ function AllAccountsView({ onNavigate }) {
         <span>Reconciliation and bank linking are managed per account</span>
       </div>
 
-      {!hasTransactions ? (
+      {!hasTransactions && !drilldown ? (
         <div style={styles.empty}>
           <p style={{ fontSize: '1.05rem', marginBottom: '1.25rem' }}>
             Transactions from all accounts will appear here.
@@ -292,24 +358,44 @@ function AllAccountsView({ onNavigate }) {
           </div>
         </div>
       ) : (
-        <TransactionManager
-          transactions={transactions}
-          categories={categories}
-          accounts={activeAccounts}
-          onUpdateTransaction={handlers.handleUpdateTransaction}
-          onDeleteTransaction={handlers.handleDeleteTransaction}
-          onToggleCleared={handlers.handleToggleCleared}
-          onBulkDelete={handlers.handleBulkDelete}
-          onBulkUpdate={handlers.handleBulkUpdate}
-          showAccountColumn
-          multiAccountFilter
-          enablePagination
-          enableVirtualScroll
-          defaultPageSize={PAGE_DEFAULT}
-          enableBulkSelection
-          enableInlineEdit
-          onNavigateToAccount={navigateToAccount}
-        />
+        <div style={styles.registerWrap}>
+          <TransactionManager
+            transactions={transactions}
+            categories={categories}
+            accounts={activeAccounts}
+            onUpdateTransaction={handlers.handleUpdateTransaction}
+            onDeleteTransaction={handlers.handleDeleteTransaction}
+            onToggleCleared={handlers.handleToggleCleared}
+            onBulkDelete={handlers.handleBulkDelete}
+            onBulkUpdate={handlers.handleBulkUpdate}
+            onReload={reload}
+            showAccountColumn
+            multiAccountFilter
+            enablePagination
+            enableVirtualScroll
+            defaultPageSize={PAGE_DEFAULT}
+            enableBulkSelection
+            enableInlineEdit
+            onNavigateToAccount={navigateToAccount}
+            activityDrilldown={activityDrilldownConfig}
+            activityDrilldownHighlightIds={highlightIdSet}
+            activityDrilldownIdsLoading={drilldownIdsLoading}
+            activityDrilldownBannerLabel={bannerLabel}
+            activityDrilldownFocusId={focusTransactionId}
+            activityDrilldownFocusLabel={focusPayeeLabel}
+            activityDrilldownConfirmedIds={confirmedActivityIds}
+            activityDrilldownEmptyMessage={emptyDrilldownMessage}
+            onActivityDrilldownBack={
+              onNavigate
+                ? () => {
+                    prepareReturnToBudget();
+                    onNavigate(drilldown?.returnView || 'propertyMap');
+                  }
+                : undefined
+            }
+            onClearActivityDrilldown={clearDrilldown}
+          />
+        </div>
       )}
 
       {showAddModal && (
@@ -375,15 +461,25 @@ function AllAccountsView({ onNavigate }) {
               <label style={styles.label}>Category</label>
               <select
                 value={addForm.categoryId}
-                onChange={(e) => setAddForm({ ...addForm, categoryId: e.target.value })}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  const check = validateReadyToAssignSelection(next, {
+                    isIncome: addForm.type === 'inflow',
+                    isTransfer: false,
+                  });
+                  if (!check.ok) {
+                    alert(check.message || READY_TO_ASSIGN_VALIDATION_MSG);
+                    return;
+                  }
+                  setAddForm({ ...addForm, categoryId: next });
+                }}
                 style={styles.input}
               >
-                <option value="">Uncategorized</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
+                <TransactionCategorySelectOptions
+                  categories={categories}
+                  isIncome={addForm.type === 'inflow'}
+                  emptyLabel="Uncategorized"
+                />
               </select>
             </div>
             <div style={styles.formGroup}>

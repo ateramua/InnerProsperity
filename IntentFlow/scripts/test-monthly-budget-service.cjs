@@ -11,6 +11,9 @@ const {
   applyMonthBudgetBulkAndRefresh,
   getBudgetMonthSnapshot,
   repairImplicitAssignmentsForMonth,
+  getCategoryActivityTransactionIds,
+  applyMonthBudgetedAmount,
+  getGlobalBudgetSummary,
 } = require('../src/services/budget/monthlyBudgetService.cjs');
 
 function test(name, fn) {
@@ -40,6 +43,12 @@ test('resolveBudgetedForMonth prefers monthly row for current month', () => {
 test('resolveBudgetedForMonth uses category rollup when month row missing', () => {
   const cat = { assigned: 40 };
   assert.strictEqual(resolveBudgetedForMonth(cat, undefined, true), 40);
+});
+
+test('resolveBudgetedForMonth uses monthly row when category rollup is higher', () => {
+  const cat = { assigned: 5000 };
+  const mb = { budgeted_amount: 1437.51 };
+  assert.strictEqual(resolveBudgetedForMonth(cat, mb, true), 1437.51);
 });
 
 async function testBulkAssignPersistsAssignedAndAvailable() {
@@ -85,6 +94,14 @@ async function testBulkAssignPersistsAssignedAndAvailable() {
       amount REAL,
       date TEXT,
       is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
     );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
@@ -174,6 +191,14 @@ async function testRepairImplicitAssignments() {
       date TEXT,
       is_transfer INTEGER DEFAULT 0
     );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -243,6 +268,14 @@ async function testConsolidateAvailableIntoAssignments() {
       amount REAL,
       date TEXT,
       is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
     );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
@@ -327,6 +360,14 @@ async function testReducingAssignedReturnsFundsToRtaPool() {
       amount REAL,
       date TEXT,
       is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
     );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
@@ -427,6 +468,14 @@ async function testGlobalSummaryHealsPhantomAssignments() {
       date TEXT,
       is_transfer INTEGER DEFAULT 0
     );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -502,6 +551,14 @@ async function testBulkAssignInsideOpenTransaction() {
       amount REAL,
       date TEXT,
       is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
     );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
@@ -602,6 +659,14 @@ async function testFundUnderfundedNotClearedByGlobalSummary() {
       date TEXT,
       is_transfer INTEGER DEFAULT 0
     );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -701,6 +766,14 @@ async function testConcurrentBulkAssignNoSavepointError() {
       date TEXT,
       is_transfer INTEGER DEFAULT 0
     );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -736,8 +809,412 @@ async function testConcurrentBulkAssignNoSavepointError() {
   console.log('  ok concurrent bulk assign + snapshots do not hit missing savepoint');
 }
 
+async function testCategoryActivityTransactionIds() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = '2026-06-01';
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE categories (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, name TEXT);
+    INSERT INTO categories (id, user_id, name) VALUES ('c1', 1, 'Groceries');
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    INSERT INTO transactions (id, user_id, category_id, amount, date, is_transfer)
+      VALUES (1, 1, 'c1', -50, '2026-06-10', 0);
+    INSERT INTO transactions (id, user_id, category_id, amount, date, is_transfer)
+      VALUES (2, 1, 'c1', -20, '2026-06-15', 0);
+    INSERT INTO transactions (id, user_id, category_id, amount, date, is_transfer)
+      VALUES (3, 1, 'c1', -10, '2026-05-15', 0);
+    INSERT INTO transactions (id, user_id, category_id, amount, date, is_transfer)
+      VALUES (4, 1, NULL, 100, '2026-06-20', 0);
+    INSERT INTO transactions (id, user_id, category_id, amount, date, is_transfer)
+      VALUES (5, 1, 'c1', -30, '2026-06-22', 1);
+    INSERT INTO transactions (id, user_id, category_id, amount, date, is_transfer)
+      VALUES (6, 1, NULL, -80, '2026-06-18', 0);
+    INSERT INTO transaction_splits (id, transaction_id, user_id, category_id, amount, sort_order)
+      VALUES ('s1', '6', 1, 'c1', 40, 0);
+  `);
+
+  const ids = await getCategoryActivityTransactionIds(db, 1, 'c1', monthKey);
+  assert.deepStrictEqual(ids.sort(), ['1', '2', '6']);
+
+  const rtaIds = await getCategoryActivityTransactionIds(
+    db,
+    1,
+    'inflow_ready_to_assign',
+    monthKey
+  );
+  assert.deepStrictEqual(rtaIds, ['4']);
+
+  await db.close();
+  console.log('  ok getCategoryActivityTransactionIds (direct, split, month, RTA, no transfer)');
+}
+
+async function testCategoryToCategoryMoveDoesNotRequireRta() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      group_id TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO category_groups (id, user_id, name, sort_order) VALUES ('g1', 1, 'Essentials', 0);
+    INSERT INTO categories (id, user_id, name, group_id, assigned, available)
+      VALUES ('c1', 1, 'Source', 'g1', 0, 0),
+             ('c2', 1, 'Dest', 'g1', 0, 0);
+  `);
+
+  const totalCash = 10000;
+  await applyMonthBudgetedAmount(db, 1, 'c1', monthKey, 5000);
+  await applyMonthBudgetedAmount(db, 1, 'c2', monthKey, 3394);
+
+  const summary = await getGlobalBudgetSummary(db, 1, totalCash);
+  const moveAmount = 3562.49;
+  assert.ok(
+    summary.readyToAssign + 0.005 < moveAmount,
+    'test setup: RTA must be less than move amount'
+  );
+
+  await applyMonthBudgetBulk(
+    db,
+    1,
+    monthKey,
+    [
+      { categoryId: 'c1', delta: -moveAmount },
+      { categoryId: 'c2', delta: moveAmount },
+    ],
+    { mode: 'delta', totalCash, auditSource: 'move_money' }
+  );
+
+  const c1 = await db.get('SELECT assigned FROM categories WHERE id = ?', ['c1']);
+  const c2 = await db.get('SELECT assigned FROM categories WHERE id = ?', ['c2']);
+  assert.strictEqual(Number(c1.assigned), 1437.51);
+  assert.strictEqual(Number(c2.assigned), 6956.49);
+
+  await db.close();
+  console.log('  ok category-to-category move does not require Ready to Assign');
+}
+
+async function testCategoryMovePreservesReadyToAssign() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      group_id TEXT,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO category_groups (id, user_id, name, sort_order) VALUES ('g1', 1, 'Essentials', 0);
+    INSERT INTO categories (id, user_id, name, group_id, assigned, available)
+      VALUES ('c1', 1, 'Source', 'g1', 0, 0),
+             ('c2', 1, 'Dest', 'g1', 0, 0),
+             ('c3', 1, 'Drift', 'g1', 250, 0);
+  `);
+
+  const totalCash = 20000;
+  await applyMonthBudgetedAmount(db, 1, 'c1', monthKey, 5000);
+  await applyMonthBudgetedAmount(db, 1, 'c2', monthKey, 1000);
+  await applyMonthBudgetedAmount(db, 1, 'c3', monthKey, 50);
+  await db.run(
+    `UPDATE categories SET assigned = 250 WHERE id = 'c3'`
+  );
+
+  const before = await getGlobalBudgetSummary(db, 1, totalCash);
+  const moveAmount = 500;
+
+  await applyMonthBudgetBulkAndRefresh(
+    db,
+    1,
+    monthKey,
+    [
+      { categoryId: 'c1', delta: -moveAmount },
+      { categoryId: 'c2', delta: moveAmount },
+    ],
+    { mode: 'delta', totalCash, auditSource: 'move_money' }
+  );
+
+  const after = await getGlobalBudgetSummary(db, 1, totalCash);
+  assert.ok(
+    Math.abs(after.readyToAssign - before.readyToAssign) <= 0.02,
+    `RTA should be unchanged (before=${before.readyToAssign}, after=${after.readyToAssign})`
+  );
+  assert.ok(
+    Math.abs(after.totalAssigned - before.totalAssigned) <= 0.02,
+    `totalAssigned should be unchanged (before=${before.totalAssigned}, after=${after.totalAssigned})`
+  );
+
+  const driftMb = await db.get(
+    'SELECT budgeted_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c3', monthKey]
+  );
+  assert.strictEqual(
+    Number(driftMb.budgeted_amount),
+    50,
+    'unrelated category budgeted_amount must not inflate from drift heal'
+  );
+
+  await db.close();
+  console.log('  ok category move preserves Ready to Assign');
+}
+
+async function testReadyToAssignToOverspentCategory() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      group_id TEXT,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO category_groups (id, user_id, name, sort_order) VALUES ('g1', 1, 'Essentials', 0);
+    INSERT INTO categories (id, user_id, name, group_id, assigned, available)
+      VALUES ('c1', 1, 'Overspent', 'g1', 0, 0);
+    INSERT INTO accounts (id, user_id, type) VALUES ('a1', 1, 'checking');
+    INSERT INTO transactions (account_id, user_id, category_id, amount, date)
+      VALUES ('a1', 1, 'c1', -100, '${monthKey}');
+  `);
+
+  const totalCash = 500;
+  const before = await getGlobalBudgetSummary(db, 1, totalCash);
+  assert.strictEqual(before.readyToAssign, 500);
+
+  await applyMonthBudgetBulkAndRefresh(
+    db,
+    1,
+    monthKey,
+    [{ categoryId: 'c1', delta: 50 }],
+    { mode: 'delta', totalCash, auditSource: 'move_money' }
+  );
+
+  const cat = await db.get('SELECT assigned, available FROM categories WHERE id = ?', ['c1']);
+  assert.strictEqual(Number(cat.assigned), 50);
+  assert.ok(Number(cat.available) < -40 && Number(cat.available) > -60, 'available should be ~-50');
+
+  const after = await getGlobalBudgetSummary(db, 1, totalCash);
+  assert.strictEqual(after.readyToAssign, 450);
+
+  let rejected = false;
+  try {
+    await applyMonthBudgetBulk(
+      db,
+      1,
+      monthKey,
+      [{ categoryId: 'c1', delta: 500 }],
+      { mode: 'delta', totalCash, auditSource: 'move_money' }
+    );
+  } catch (err) {
+    rejected = err.code === 'INSUFFICIENT_RTA';
+  }
+  assert.ok(rejected, 'assigning more than RTA from pool must fail');
+
+  await db.close();
+  console.log('  ok Ready to Assign can fund overspent category');
+}
+
 (async () => {
   try {
+    await testCategoryToCategoryMoveDoesNotRequireRta();
+    await testCategoryMovePreservesReadyToAssign();
+    await testReadyToAssignToOverspentCategory();
+    await testCategoryActivityTransactionIds();
     await testBulkAssignPersistsAssignedAndAvailable();
     await testRepairImplicitAssignments();
     await testConsolidateAvailableIntoAssignments();

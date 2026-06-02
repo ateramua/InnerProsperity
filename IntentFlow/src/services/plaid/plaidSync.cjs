@@ -26,6 +26,10 @@ const {
   reapplyPlaidCategoryMapping,
   reapplyAllPlaidCategoryMappings,
 } = require('./plaidCategoryMapping.cjs');
+const {
+  transactionCategorizationService,
+} = require('../transactions/transactionCategorizationService.cjs');
+const { pairTransfersForUser } = require('../transactions/plaidTransferPairing.cjs');
 
 async function getCategoryMappings(db, userId) {
   return db.all(
@@ -534,8 +538,8 @@ async function syncTransactionsForItem(itemId, deps) {
       `INSERT INTO transactions (
         account_id, user_id, date, description, amount,
         category_id, payee, memo, is_cleared, is_transfer,
-        plaid_transaction_id, plaid_category_key, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        plaid_transaction_id, plaid_category_key, import_source, raw_description, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'plaid', ?, datetime('now'))`,
       [
         accountId,
         uid,
@@ -549,8 +553,35 @@ async function syncTransactionsForItem(itemId, deps) {
         isTransfer,
         plaidTx.transaction_id,
         categoryKey,
+        plaidTx.name,
       ]
     );
+    const inserted = await db.get(
+      `SELECT id FROM transactions WHERE plaid_transaction_id = ? AND user_id = ?`,
+      [plaidTx.transaction_id, uid]
+    );
+    if (inserted?.id) {
+      const processed = await transactionCategorizationService.processImportedTransaction(
+        db,
+        uid,
+        inserted.id,
+        {
+          merchantName: plaidTx.merchant_name || plaidTx.name,
+          description: plaidTx.name,
+          importSource: 'plaid',
+          plaidCategoryId: categoryId,
+          isTransfer: isTransfer === 1,
+        }
+      );
+      if (processed.creditReserveDelta && deps.applyCreditCardPaymentReserveDelta) {
+        await deps.applyCreditCardPaymentReserveDelta({
+          userId: uid,
+          accountId,
+          date: plaidTx.date,
+          delta: processed.creditReserveDelta,
+        });
+      }
+    }
     updatedAccounts.add(accountId);
   };
 
@@ -642,6 +673,18 @@ async function syncTransactionsForItem(itemId, deps) {
     }
   }
 
+  let pairResult = { pairsLinked: 0, accountIds: [] };
+  try {
+    pairResult = await pairTransfersForUser(db, userId, { lookbackDays: 45 });
+    if (pairResult.pairsLinked > 0) {
+      for (const accountId of pairResult.accountIds) {
+        updatedAccounts.add(accountId);
+      }
+    }
+  } catch (pairErr) {
+    console.warn('Transfer pairing after Plaid sync:', pairErr?.message || pairErr);
+  }
+
   if (updateAccountBalances) {
     for (const accountId of updatedAccounts) {
       await updateAccountBalances(accountId);
@@ -682,6 +725,7 @@ async function syncTransactionsForItem(itemId, deps) {
 
   return {
     success: true,
+    transferPairsLinked: pairResult?.pairsLinked ?? 0,
     transactionsAdded,
     transactionsModified,
     transactionsRemoved,

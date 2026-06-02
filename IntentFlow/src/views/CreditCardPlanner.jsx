@@ -1,5 +1,9 @@
 // src/views/CreditCardPlanner.jsx
 import React, { useState, useEffect } from 'react';
+import {
+  computeCreditCardDebtAmount,
+  formatBalanceForAccountType,
+} from '../utils/creditCardBalanceUtils.jsx';
 
 export default function CreditCardPlanner({
   categories = [],
@@ -25,7 +29,7 @@ export default function CreditCardPlanner({
     );
 
     const reservedFunds = paymentCategory?.available || 0;
-    const balance = Math.abs(card.balance);
+    const balance = computeCreditCardDebtAmount(card.balance);
 
     // Safely handle due date
     let daysUntilDue = 999;
@@ -209,7 +213,10 @@ export default function CreditCardPlanner({
   };
 
   const prioritizedCards = calculateOverallStrategy();
-  const totalBalance = creditCards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0);
+  const totalBalance = creditCards.reduce(
+    (sum, c) => sum + computeCreditCardDebtAmount(c.balance),
+    0
+  );
   const totalMinimum = creditCards.reduce((sum, c) => {
     const minPayment = c.minimumPayment || Math.max(25, Math.abs(c.balance) * 0.02);
     return sum + minPayment;
@@ -338,7 +345,12 @@ export default function CreditCardPlanner({
                 <div style={styles.cardDetails}>
                   <div style={styles.cardBalance}>
                     <span>Balance: </span>
-                    <strong>${Math.abs(card.balance).toFixed(2)}</strong>
+                    <strong>
+                      {formatBalanceForAccountType(card.balance, 'credit', (n) =>
+                        `$${Math.abs(n).toFixed(2)}`
+                      ).text}
+                      {formatBalanceForAccountType(card.balance, 'credit').suffix}
+                    </strong>
                   </div>
                   <div style={styles.cardDue}>
                     <span>Due: </span>

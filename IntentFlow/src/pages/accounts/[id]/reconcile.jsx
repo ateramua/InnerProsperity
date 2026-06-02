@@ -1,10 +1,14 @@
 // src/pages/accounts/[id]/reconcile.jsx
 import { useRouter } from 'next/router';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import TransactionImportModal from '../../../components/TransactionImportModal';
 import TransactionToolbar from '../../../components/transactions/TransactionToolbar.jsx';
 import TransactionTable from '../../../components/transactions/TransactionTable.jsx';
+import RegisterTransactionActions from '../../../components/transactions/RegisterTransactionActions.jsx';
+import RegisterPayeeExtras from '../../../components/transactions/RegisterPayeeExtras.jsx';
+import useRegisterTransactionRowActions from '../../../hooks/useRegisterTransactionRowActions.jsx';
+import TransactionSplitModal from '../../../components/transactions/TransactionSplitModal.jsx';
 import {
     DEFAULT_TRANSACTION_SORT,
     sortTransactions,
@@ -116,6 +120,20 @@ export default function ReconcilePage() {
             }
         });
     };
+
+    const reloadAfterRowAction = useCallback(async () => {
+        await loadAccountData();
+    }, [id]);
+
+    const {
+        splitTransaction,
+        setSplitTransaction,
+        handleDeleteRow,
+        handleToggleClearedRow,
+        handleSplitSaved,
+    } = useRegisterTransactionRowActions({
+        onAfterMutation: reloadAfterRowAction,
+    });
     const handleBack = () => {
         try {
             router.push(`/accounts/${id}`);
@@ -334,12 +352,30 @@ export default function ReconcilePage() {
                                     onToggleSelect={(txId) => toggleTransaction(txId)}
                                     isRowSelected={(tx) => selectedTransactions.includes(tx.id)}
                                     onRowClick={(tx) => toggleTransaction(tx.id)}
+                                    renderPayeeExtra={(tx) => <RegisterPayeeExtras transaction={tx} />}
+                                    renderActions={(tx) => (
+                                        <RegisterTransactionActions
+                                            transaction={tx}
+                                            onDelete={handleDeleteRow}
+                                            onToggleCleared={handleToggleClearedRow}
+                                            onSplit={setSplitTransaction}
+                                            showEdit={false}
+                                        />
+                                    )}
                                 />
                             </div>
                         )}
                     </div>
                 </div>
             </div>
+
+            <TransactionSplitModal
+                open={!!splitTransaction}
+                transaction={splitTransaction}
+                categories={categories}
+                onClose={() => setSplitTransaction(null)}
+                onSaved={handleSplitSaved}
+            />
         </div>
     );
 }

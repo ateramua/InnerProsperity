@@ -17,33 +17,60 @@ const FIELD_LABELS = {
   memo: 'Memo / Notes',
 };
 
+const MODAL_MAX_HEIGHT = 'min(90vh, calc(100dvh - 2rem))';
+
 const styles = {
   overlay: {
     position: 'fixed',
     inset: 0,
     background: 'rgba(0,0,0,0.65)',
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'center',
     zIndex: 10000,
     padding: '1rem',
+    overflowY: 'auto',
+    boxSizing: 'border-box',
   },
   modal: {
     background: '#0f172a',
     color: '#f8fafc',
     borderRadius: '12px',
-    padding: '1.5rem',
     maxWidth: '720px',
     width: '100%',
-    maxHeight: '90vh',
-    overflow: 'auto',
+    maxHeight: MODAL_MAX_HEIGHT,
+    minHeight: 0,
+    margin: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
     border: '1px solid rgba(255,255,255,0.15)',
+    boxSizing: 'border-box',
   },
   modalWide: {
     maxWidth: '960px',
   },
+  modalHeader: {
+    flexShrink: 0,
+    padding: '1.25rem 1.5rem 0.75rem',
+    borderBottom: '1px solid rgba(51, 65, 85, 0.6)',
+  },
+  modalBody: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    padding: '1rem 1.5rem',
+    WebkitOverflowScrolling: 'touch',
+  },
+  modalFooter: {
+    flexShrink: 0,
+    padding: '0.75rem 1.5rem 1.25rem',
+    borderTop: '1px solid rgba(51, 65, 85, 0.8)',
+    background: '#0f172a',
+  },
   title: { margin: '0 0 0.5rem', fontSize: '1.25rem' },
-  hint: { margin: '0 0 1rem', fontSize: '0.85rem', color: '#94a3b8' },
+  hint: { margin: '0 0 0.75rem', fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.45 },
   row: { marginBottom: '0.75rem' },
   label: { display: 'block', fontSize: '0.8rem', marginBottom: '0.25rem', color: '#cbd5e1' },
   select: {
@@ -54,7 +81,7 @@ const styles = {
     background: '#1e293b',
     color: '#f8fafc',
   },
-  buttonRow: { display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' },
+  buttonRow: { display: 'flex', gap: '0.5rem', flexWrap: 'wrap' },
   primary: {
     padding: '0.5rem 1rem',
     borderRadius: '6px',
@@ -458,30 +485,40 @@ export default function TransactionImportModal({
     review: canOfferCategoryStep ? '5. Review & import' : '4. Review & import',
   };
 
+  const isWideModal =
+    showImportPreview || showCategoryStep || showCategoryMappingTable;
+
   return (
     <div style={styles.overlay} onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transaction-import-modal-title"
         style={{
           ...styles.modal,
-          ...(showImportPreview || showCategoryStep || showCategoryMappingTable
-            ? styles.modalWide
-            : null),
+          ...(isWideModal ? styles.modalWide : null),
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 style={styles.title}>{title}</h3>
-        <p style={styles.hint}>
-          CSV export from your bank. Supported institutions: Wells Fargo, PNC Bank, Capital One,
-          Navy Federal Credit Union, American Express, and Bank of America. Map a{' '}
-          <strong>Debit/Credit</strong> column when Amount is always positive (Navy Federal). Use the
-          optional category mapping step to align bank categories with your budget. Duplicates are
-          skipped.
-        </p>
-        {step !== 'pick' && step !== 'account' ? (
-          <p style={styles.stat}>
-            Step: <strong>{stepLabels[step] || step}</strong>
+        <header style={styles.modalHeader}>
+          <h3 id="transaction-import-modal-title" style={styles.title}>
+            {title}
+          </h3>
+          <p style={styles.hint}>
+            CSV export from your bank. Supported institutions: Wells Fargo, PNC Bank, Capital One,
+            Navy Federal Credit Union, American Express, and Bank of America. Map a{' '}
+            <strong>Debit/Credit</strong> column when Amount is always positive (Navy Federal). Use
+            the optional category mapping step to align bank categories with your budget. Duplicates
+            are skipped.
           </p>
-        ) : null}
+          {step !== 'pick' && step !== 'account' ? (
+            <p style={styles.stat}>
+              Step: <strong>{stepLabels[step] || step}</strong>
+            </p>
+          ) : null}
+        </header>
+
+        <div style={styles.modalBody}>
         <p style={styles.supportedBanks}>
           After import, transactions appear in the standard table with search, filters, and recent ranges.
         </p>
@@ -608,87 +645,90 @@ export default function TransactionImportModal({
         )}
 
         {error ? <p style={styles.error}>{error}</p> : null}
+        </div>
 
-        <div style={styles.buttonRow}>
-          {step === 'pick' && (
-            <button type="button" style={styles.primary} onClick={handlePickFile} disabled={busy}>
-              {busy ? 'Loading…' : 'Choose CSV file…'}
-            </button>
-          )}
-          {showAccountPicker && fileContent && (
-            <button
-              type="button"
-              style={styles.primary}
-              onClick={handleAccountContinue}
-              disabled={busy || !accountId}
-            >
-              Continue
-            </button>
-          )}
-          {showColumnMapping && validCount > 0 && (
-            <>
+        <footer style={styles.modalFooter}>
+          <div style={styles.buttonRow}>
+            {step === 'pick' && (
+              <button type="button" style={styles.primary} onClick={handlePickFile} disabled={busy}>
+                {busy ? 'Loading…' : 'Choose CSV file…'}
+              </button>
+            )}
+            {showAccountPicker && fileContent && (
               <button
                 type="button"
                 style={styles.primary}
-                onClick={continueToCategoryMapping}
-                disabled={busy}
+                onClick={handleAccountContinue}
+                disabled={busy || !accountId}
               >
-                {canOfferCategoryStep ? 'Next: Map categories' : 'Next: Review'}
+                Continue
               </button>
-              {canOfferCategoryStep && (
+            )}
+            {showColumnMapping && validCount > 0 && (
+              <>
+                <button
+                  type="button"
+                  style={styles.primary}
+                  onClick={continueToCategoryMapping}
+                  disabled={busy}
+                >
+                  {canOfferCategoryStep ? 'Next: Map categories' : 'Next: Review'}
+                </button>
+                {canOfferCategoryStep && (
+                  <button
+                    type="button"
+                    style={styles.secondary}
+                    onClick={skipCategoryMapping}
+                    disabled={busy}
+                  >
+                    Skip category mapping
+                  </button>
+                )}
+              </>
+            )}
+            {showCategoryStep && (
+              <>
+                <button
+                  type="button"
+                  style={styles.secondary}
+                  onClick={() => setStep('map-columns')}
+                  disabled={busy}
+                >
+                  Back
+                </button>
+                <button type="button" style={styles.primary} onClick={goToReview} disabled={busy}>
+                  {busy ? 'Updating preview…' : 'Continue to review'}
+                </button>
                 <button
                   type="button"
                   style={styles.secondary}
                   onClick={skipCategoryMapping}
                   disabled={busy}
                 >
-                  Skip category mapping
+                  Skip & use defaults
                 </button>
-              )}
-            </>
-          )}
-          {showCategoryStep && (
-            <>
-              <button
-                type="button"
-                style={styles.secondary}
-                onClick={() => setStep('map-columns')}
-                disabled={busy}
-              >
-                Back
-              </button>
-              <button type="button" style={styles.primary} onClick={goToReview} disabled={busy}>
-                {busy ? 'Updating preview…' : 'Continue to review'}
-              </button>
-              <button
-                type="button"
-                style={styles.secondary}
-                onClick={skipCategoryMapping}
-                disabled={busy}
-              >
-                Skip & use defaults
-              </button>
-            </>
-          )}
-          {step === 'review' && validCount > 0 && (
-            <>
-              <button
-                type="button"
-                style={styles.secondary}
-                onClick={() => setStep(canOfferCategoryStep ? 'map-categories' : 'map-columns')}
-                disabled={busy}
-              >
-                Back
-              </button>
-              <button type="button" style={styles.primary} onClick={handleImport} disabled={busy}>
-                {busy ? 'Importing…' : `Import ${validCount} transaction(s)`}
-              </button>
-            </>
-          )}
-          <button type="button" style={styles.secondary} onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-        </div>
+              </>
+            )}
+            {step === 'review' && validCount > 0 && (
+              <>
+                <button
+                  type="button"
+                  style={styles.secondary}
+                  onClick={() => setStep(canOfferCategoryStep ? 'map-categories' : 'map-columns')}
+                  disabled={busy}
+                >
+                  Back
+                </button>
+                <button type="button" style={styles.primary} onClick={handleImport} disabled={busy}>
+                  {busy ? 'Importing…' : `Approve import (${validCount})`}
+                </button>
+              </>
+            )}
+            <button type="button" style={styles.secondary} onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </footer>
       </div>
 
       <ImportCategoryMappingsManager

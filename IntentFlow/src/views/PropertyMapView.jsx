@@ -1,5 +1,5 @@
 // src/views/PropertyMapView.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import SummaryView from './SummaryView';
 import useRealtimeUpdates from '../hooks/useRealtimeUpdates';
 import BudgetEngine from "../shared/budgetEngine.mjs";
@@ -15,6 +15,7 @@ import PM from '../constants/pmTheme.jsx';
 import { getCategoryGoalTypeLabel, getCategoryGoalFrequencyLabel } from '../constants/categoryGoalTypes.jsx';
 import {
   formatBudgetMonthKey,
+  formatBudgetMonthLabel,
   formatDateForInput,
   formatStoredTimestampLocalDate,
   roundMoney,
@@ -27,6 +28,11 @@ import {
   mapGoalTargetFromDb,
 } from '../utils/categoryMoneyInput.jsx';
 import { sumTotalBudgetCash } from '../utils/cashAccountUtils.jsx';
+import ActivityDrilldownCell from '../components/budget/ActivityDrilldownCell.jsx';
+import {
+  navigateToActivityDrilldown,
+  consumeBudgetReturnMonth,
+} from '../utils/activityDrilldownUtils.jsx';
 
 const EMPTY_MOVE_MONEY_FORM = {
   amount: '',
@@ -37,7 +43,7 @@ const EMPTY_MOVE_MONEY_FORM = {
 const READY_TO_ASSIGN_ID = '__ready_to_assign__';
 const READY_TO_ASSIGN_LABEL = 'Ready to Assign';
 
-const PropertyMapView = () => {
+const PropertyMapView = ({ onNavigate }) => {
   // ==================== STATE DECLARATIONS ====================
   const [categoryGroups, setCategoryGroups] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -52,8 +58,12 @@ const PropertyMapView = () => {
   const [editingGroup, setEditingGroup] = useState(null);
   const [newGroupName, setNewGroupName] = useState('');
   const [editGroupName, setEditGroupName] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState(new Date());
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1, 12, 0, 0, 0);
+  });
   const selectedMonthRef = useRef(selectedMonth);
+  const [budgetMonthOptions, setBudgetMonthOptions] = useState([]);
   useEffect(() => {
     selectedMonthRef.current = selectedMonth;
   }, [selectedMonth]);
@@ -376,6 +386,29 @@ const PropertyMapView = () => {
     return d.toLocaleString('default', { month: 'long', year: 'numeric' });
   };
 
+  const refreshBudgetMonthOptions = async (ownerId = userId) => {
+    if (!ownerId || !window.electronAPI?.getBudgetTimelineMonths) return;
+    try {
+      const res = await window.electronAPI.getBudgetTimelineMonths(ownerId);
+      if (!res?.success || !Array.isArray(res.data?.months)) return;
+
+      setBudgetMonthOptions(res.data.months);
+
+      const selectedKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+      const inList = res.data.months.some((m) => m.monthKey === selectedKey);
+      if (!inList) {
+        const fallback =
+          res.data.months.find((m) => m.isCurrentMonth) ||
+          res.data.months[res.data.months.length - 1];
+        if (fallback?.monthKey) {
+          setSelectedMonth(monthKeyToLocalDate(fallback.monthKey));
+        }
+      }
+    } catch (e) {
+      console.warn('refreshBudgetMonthOptions:', e);
+    }
+  };
+
   const refreshGlobalBudgetSummary = async () => {
     if (!userId || !window.electronAPI?.getBudgetGlobalSummary) return null;
     try {
@@ -391,6 +424,7 @@ const PropertyMapView = () => {
           futureAssigned: data.futureAssigned,
           futureBreakdown: data.futureBreakdown || [],
         }));
+        await refreshBudgetMonthOptions(userId);
         return data;
       }
     } catch (e) {
@@ -398,6 +432,56 @@ const PropertyMapView = () => {
     }
     return null;
   };
+
+  const selectedBudgetMonthKey = formatBudgetMonthKey(selectedMonth);
+
+  useEffect(() => {
+    const returnMonth = consumeBudgetReturnMonth();
+    if (returnMonth) {
+      setSelectedMonth(monthKeyToLocalDate(returnMonth));
+    }
+  }, []);
+
+  const handleActivityDrillDown = (payload) => {
+    navigateToActivityDrilldown(onNavigate, {
+      ...payload,
+      month: payload.month || selectedBudgetMonthKey,
+    });
+  };
+  const selectedMonthOptionIndex = budgetMonthOptions.findIndex(
+    (m) => m.monthKey === selectedBudgetMonthKey
+  );
+  const canSelectPreviousMonth = selectedMonthOptionIndex > 0;
+  const canSelectNextMonth =
+    selectedMonthOptionIndex >= 0 &&
+    selectedMonthOptionIndex < budgetMonthOptions.length - 1;
+
+  const shiftBudgetMonth = (delta) => {
+    if (!budgetMonthOptions.length) {
+      const newDate = new Date(selectedMonth);
+      newDate.setMonth(newDate.getMonth() + delta);
+      setSelectedMonth(newDate);
+      return;
+    }
+    const idx = budgetMonthOptions.findIndex((m) => m.monthKey === selectedBudgetMonthKey);
+    const next = budgetMonthOptions[idx + delta];
+    if (next?.monthKey) {
+      setSelectedMonth(monthKeyToLocalDate(next.monthKey));
+    }
+  };
+
+  const budgetMonthSelectGroups = useMemo(() => {
+    const currentKey = formatBudgetMonthKey(new Date());
+    const past = [];
+    const current = [];
+    const future = [];
+    for (const opt of budgetMonthOptions) {
+      if (opt.monthKey < currentKey) past.push(opt);
+      else if (opt.monthKey > currentKey) future.push(opt);
+      else current.push(opt);
+    }
+    return { past, current, future };
+  }, [budgetMonthOptions]);
 
   const getMonthAssignedTotal = (overrideRows = null) => {
     const active = getActiveBudgetCategories(overrideRows);
@@ -1851,9 +1935,26 @@ const PropertyMapView = () => {
   const getCategoryById = (categoryId) =>
     (budgetData.categories || []).find((c) => sameCategoryId(c.id, categoryId));
 
+  const isReadyToAssignSource = (fromCategoryId) =>
+    String(fromCategoryId || '') === READY_TO_ASSIGN_ID;
+
+  const isReadyToAssignDestination = (toCategoryId) =>
+    String(toCategoryId || '') === READY_TO_ASSIGN_ID;
+
+  const getMoveMoneySourceAvailable = (fromCategoryId) =>
+    isReadyToAssignSource(fromCategoryId)
+      ? getGlobalReadyToAssign()
+      : Number(getCategoryById(fromCategoryId)?.available) || 0;
+
+  const getMoveMoneySourceLabel = (fromCategoryId) =>
+    isReadyToAssignSource(fromCategoryId)
+      ? READY_TO_ASSIGN_LABEL
+      : getCategoryById(fromCategoryId)?.name || 'Source';
+
   const getMoveMoneyValidationError = (candidateForm) => {
     const amount = parseMoneyInput(candidateForm.amount);
     const toReadyToAssign = isReadyToAssignDestination(candidateForm.toCategoryId);
+    const fromReadyToAssign = isReadyToAssignSource(candidateForm.fromCategoryId);
     if (!Number.isFinite(amount) || amount <= 0) return 'Amount must be greater than 0.';
     if (!candidateForm.fromCategoryId || !candidateForm.toCategoryId) {
       return 'Select both source and destination categories.';
@@ -1861,24 +1962,27 @@ const PropertyMapView = () => {
     if (sameCategoryId(candidateForm.fromCategoryId, candidateForm.toCategoryId)) {
       return 'Source and destination categories must be different.';
     }
-    const fromCategory = getCategoryById(candidateForm.fromCategoryId);
     const toCategory = toReadyToAssign ? null : getCategoryById(candidateForm.toCategoryId);
-    if (!fromCategory || (!toReadyToAssign && !toCategory)) return 'Selected categories are unavailable.';
-    if (isCategoryArchived(fromCategory) || (toCategory && isCategoryArchived(toCategory))) {
+    if (!toReadyToAssign && !toCategory) return 'Selected categories are unavailable.';
+    if (toCategory && isCategoryArchived(toCategory)) {
+      return 'Archived categories cannot be used for Move Money.';
+    }
+    if (fromReadyToAssign) {
+      if (amount > getGlobalReadyToAssign() + 0.005) {
+        return 'Insufficient Ready to Assign funds.';
+      }
+      return '';
+    }
+    const fromCategory = getCategoryById(candidateForm.fromCategoryId);
+    if (!fromCategory) return 'Selected categories are unavailable.';
+    if (isCategoryArchived(fromCategory)) {
       return 'Archived categories cannot be used for Move Money.';
     }
     if ((Number(fromCategory.available) || 0) < amount) {
       return 'Insufficient funds available in selected category.';
     }
-    const fromReadyToAssign = String(candidateForm.fromCategoryId || '') === READY_TO_ASSIGN_ID;
-    if (fromReadyToAssign && amount > getGlobalReadyToAssign() + 0.005) {
-      return 'Insufficient Ready to Assign funds.';
-    }
     return '';
   };
-
-  const isReadyToAssignDestination = (toCategoryId) =>
-    String(toCategoryId || '') === READY_TO_ASSIGN_ID;
 
   const getSuggestedMoveMoneySources = (toCategoryId) => {
     const toCategory = getCategoryById(toCategoryId);
@@ -1908,8 +2012,15 @@ const PropertyMapView = () => {
       (toCategoryId
         ? Math.abs(Math.min(0, Number(getCategoryById(toCategoryId)?.available) || 0))
         : '');
+    const readyToAssignPool = getGlobalReadyToAssign();
+    const toCategory = toCategoryId ? getCategoryById(toCategoryId) : null;
+    const isOverspentTarget = (Number(toCategory?.available) || 0) < -0.005;
     const suggestions = getSuggestedMoveMoneySources(toCategoryId);
-    const effectiveFromCategoryId = fromCategoryId || suggestions[0]?.id || '';
+    const effectiveFromCategoryId =
+      fromCategoryId ||
+      (isOverspentTarget && readyToAssignPool > 0.005 ? READY_TO_ASSIGN_ID : '') ||
+      suggestions[0]?.id ||
+      (readyToAssignPool > 0.005 ? READY_TO_ASSIGN_ID : '');
     setMoveMoneyData({
       amount: suggestedAmount ? formatMoneyInput(suggestedAmount) : '',
       fromCategoryId: effectiveFromCategoryId,
@@ -1999,10 +2110,11 @@ const PropertyMapView = () => {
     setBudgetData((prev) => ({ ...prev, categories: nextRows }));
     setCategories(nextRows);
     commitBudgetSnapshot(nextRows, categoryGroups, userId, monthKey);
-    calculateReadyToAssign(nextRows);
 
     try {
       await persistMoveMoneyToDatabase(fromCategoryId, toCategoryId, amount, monthKey);
+      await refreshGlobalBudgetSummary();
+      calculateReadyToAssign(nextRows);
       const fromCategory = getCategoryById(fromCategoryId);
       const toCategory = getCategoryById(toCategoryId);
       const fromReadyToAssign = String(fromCategoryId || '') === READY_TO_ASSIGN_ID;
@@ -2347,6 +2459,7 @@ const PropertyMapView = () => {
             setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
           }
         }
+        await refreshBudgetMonthOptions(ownerId);
         await refreshGlobalBudgetSummary();
       } catch (error) {
         console.error('❌ Error during initialization:', error);
@@ -2676,23 +2789,72 @@ const PropertyMapView = () => {
             <div className="inline-flex flex-wrap items-center gap-3 rounded-3xl border border-white/25 bg-[#0047AB] px-4 py-3 text-sm text-[#F0F9FF]/90">
               <button
                 type="button"
-                onClick={() => {
-                  const newDate = new Date(selectedMonth);
-                  newDate.setMonth(selectedMonth.getMonth() - 1);
-                  setSelectedMonth(newDate);
-                }}
-                className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
-              >◀</button>
-              <span className="font-medium text-[#F0F9FF]">{selectedMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
+                disabled={!canSelectPreviousMonth}
+                onClick={() => shiftBudgetMonth(-1)}
+                className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="Previous budget month"
+              >
+                ◀
+              </button>
+              <label className="flex flex-col gap-1">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-[#F0F9FF]/70">
+                  Budget month
+                </span>
+                <select
+                  value={selectedBudgetMonthKey}
+                  onChange={(e) => setSelectedMonth(monthKeyToLocalDate(e.target.value))}
+                  disabled={isMonthBudgetLoading || budgetMonthOptions.length === 0}
+                  className="min-w-[12rem] rounded-xl border border-white/25 bg-[#003380] px-3 py-2 font-medium text-[#F0F9FF] focus:outline-none focus:ring-2 focus:ring-[#38BDF8]/60 disabled:opacity-60"
+                  aria-label="Select budget month"
+                >
+                  {budgetMonthOptions.length === 0 ? (
+                    <option value={selectedBudgetMonthKey}>
+                      {formatBudgetMonthLabel(selectedBudgetMonthKey)}
+                    </option>
+                  ) : (
+                    <>
+                      {budgetMonthSelectGroups.past.length > 0 && (
+                        <optgroup label="Past">
+                          {budgetMonthSelectGroups.past.map((opt) => (
+                            <option key={opt.monthKey} value={opt.monthKey}>
+                              {opt.label}
+                              {opt.hasBudgetData ? '' : ' (no assignments)'}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {budgetMonthSelectGroups.current.length > 0 && (
+                        <optgroup label="Current">
+                          {budgetMonthSelectGroups.current.map((opt) => (
+                            <option key={opt.monthKey} value={opt.monthKey}>
+                              {opt.label} (current month)
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {budgetMonthSelectGroups.future.length > 0 && (
+                        <optgroup label="Future (budgeted)">
+                          {budgetMonthSelectGroups.future.map((opt) => (
+                            <option key={opt.monthKey} value={opt.monthKey}>
+                              {opt.label}
+                              {opt.hasBudgetData ? '' : ' (no assignments)'}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </>
+                  )}
+                </select>
+              </label>
               <button
                 type="button"
-                onClick={() => {
-                  const newDate = new Date(selectedMonth);
-                  newDate.setMonth(selectedMonth.getMonth() + 1);
-                  setSelectedMonth(newDate);
-                }}
-                className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110"
-              >▶</button>
+                disabled={!canSelectNextMonth}
+                onClick={() => shiftBudgetMonth(1)}
+                className="rounded-full border border-white/25 bg-[#0047AB] px-3 py-2 text-[#F0F9FF]/95 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="Next budget month"
+              >
+                ▶
+              </button>
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -2951,7 +3113,15 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                       </div>
                                     </td>
                                     <td className="px-4 py-4 align-top whitespace-nowrap">{formatCurrency(cat.assigned || 0)}</td>
-                                    <td className="px-4 py-4 align-top whitespace-nowrap">{formatCurrency(cat.activity || 0)}</td>
+                                    <td className="px-4 py-4 align-top whitespace-nowrap">
+                                      <ActivityDrilldownCell
+                                        activity={cat.activity || 0}
+                                        categoryId={cat.id}
+                                        categoryName={cat.name}
+                                        monthKey={selectedBudgetMonthKey}
+                                        onDrillDown={handleActivityDrillDown}
+                                      />
+                                    </td>
                                     <td className="px-4 py-4 align-top">
                                       <button
                                         type="button"
@@ -3107,6 +3277,23 @@ Ready to Assign: $${totalCash - totalAssigned}`);
           )}
           <div className="mt-4 space-y-2">
             <p className="text-xs uppercase tracking-[0.2em] text-[#F0F9FF]/60">Suggested Sources</p>
+            {getGlobalReadyToAssign() > 0.005 &&
+              !isReadyToAssignDestination(moveMoneyData.toCategoryId) && (
+                <button
+                  key="suggestion-rta"
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-xl border border-white/20 px-3 py-2 text-left text-sm text-[#F0F9FF] hover:bg-white/5"
+                  onClick={() =>
+                    setMoveMoneyData((prev) => ({
+                      ...prev,
+                      fromCategoryId: READY_TO_ASSIGN_ID,
+                    }))
+                  }
+                >
+                  <span>{READY_TO_ASSIGN_LABEL}</span>
+                  <span className="text-[#F0F9FF]/70">{formatCurrency(budgetSummary.unassigned || 0)}</span>
+                </button>
+              )}
             {getSuggestedMoveMoneySources(moveMoneyData.toCategoryId || '').slice(0, 3).map((cat) => (
               <button
                 key={`suggestion-${cat.id}`}
@@ -3261,6 +3448,11 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                 aria-label="Move from category"
               >
                 <option value="">Select source category</option>
+                {getGlobalReadyToAssign() > 0.005 && !isReadyToAssignDestination(moveMoneyData.toCategoryId) && (
+                  <option value={READY_TO_ASSIGN_ID}>
+                    {READY_TO_ASSIGN_LABEL} ({formatCurrency(budgetSummary.unassigned || 0)} available)
+                  </option>
+                )}
                 {filteredMoveMoneyCategories
                   .filter((c) => (c.available || 0) > 0 && !sameCategoryId(c.id, moveMoneyData.toCategoryId))
                   .map((cat) => (
@@ -3300,7 +3492,8 @@ Ready to Assign: $${totalCash - totalAssigned}`);
               <div style={styles.previewGrid}>
                 <div>Current</div>
                 <div>
-                  {(getCategoryById(moveMoneyData.fromCategoryId)?.name || 'Source')}: {formatCurrency(getCategoryById(moveMoneyData.fromCategoryId)?.available || 0)}
+                  {getMoveMoneySourceLabel(moveMoneyData.fromCategoryId)}:{' '}
+                  {formatCurrency(getMoveMoneySourceAvailable(moveMoneyData.fromCategoryId))}
                 </div>
                 <div>
                   {isReadyToAssignDestination(moveMoneyData.toCategoryId)
@@ -3311,9 +3504,9 @@ Ready to Assign: $${totalCash - totalAssigned}`);
               <div style={styles.previewGrid}>
                 <div>After Move</div>
                 <div>
-                  {(getCategoryById(moveMoneyData.fromCategoryId)?.name || 'Source')}:{' '}
+                  {getMoveMoneySourceLabel(moveMoneyData.fromCategoryId)}:{' '}
                   {formatCurrency(
-                    (Number(getCategoryById(moveMoneyData.fromCategoryId)?.available) || 0) -
+                    getMoveMoneySourceAvailable(moveMoneyData.fromCategoryId) -
                       (parseMoneyInput(moveMoneyData.amount) || 0),
                   )}
                 </div>
@@ -3333,23 +3526,42 @@ Ready to Assign: $${totalCash - totalAssigned}`);
             <div style={styles.formGroup}>
               <label style={styles.label}>Suggested Categories</label>
               <div className="flex flex-wrap gap-2">
-                {isReadyToAssignDestination(moveMoneyData.toCategoryId)
-                  ? []
-                  : getSuggestedMoveMoneySources(moveMoneyData.toCategoryId).slice(0, 3).map((cat) => (
-                  <button
-                    key={`move-suggestion-${cat.id}`}
-                    type="button"
-                    className="rounded-full border border-white/25 px-3 py-1 text-xs text-[#F0F9FF]"
-                    onClick={() =>
-                      setMoveMoneyData((prev) => ({
-                        ...prev,
-                        fromCategoryId: cat.id,
-                      }))
-                    }
-                  >
-                    {cat.name} ({formatCurrency(cat.available)})
-                  </button>
-                ))}
+                {isReadyToAssignDestination(moveMoneyData.toCategoryId) ? (
+                  []
+                ) : (
+                  <>
+                    {getGlobalReadyToAssign() > 0.005 && (
+                      <button
+                        key="move-suggestion-rta"
+                        type="button"
+                        className="rounded-full border border-white/25 px-3 py-1 text-xs text-[#F0F9FF]"
+                        onClick={() =>
+                          setMoveMoneyData((prev) => ({
+                            ...prev,
+                            fromCategoryId: READY_TO_ASSIGN_ID,
+                          }))
+                        }
+                      >
+                        {READY_TO_ASSIGN_LABEL} ({formatCurrency(budgetSummary.unassigned || 0)})
+                      </button>
+                    )}
+                    {getSuggestedMoveMoneySources(moveMoneyData.toCategoryId).slice(0, 3).map((cat) => (
+                      <button
+                        key={`move-suggestion-${cat.id}`}
+                        type="button"
+                        className="rounded-full border border-white/25 px-3 py-1 text-xs text-[#F0F9FF]"
+                        onClick={() =>
+                          setMoveMoneyData((prev) => ({
+                            ...prev,
+                            fromCategoryId: cat.id,
+                          }))
+                        }
+                      >
+                        {cat.name} ({formatCurrency(cat.available)})
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             </div>
             {moveMoneyError && <div style={styles.errorText}>{moveMoneyError}</div>}

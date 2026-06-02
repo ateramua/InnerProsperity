@@ -49,6 +49,11 @@ void (async () => {
     assert.strictEqual(bal, -500);
   });
 
+  await test('plaidBalanceToAppBalance credit overpayment is positive', () => {
+    const bal = plaidBalanceToAppBalance({ type: 'credit' }, -30);
+    assert.strictEqual(bal, 30);
+  });
+
   await test('plaidBalanceToAppBalance checking is positive', () => {
     const bal = plaidBalanceToAppBalance({ type: 'depository' }, 1200);
     assert.strictEqual(bal, 1200);

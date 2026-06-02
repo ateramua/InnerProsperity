@@ -92,26 +92,37 @@ async function getCategoryTransactionTotals(db, userId, categoryId, monthYm, opt
   const row = await db.get(
     `
     SELECT
-      COALESCE(SUM(
+      COALESCE(SUM(spending), 0) AS spending,
+      COALESCE(SUM(inflows), 0) AS inflows
+    FROM (
+      SELECT
         CASE
           WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0
           WHEN t.amount < 0 THEN -t.amount
           ELSE 0
-        END
-      ), 0) AS spending,
-      COALESCE(SUM(
+        END AS spending,
         CASE
           WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0
           WHEN t.amount > 0 THEN t.amount
           ELSE 0
-        END
-      ), 0) AS inflows
-    FROM transactions t
-    WHERE t.user_id = ?
-      AND CAST(t.category_id AS TEXT) = CAST(? AS TEXT)
-      AND strftime('%Y-%m', t.date) = ?
+        END AS inflows
+      FROM transactions t
+      WHERE t.user_id = ?
+        AND CAST(t.category_id AS TEXT) = CAST(? AS TEXT)
+        AND strftime('%Y-%m', t.date) = ?
+      UNION ALL
+      SELECT
+        CASE WHEN t.amount < 0 THEN ts.amount ELSE 0 END AS spending,
+        CASE WHEN t.amount > 0 THEN ts.amount ELSE 0 END AS inflows
+      FROM transaction_splits ts
+      INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
+      WHERE ts.user_id = ?
+        AND CAST(ts.category_id AS TEXT) = CAST(? AS TEXT)
+        AND strftime('%Y-%m', t.date) = ?
+        AND IFNULL(t.is_transfer, 0) = 0
+    )
   `,
-    [userId, categoryId, ym],
+    [userId, categoryId, ym, userId, categoryId, ym],
   );
 
   let cardPayments = 0;

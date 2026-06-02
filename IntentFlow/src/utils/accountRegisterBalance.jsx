@@ -17,11 +17,21 @@ export function isPlaidLinkedAccount(account) {
   );
 }
 
-/** Sum active transaction impacts for the register total. */
-export function computeRegisterBalanceFromTransactions(transactions, accountType = null) {
+/**
+ * Register working balance from transactions.
+ * @param {Array} transactions
+ * @param {object | string | null} [accountOrType] - Full account row (preferred) or legacy type string
+ */
+export function computeRegisterBalanceFromTransactions(transactions, accountOrType = null) {
   if (!Array.isArray(transactions)) return 0;
-  if (accountType) {
-    const balances = computeAccountBalances({ type: accountType, initial_balance: 0 }, transactions);
+  if (accountOrType && typeof accountOrType === 'object') {
+    return computeAccountBalances(accountOrType, transactions).working_balance;
+  }
+  if (typeof accountOrType === 'string') {
+    const balances = computeAccountBalances(
+      { type: accountOrType, initial_balance: 0 },
+      transactions,
+    );
     return balances.working_balance;
   }
   return transactions.reduce((sum, tx) => {

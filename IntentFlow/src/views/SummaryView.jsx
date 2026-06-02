@@ -2,6 +2,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PM from '../constants/pmTheme.jsx';
 import { computeCategoryUnderfunded } from '../shared/underfundedEngine.mjs';
+import {
+  buildIncomeCategoryOptions,
+  isReadyToAssignSentinel,
+} from '../utils/readyToAssignCategory.jsx';
 
 const SummaryView = ({
   totalAvailable = 0,
@@ -262,13 +266,14 @@ const SummaryView = ({
   // Fix getFilteredCategories
   const getFilteredCategories = () => {
     if (transactionForm.transactionType === 'inflow') {
-      return [{ id: 'inflow_ready_to_assign', name: 'Inflow: Ready to Assign' }];
+      return buildIncomeCategoryOptions(
+        (safeCategories || []).filter((cat) => cat && !cat.archived)
+      );
     }
-    // For outflow, show all non-archived categories
     if (!safeCategories || safeCategories.length === 0) {
       return [];
     }
-    return safeCategories.filter(cat => cat && !cat.archived);
+    return safeCategories.filter((cat) => cat && !cat.archived);
   };
 
   // Helper function to calculate balance change
@@ -355,7 +360,7 @@ const SummaryView = ({
       }
 
       const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
-        transactionForm.categoryId === 'inflow_ready_to_assign';
+        isReadyToAssignSentinel(transactionForm.categoryId);
 
       // Save payee to payees table if this is a regular transaction (not a transfer)
       let finalPayeeId = transactionForm.payeeId;
@@ -514,7 +519,7 @@ const SummaryView = ({
     }
 
     const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
-      transactionForm.categoryId === 'inflow_ready_to_assign';
+      isReadyToAssignSentinel(transactionForm.categoryId);
 
     const transactionData = {
       accountId: account.id,
@@ -629,7 +634,7 @@ const SummaryView = ({
 
       // ==================== REGULAR TRANSACTION UPDATE (Existing Logic) ====================
       const isExpense = originalTransaction.amount < 0;
-      const newIsExpense = editFormData.categoryId === 'inflow_ready_to_assign' ? false :
+      const newIsExpense = isReadyToAssignSentinel(editFormData.categoryId) ? false :
         (editFormData.categoryId && categories.find(c => c.id === editFormData.categoryId)?.type === 'expense');
 
       let newAmount = amountValue;
@@ -643,7 +648,9 @@ const SummaryView = ({
         date: editFormData.date,
         payee: editFormData.payee,
         amount: newAmount,
-        categoryId: editFormData.categoryId === 'inflow_ready_to_assign' ? null : editFormData.categoryId,
+        categoryId: isReadyToAssignSentinel(editFormData.categoryId)
+          ? null
+          : editFormData.categoryId,
         memo: editFormData.memo
       };
 

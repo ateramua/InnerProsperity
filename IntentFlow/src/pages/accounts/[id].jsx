@@ -1,6 +1,6 @@
 // src/pages/accounts/[id].jsx
 import { useRouter } from 'next/router';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 
 const TRANSACTIONS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_TRANSACTIONS_PER_PAGE = 25;
@@ -20,6 +20,16 @@ import {
 import { computeRegisterBalanceFromTransactions, computeRegisterBalances } from '../../utils/accountRegisterBalance.jsx';
 import { computeTransactionsWithRunningBalance } from '../../utils/accountBalanceEngine.jsx';
 import AccountBalanceSummary, { formatBalanceDisplay } from '../../components/accounts/AccountBalanceSummary.jsx';
+import useRegisterTableInlineEdit from '../../hooks/useRegisterTableInlineEdit.jsx';
+import useRegisterTransactionRowActions from '../../hooks/useRegisterTransactionRowActions.jsx';
+import RegisterTransactionActions from '../../components/transactions/RegisterTransactionActions.jsx';
+import RegisterPayeeExtras from '../../components/transactions/RegisterPayeeExtras.jsx';
+import TransactionSplitModal from '../../components/transactions/TransactionSplitModal.jsx';
+import { enrichTransactionsWithCategoryNames } from '../../utils/categoryDisplayUtils.jsx';
+import {
+    buildIncomeCategoryOptions,
+    isReadyToAssignSentinel,
+} from '../../utils/readyToAssignCategory.jsx';
 
 const AccountDetailPage = () => {
     const router = useRouter();
@@ -145,13 +155,36 @@ const AccountDetailPage = () => {
     // Get filtered categories based on transaction type
     const getFilteredCategories = () => {
         if (transactionForm.transactionType === 'inflow') {
-            return [{ id: 'inflow_ready_to_assign', name: '💰 Inflow: Ready to Assign' }];
+            return buildIncomeCategoryOptions(
+                (categories || []).filter((cat) => cat && !isCategoryArchived(cat))
+            );
         }
         if (!categories || categories.length === 0) {
             return [];
         }
         return categories.filter((cat) => cat && !isCategoryArchived(cat));
     };
+
+    const editableCategories = useMemo(
+        () => categories.filter((cat) => cat && !isCategoryArchived(cat)),
+        [categories]
+    );
+
+    const {
+        registerPayees,
+        registerPayeesLoading,
+        handleInlineUpdate,
+        isInlineEditDisabled,
+        isCategoryInlineDisabled,
+        isPayeeInlineDisabled,
+    } = useRegisterTableInlineEdit({
+        accountId: account?.id,
+        transactions,
+        allTransactions,
+        setTransactions,
+        setAllTransactions,
+        categories: editableCategories,
+    });
 
     // ===================== PAYEE DROPDOWN FUNCTIONS =====================
 
@@ -788,7 +821,7 @@ const AccountDetailPage = () => {
             }
 
             const isExpense = originalTransaction.amount < 0;
-            const newIsExpense = editFormData.categoryId === 'inflow_ready_to_assign' ? false :
+            const newIsExpense = isReadyToAssignSentinel(editFormData.categoryId) ? false :
                 (editFormData.categoryId && categories.find(c => c.id === editFormData.categoryId)?.type === 'expense');
 
             let newAmount = amountValue;
@@ -804,7 +837,7 @@ const AccountDetailPage = () => {
                 description: editFormData.payee,
                 amount: newAmount,
                 category_id:
-                    editFormData.categoryId === 'inflow_ready_to_assign'
+                    isReadyToAssignSentinel(editFormData.categoryId)
                         ? null
                         : editFormData.categoryId,
                 memo: editFormData.memo || null,
@@ -868,7 +901,7 @@ const AccountDetailPage = () => {
             let transactionAmount = isExpense ? -amountValue : amountValue;
 
             const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
-                scheduledTx.categoryId === 'inflow_ready_to_assign';
+                isReadyToAssignSentinel(scheduledTx.categoryId);
 
             const transactionData = {
                 accountId: account.id,
@@ -929,18 +962,23 @@ const AccountDetailPage = () => {
         }
     };
 
-    // Load regular transactions; also compute transaction balance (sum of all active rows).
-    const applyAccountTransactions = (rawData) => {
+    // Load regular transactions; also compute register balance (initial_balance + transactions).
+    const applyAccountTransactions = useCallback(
+        (rawData, accountRow) => {
+        const acct = accountRow ?? account;
         const allActive = (rawData || []).filter(
             (tx) => tx.is_deleted !== 1 && tx.is_deleted !== true
         );
-        const balances = account
-            ? computeRegisterBalances(account, allActive)
+        const namedActive = enrichTransactionsWithCategoryNames(allActive, categories);
+        const balances = acct
+            ? computeRegisterBalances(acct, namedActive)
             : null;
-        const registerSum = balances?.working_balance ?? computeRegisterBalanceFromTransactions(allActive, account?.type);
-        const withRunning = account
-            ? computeTransactionsWithRunningBalance(account, allActive)
-            : allActive;
+        const registerSum =
+            balances?.working_balance ??
+            computeRegisterBalanceFromTransactions(namedActive, acct);
+        const withRunning = acct
+            ? computeTransactionsWithRunningBalance(acct, namedActive)
+            : namedActive;
         setAllTransactions(withRunning);
         const today = getTodayLocalDate();
         const regularTransactions = withRunning.filter(
@@ -949,16 +987,18 @@ const AccountDetailPage = () => {
         setTransactionBalance(registerSum);
         setTransactions(regularTransactions);
         return registerSum;
-    };
+    },
+        [account, categories]
+    );
 
-    const loadTransactions = async (id) => {
-        const targetId = id || account?.id;
+    const loadTransactions = async (id, accountRow) => {
+        const targetId = id || accountRow?.id || account?.id;
         if (!targetId) return null;
         try {
             if (window.electronAPI?.getAccountTransactions) {
                 const result = await window.electronAPI.getAccountTransactions(targetId);
                 if (result.success) {
-                    return applyAccountTransactions(result.data);
+                    return applyAccountTransactions(result.data, accountRow ?? account);
                 }
             }
         } catch (error) {
@@ -966,6 +1006,20 @@ const AccountDetailPage = () => {
         }
         return null;
     };
+
+    const reloadRegisterAfterRowAction = useCallback(async () => {
+        if (account?.id) {
+            await loadTransactions(account.id, account);
+        }
+    }, [account, applyAccountTransactions]);
+
+    const {
+        splitTransaction,
+        setSplitTransaction,
+        handleDeleteRow,
+        handleToggleClearedRow,
+        handleSplitSaved,
+    } = useRegisterTransactionRowActions({ onAfterMutation: reloadRegisterAfterRowAction });
 
     // Handle transaction selection
     const handleSelectTransaction = (transactionId) => {
@@ -1050,6 +1104,16 @@ const AccountDetailPage = () => {
             loadAccountData(id);
         }
     }, [id]);
+
+    useEffect(() => {
+        if (!categories?.length) return;
+        setTransactions((prev) =>
+            prev?.length ? enrichTransactionsWithCategoryNames(prev, categories) : prev
+        );
+        setAllTransactions((prev) =>
+            prev?.length ? enrichTransactionsWithCategoryNames(prev, categories) : prev
+        );
+    }, [categories]);
 
     // Load loan accounts when account is available
     useEffect(() => {
@@ -1148,12 +1212,18 @@ const AccountDetailPage = () => {
             }
 
             if (accountResult?.success && accountResult?.data) {
-                setAccount(accountResult.data);
-            }
+                const acct = accountResult.data;
+                setAccount(acct);
 
-            const transactionsResult = await window.electronAPI.getAccountTransactions(accountId);
-            if (transactionsResult?.success) {
-                applyAccountTransactions(transactionsResult.data);
+                const transactionsResult = await window.electronAPI.getAccountTransactions(accountId);
+                if (transactionsResult?.success) {
+                    applyAccountTransactions(transactionsResult.data, acct);
+                }
+            } else {
+                const transactionsResult = await window.electronAPI.getAccountTransactions(accountId);
+                if (transactionsResult?.success) {
+                    applyAccountTransactions(transactionsResult.data);
+                }
             }
 
             await loadCategories();
@@ -1224,7 +1294,7 @@ const AccountDetailPage = () => {
         }
 
         const isReadyToAssign = transactionForm.transactionType === 'inflow' &&
-            transactionForm.categoryId === 'inflow_ready_to_assign';
+            isReadyToAssignSentinel(transactionForm.categoryId);
 
         // Save payee to payees table if this is a regular transaction (not a transfer)
         let finalPayeeId = transactionForm.payeeId;
@@ -1630,6 +1700,14 @@ const AccountDetailPage = () => {
                 }}
             />
 
+            <TransactionSplitModal
+                open={!!splitTransaction}
+                transaction={splitTransaction}
+                categories={editableCategories}
+                onClose={() => setSplitTransaction(null)}
+                onSaved={handleSplitSaved}
+            />
+
             {/* Transaction List */}
             <div style={styles.transactionsList}>
                 {transactions.length === 0 ? (
@@ -1698,12 +1776,19 @@ const AccountDetailPage = () => {
 
                         <TransactionTable
                             transactions={paginatedTransactions}
-                            categories={categories}
+                            categories={editableCategories}
                             sort={transactionSort}
                             onSortChange={setTransactionSort}
                             formatDate={formatDisplayDate}
                             showRunningBalance
                             formatRunningBalance={(bal) => formatBalanceDisplay(bal, account?.type)}
+                            enableInlineEdit
+                            onInlineUpdate={handleInlineUpdate}
+                            isInlineEditDisabled={isInlineEditDisabled}
+                            isCategoryInlineDisabled={isCategoryInlineDisabled}
+                            isPayeeInlineDisabled={isPayeeInlineDisabled}
+                            registerPayees={registerPayees}
+                            registerPayeesLoading={registerPayeesLoading}
                             emptyMessage="No transactions match your search or filters"
                             showCheckbox
                             selectedIds={selectedTransactions}
@@ -1716,17 +1801,23 @@ const AccountDetailPage = () => {
                             }
                             editingId={editingTransactionId}
                             renderPayeeExtra={(tx) => (
-                                <>
-                                    {tx.isLoanPayment && (
-                                        <div style={styles.loanPaymentBadgeSmall}>🏦 Loan Payment</div>
-                                    )}
-                                    {tx.isCreditCardPayment && (
-                                        <div style={styles.creditCardPaymentBadgeSmall}>💳 Credit Card Payment</div>
-                                    )}
-                                    {tx.is_transfer === 1 && (
-                                        <div style={styles.transferBadgeSmall}>🔄 Transfer</div>
-                                    )}
-                                </>
+                                <RegisterPayeeExtras
+                                    transaction={tx}
+                                    extra={
+                                        <>
+                                            {tx.isLoanPayment && (
+                                                <div style={styles.loanPaymentBadgeSmall}>
+                                                    🏦 Loan Payment
+                                                </div>
+                                            )}
+                                            {tx.isCreditCardPayment && (
+                                                <div style={styles.creditCardPaymentBadgeSmall}>
+                                                    💳 Credit Card Payment
+                                                </div>
+                                            )}
+                                        </>
+                                    }
+                                />
                             )}
                             renderEditRow={(tx) => {
                                 const editCategories = categories.filter(
@@ -1813,12 +1904,13 @@ const AccountDetailPage = () => {
                                 );
                             }}
                             renderActions={(tx) => (
-                                <button
-                                    onClick={() => startEditing(tx)}
-                                    style={styles.editButton}
-                                >
-                                    ✏️ Edit
-                                </button>
+                                <RegisterTransactionActions
+                                    transaction={tx}
+                                    onEdit={startEditing}
+                                    onDelete={handleDeleteRow}
+                                    onToggleCleared={handleToggleClearedRow}
+                                    onSplit={setSplitTransaction}
+                                />
                             )}
                         />
                     </>

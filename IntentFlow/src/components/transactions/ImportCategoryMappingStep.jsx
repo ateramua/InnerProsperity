@@ -1,6 +1,8 @@
 import React from 'react';
 
-const READY_TO_ASSIGN_VALUE = 'inflow_ready_to_assign';
+import { READY_TO_ASSIGN_CATEGORY_ID } from '../../utils/readyToAssignCategory.jsx';
+
+const READY_TO_ASSIGN_VALUE = READY_TO_ASSIGN_CATEGORY_ID;
 
 const styles = {
   sectionTitle: {
@@ -14,6 +16,16 @@ const styles = {
     fontSize: '0.8rem',
     color: '#94a3b8',
     lineHeight: 1.45,
+  },
+  transferNote: {
+    margin: '0 0 0.75rem',
+    fontSize: '0.8rem',
+    color: '#fcd34d',
+    lineHeight: 1.45,
+    padding: '0.5rem 0.65rem',
+    borderRadius: '0.375rem',
+    border: '1px solid rgba(245, 158, 11, 0.35)',
+    background: 'rgba(245, 158, 11, 0.08)',
   },
   institutionBadge: {
     display: 'inline-block',
@@ -88,6 +100,14 @@ const styles = {
     color: '#94a3b8',
     fontSize: '0.85rem',
   },
+  tableScroll: {
+    maxHeight: 'min(50vh, 400px)',
+    overflowY: 'auto',
+    overflowX: 'auto',
+    marginBottom: '0.5rem',
+    border: '1px solid #334155',
+    borderRadius: '8px',
+  },
 };
 
 /**
@@ -111,6 +131,11 @@ export default function ImportCategoryMappingStep({
   return (
     <div>
       <h4 style={styles.sectionTitle}>Map bank categories (optional)</h4>
+      <p style={styles.transferNote}>
+        After import, IntentFlow scans for matching amounts across your accounts and links internal
+        transfers. Linked rows use payee <strong>Transfer: Account Name</strong> and do not use a
+        budget category.
+      </p>
       {institutionLabel ? (
         <span style={styles.institutionBadge}>
           Saved mappings for: {institutionLabel}
@@ -139,38 +164,40 @@ export default function ImportCategoryMappingStep({
             without a budget category. Exact name matches and saved mappings for this institution
             are applied automatically.
           </p>
-          <table style={styles.categoryMapTable}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Bank category</th>
-                <th style={styles.th}>Rows</th>
-                <th style={styles.th}>IntentFlow category</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bankCategories.map((item) => (
-                <tr key={item.key} style={styles.categoryMapRow}>
-                  <td style={styles.categoryMapBank}>{item.name}</td>
-                  <td style={styles.categoryMapCount}>{item.count}</td>
-                  <td style={{ padding: '0.35rem 0' }}>
-                    <select
-                      style={styles.categoryMapSelect}
-                      value={categoryMappings[item.key] ?? ''}
-                      onChange={(e) => onCategoryMappingChange?.(item.key, e.target.value)}
-                    >
-                      <option value="">— Unmapped —</option>
-                      <option value={READY_TO_ASSIGN_VALUE}>Ready to Assign (inflow)</option>
-                      {(budgetCategories || []).map((cat) => (
-                        <option key={cat.id} value={cat.id}>
-                          {cat.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
+          <div style={styles.tableScroll}>
+            <table style={styles.categoryMapTable}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Bank category</th>
+                  <th style={styles.th}>Rows</th>
+                  <th style={styles.th}>IntentFlow category</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {bankCategories.map((item) => (
+                  <tr key={item.key} style={styles.categoryMapRow}>
+                    <td style={styles.categoryMapBank}>{item.name}</td>
+                    <td style={styles.categoryMapCount}>{item.count}</td>
+                    <td style={{ padding: '0.35rem 0' }}>
+                      <select
+                        style={styles.categoryMapSelect}
+                        value={categoryMappings[item.key] ?? ''}
+                        onChange={(e) => onCategoryMappingChange?.(item.key, e.target.value)}
+                      >
+                        <option value="">— Unmapped —</option>
+                        <option value={READY_TO_ASSIGN_VALUE}>Ready to Assign (inflow)</option>
+                        {(budgetCategories || []).map((cat) => (
+                          <option key={cat.id} value={cat.id}>
+                            {cat.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <label style={styles.checkboxRow}>
             <input
               type="checkbox"

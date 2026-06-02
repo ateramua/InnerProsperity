@@ -4,6 +4,7 @@ import {
   DATE_PRESET_OPTIONS,
   TRANSACTION_TYPE_OPTIONS,
   TRANSACTION_STATUS_OPTIONS,
+  CATEGORIZATION_FILTER_OPTIONS,
   DEFAULT_TRANSACTION_FILTERS,
   countActiveFilters,
 } from '../../utils/transactionFilterUtils.jsx';
@@ -123,6 +124,7 @@ const styles = {
  * @param {string} [searchValue] — controlled search (debounced upstream)
  * @param {(value: string) => void} [onSearchChange]
  * @param {React.ReactNode} [extraActions]
+ * @param {{ uncategorizedCount?: number, uncategorizedTotalAmount?: number, needsReviewCount?: number }} [categorizationSummary]
  */
 export default function TransactionToolbar({
   filters,
@@ -136,6 +138,7 @@ export default function TransactionToolbar({
   searchValue,
   onSearchChange,
   extraActions,
+  categorizationSummary,
 }) {
   const [showFilters, setShowFilters] = useState(false);
   const activeFilterCount = countActiveFilters(filters, { hideAccountFilter });
@@ -157,6 +160,7 @@ export default function TransactionToolbar({
       payee: '',
       transactionType: '',
       status: '',
+      categorizationStatus: '',
     });
   };
 
@@ -218,8 +222,42 @@ export default function TransactionToolbar({
             ))}
           </select>
         </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={styles.groupLabel}>Category map</span>
+          <select
+            value={filters.categorizationStatus || ''}
+            onChange={(e) => setField('categorizationStatus', e.target.value)}
+            style={styles.select}
+            aria-label="Categorization filter"
+          >
+            {CATEGORIZATION_FILTER_OPTIONS.map((opt) => (
+              <option key={opt.id || 'all'} value={opt.id}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
         {extraActions}
       </div>
+
+      {categorizationSummary &&
+        (categorizationSummary.uncategorizedCount > 0 ||
+          categorizationSummary.needsReviewCount > 0) && (
+        <div style={styles.resultMeta}>
+          {categorizationSummary.uncategorizedCount > 0 && (
+            <span>
+              {categorizationSummary.uncategorizedCount} uncategorized
+              {categorizationSummary.uncategorizedTotalAmount > 0
+                ? ` (${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(categorizationSummary.uncategorizedTotalAmount)})`
+                : ''}
+              {' · '}
+            </span>
+          )}
+          {categorizationSummary.needsReviewCount > 0 && (
+            <span>{categorizationSummary.needsReviewCount} need review</span>
+          )}
+        </div>
+      )}
 
       {showFilters && (
         <div style={styles.filterPanel}>

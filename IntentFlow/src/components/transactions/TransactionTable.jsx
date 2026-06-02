@@ -1,5 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { sortIndicator } from '../../utils/transactionSortUtils.jsx';
+import { buildCategoryByIdMap } from '../../utils/categoryDisplayUtils.jsx';
 import {
   formatTransactionCurrency,
   getTransactionCategoryLabel,
@@ -50,6 +51,15 @@ const styles = {
   },
   trSelected: {
     background: 'rgba(59, 130, 246, 0.12)',
+  },
+  trHighlighted: {
+    background: 'rgba(16, 185, 129, 0.14)',
+    boxShadow: 'inset 3px 0 0 #10B981',
+  },
+  trFocused: {
+    background: 'rgba(16, 185, 129, 0.24)',
+    boxShadow: 'inset 4px 0 0 #34D399',
+    outline: 'none',
   },
   td: {
     padding: '0.75rem 1rem',
@@ -118,7 +128,7 @@ function formatDisplayDate(dateStr) {
 /**
  * Unified transaction table: Date | Payee | Category | Outflow | Inflow
  */
-export default function TransactionTable({
+function TransactionTable({
   transactions = [],
   categories = [],
   sort,
@@ -129,8 +139,11 @@ export default function TransactionTable({
   onToggleSelect,
   onSelectAll,
   allSelected = false,
+  someSelected = false,
   onRowClick,
   isRowSelected,
+  isRowHighlighted,
+  focusedTransactionId = null,
   renderActions,
   renderLeadingCell,
   editingId = null,
@@ -146,12 +159,20 @@ export default function TransactionTable({
   enableInlineEdit = false,
   onInlineUpdate,
   isInlineEditDisabled,
+  isCategoryInlineDisabled,
+  isPayeeInlineDisabled,
+  registerPayees = null,
+  registerPayeesLoading = false,
 }) {
-  const categoryById = useMemo(
-    () => new Map((categories || []).map((c) => [c.id, c])),
-    [categories]
-  );
+  const categoryById = useMemo(() => buildCategoryByIdMap(categories), [categories]);
   const displayColumns = buildDisplayColumns(showAccountColumn);
+  const selectAllRef = useRef(null);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = Boolean(someSelected);
+    }
+  }, [someSelected, allSelected]);
 
   const handleSort = (key) => {
     if (!onSortChange || !sort) return;
@@ -169,6 +190,17 @@ export default function TransactionTable({
 
   return (
     <div style={styles.container}>
+      {focusedTransactionId ? (
+        <style>{`
+          @keyframes activityDrilldownFocusPulse {
+            0%, 100% { box-shadow: inset 4px 0 0 #34D399, 0 0 0 2px rgba(52, 211, 153, 0.35); }
+            50% { box-shadow: inset 4px 0 0 #34D399, 0 0 0 5px rgba(52, 211, 153, 0.5); }
+          }
+          tr[data-tx-focused="true"] {
+            animation: activityDrilldownFocusPulse 1.4s ease-in-out 4;
+          }
+        `}</style>
+      ) : null}
       <table style={styles.table}>
         <thead style={styles.thead}>
           <tr>
@@ -176,11 +208,12 @@ export default function TransactionTable({
               <th style={{ ...styles.th, width: '40px' }}>
                 {onSelectAll ? (
                   <input
+                    ref={selectAllRef}
                     type="checkbox"
                     checked={allSelected}
                     onChange={onSelectAll}
                     style={styles.checkbox}
-                    aria-label="Select all transactions"
+                    aria-label="Select all transactions matching filters"
                   />
                 ) : null}
               </th>
@@ -237,7 +270,10 @@ export default function TransactionTable({
                 );
               }
 
-              const category = categoryById.get(tx.category_id);
+              const category =
+                tx.category_id != null && tx.category_id !== ''
+                  ? categoryById.get(String(tx.category_id))
+                  : undefined;
               const selected = isRowSelected
                 ? isRowSelected(tx)
                 : selectedIds instanceof Set
@@ -245,14 +281,24 @@ export default function TransactionTable({
                   : Array.isArray(selectedIds)
                     ? selectedIds.includes(tx.id)
                     : false;
+              const highlighted = isRowHighlighted ? isRowHighlighted(tx) : false;
+              const focused =
+                focusedTransactionId != null &&
+                String(focusedTransactionId) === String(tx.id);
 
               return (
                 <tr
                   key={tx.id}
+                  data-tx-id={tx.id}
+                  data-tx-focused={focused ? 'true' : undefined}
+                  tabIndex={focused ? -1 : undefined}
+                  aria-current={focused ? 'true' : undefined}
                   style={{
                     ...styles.tr,
                     ...(onRowClick ? styles.trClickable : null),
                     ...(selected ? styles.trSelected : null),
+                    ...(highlighted && !focused ? styles.trHighlighted : null),
+                    ...(focused ? styles.trFocused : null),
                   }}
                   onClick={onRowClick ? () => onRowClick(tx) : undefined}
                 >
@@ -313,7 +359,8 @@ export default function TransactionTable({
                       );
                     }
                     if (col.key === 'payee') {
-                      const payeeDisabled = isInlineEditDisabled?.(tx);
+                      const payeeDisabled =
+                        isPayeeInlineDisabled?.(tx) ?? isInlineEditDisabled?.(tx);
                       return (
                         <td key="payee" style={styles.td}>
                           {enableInlineEdit && onInlineUpdate ? (
@@ -321,6 +368,8 @@ export default function TransactionTable({
                               transaction={tx}
                               onSave={onInlineUpdate}
                               disabled={payeeDisabled}
+                              payees={registerPayees}
+                              payeesLoading={registerPayeesLoading}
                             />
                           ) : (
                             getTransactionPayee(tx)
@@ -330,10 +379,11 @@ export default function TransactionTable({
                       );
                     }
                     if (col.key === 'category') {
-                      const categoryDisabled = isInlineEditDisabled?.(tx);
+                      const categoryDisabled =
+                        isCategoryInlineDisabled?.(tx) ?? isInlineEditDisabled?.(tx);
                       return (
                         <td key="category" style={{ ...styles.td, ...styles.tdMuted }}>
-                          {enableInlineEdit && onInlineUpdate && tx.is_transfer !== 1 ? (
+                          {enableInlineEdit && onInlineUpdate ? (
                             <InlineCategoryField
                               transaction={tx}
                               categories={categories}
@@ -341,7 +391,8 @@ export default function TransactionTable({
                               disabled={categoryDisabled}
                             />
                           ) : (
-                            tx.categoryName || getTransactionCategoryLabel(tx, category)
+                            tx.categoryName ||
+                              getTransactionCategoryLabel(tx, category, categoryById)
                           )}
                         </td>
                       );
@@ -388,5 +439,7 @@ export default function TransactionTable({
     </div>
   );
 }
+
+export default React.memo(TransactionTable);
 
 export { formatDisplayDate as formatTransactionTableDate };

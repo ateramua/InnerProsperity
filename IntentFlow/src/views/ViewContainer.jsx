@@ -727,7 +727,7 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         );
 
       case 'propertyMap':
-        return <PropertyMapView />;
+        return <PropertyMapView onNavigate={onNavigate} />;
 
       case 'moneyMap':
         return <MoneyMapView />;

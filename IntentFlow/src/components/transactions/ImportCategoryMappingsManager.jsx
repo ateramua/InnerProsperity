@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
-const READY_TO_ASSIGN_VALUE = 'inflow_ready_to_assign';
+import { READY_TO_ASSIGN_CATEGORY_ID } from '../../utils/readyToAssignCategory.jsx';
+
+const READY_TO_ASSIGN_VALUE = READY_TO_ASSIGN_CATEGORY_ID;
+
+const MODAL_MAX_HEIGHT = 'min(85vh, calc(100dvh - 2rem))';
 
 const styles = {
   overlay: {
@@ -8,24 +12,47 @@ const styles = {
     inset: 0,
     background: 'rgba(0,0,0,0.7)',
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'center',
     zIndex: 10001,
     padding: '1rem',
+    overflowY: 'auto',
+    boxSizing: 'border-box',
   },
   modal: {
     background: '#0f172a',
     color: '#f8fafc',
     borderRadius: '12px',
-    padding: '1.25rem',
     maxWidth: '720px',
     width: '100%',
-    maxHeight: '85vh',
-    overflow: 'auto',
+    maxHeight: MODAL_MAX_HEIGHT,
+    minHeight: 0,
+    margin: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
     border: '1px solid rgba(255,255,255,0.15)',
+    boxSizing: 'border-box',
+  },
+  modalHeader: {
+    flexShrink: 0,
+    padding: '1.25rem 1.25rem 0.75rem',
+    borderBottom: '1px solid rgba(51, 65, 85, 0.6)',
+  },
+  modalBody: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    overflowY: 'auto',
+    padding: '0.75rem 1.25rem',
+    WebkitOverflowScrolling: 'touch',
+  },
+  modalFooter: {
+    flexShrink: 0,
+    padding: '0.75rem 1.25rem 1.25rem',
+    borderTop: '1px solid rgba(51, 65, 85, 0.8)',
   },
   title: { margin: '0 0 0.5rem', fontSize: '1.15rem' },
-  hint: { margin: '0 0 1rem', fontSize: '0.85rem', color: '#94a3b8' },
+  hint: { margin: 0, fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.45 },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' },
   th: {
     textAlign: 'left',
@@ -52,7 +79,7 @@ const styles = {
     fontSize: '0.8rem',
   },
   danger: { color: '#f87171', borderColor: '#7f1d1d' },
-  footer: { display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' },
+  footer: { display: 'flex', justifyContent: 'flex-end' },
   empty: { color: '#64748b', padding: '1.5rem', textAlign: 'center' },
 };
 
@@ -147,77 +174,85 @@ export default function ImportCategoryMappingsManager({
   return (
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <h3 style={styles.title}>Saved import category mappings</h3>
-        <p style={styles.hint}>
-          These mappings apply when you import CSV transactions. Institution-specific mappings
-          override default mappings for the same bank category name.
-        </p>
+        <header style={styles.modalHeader}>
+          <h3 style={styles.title}>Saved import category mappings</h3>
+          <p style={styles.hint}>
+            These mappings apply when you import CSV transactions. Institution-specific mappings
+            override default mappings for the same bank category name.
+          </p>
+        </header>
 
-        {error ? <p style={{ color: '#f87171' }}>{error}</p> : null}
-        {loading ? (
-          <p style={styles.empty}>Loading…</p>
-        ) : rows.length === 0 ? (
-          <p style={styles.empty}>No saved mappings yet. Map categories during import and check
-            &quot;Save mappings for future imports.&quot;</p>
-        ) : (
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Institution</th>
-                <th style={styles.th}>Bank category</th>
-                <th style={styles.th}>IntentFlow category</th>
-                <th style={styles.th} />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const key = rowKey(row);
-                const selectValue =
-                  row.categoryId == null || row.categoryId === ''
-                    ? READY_TO_ASSIGN_VALUE
-                    : row.categoryId;
-                return (
-                  <tr key={key}>
-                    <td style={styles.td}>{row.institutionLabel}</td>
-                    <td style={styles.td}>{row.bankCategory}</td>
-                    <td style={styles.td}>
-                      <select
-                        style={styles.select}
-                        value={selectValue}
-                        disabled={busyKey === key}
-                        onChange={(e) => handleCategoryChange(row, e.target.value)}
-                      >
-                        <option value="">— Unmapped —</option>
-                        <option value={READY_TO_ASSIGN_VALUE}>Ready to Assign (inflow)</option>
-                        {(budgetCategories || []).map((cat) => (
-                          <option key={cat.id} value={cat.id}>
-                            {cat.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td style={styles.td}>
-                      <button
-                        type="button"
-                        style={{ ...styles.btn, ...styles.danger }}
-                        disabled={busyKey === key}
-                        onClick={() => handleDelete(row)}
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-
-        <div style={styles.footer}>
-          <button type="button" style={styles.btn} onClick={onClose}>
-            Close
-          </button>
+        <div style={styles.modalBody}>
+          {error ? <p style={{ color: '#f87171' }}>{error}</p> : null}
+          {loading ? (
+            <p style={styles.empty}>Loading…</p>
+          ) : rows.length === 0 ? (
+            <p style={styles.empty}>
+              No saved mappings yet. Map categories during import and check &quot;Save mappings for
+              future imports.&quot;
+            </p>
+          ) : (
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Institution</th>
+                  <th style={styles.th}>Bank category</th>
+                  <th style={styles.th}>IntentFlow category</th>
+                  <th style={styles.th} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const key = rowKey(row);
+                  const selectValue =
+                    row.categoryId == null || row.categoryId === ''
+                      ? READY_TO_ASSIGN_VALUE
+                      : row.categoryId;
+                  return (
+                    <tr key={key}>
+                      <td style={styles.td}>{row.institutionLabel}</td>
+                      <td style={styles.td}>{row.bankCategory}</td>
+                      <td style={styles.td}>
+                        <select
+                          style={styles.select}
+                          value={selectValue}
+                          disabled={busyKey === key}
+                          onChange={(e) => handleCategoryChange(row, e.target.value)}
+                        >
+                          <option value="">— Unmapped —</option>
+                          <option value={READY_TO_ASSIGN_VALUE}>Ready to Assign (inflow)</option>
+                          {(budgetCategories || []).map((cat) => (
+                            <option key={cat.id} value={cat.id}>
+                              {cat.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td style={styles.td}>
+                        <button
+                          type="button"
+                          style={{ ...styles.btn, ...styles.danger }}
+                          disabled={busyKey === key}
+                          onClick={() => handleDelete(row)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
+
+        <footer style={styles.modalFooter}>
+          <div style={styles.footer}>
+            <button type="button" style={styles.btn} onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </footer>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import useDebouncedValue from '../hooks/useDebouncedValue.jsx';
 import PlaidTxnBadge from './PlaidTxnBadge';
 import {
@@ -11,6 +11,23 @@ import {
 } from '../utils/transactionFilterUtils.jsx';
 import TransactionToolbar from './transactions/TransactionToolbar.jsx';
 import TransactionTable from './transactions/TransactionTable.jsx';
+import TransactionSplitModal from './transactions/TransactionSplitModal.jsx';
+import RegisterTransactionActions, {
+  canSplitRegisterTransaction,
+} from './transactions/RegisterTransactionActions.jsx';
+import RegisterPayeeExtras from './transactions/RegisterPayeeExtras.jsx';
+import ActivityDrilldownBanner from './transactions/ActivityDrilldownBanner.jsx';
+import useScrollToTransactionFocus from '../hooks/useScrollToTransactionFocus.jsx';
+import useTransactionPayees, { invalidateTransactionPayeesCache } from '../hooks/useTransactionPayees.jsx';
+import { TransactionCategorySelectOptions } from './transactions/TransactionCategorySelectOptions.jsx';
+import {
+  categorySelectValueForTransaction,
+  isReadyToAssignSentinel,
+  normalizeCategoryIdForStorage,
+  READY_TO_ASSIGN_CATEGORY_ID,
+  READY_TO_ASSIGN_VALIDATION_MSG,
+  validateReadyToAssignSelection,
+} from '../utils/readyToAssignCategory.jsx';
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 const VIRTUAL_ROW_HEIGHT = 52;
@@ -98,6 +115,7 @@ const TransactionManager = ({
   onToggleCleared,
   onBulkDelete,
   onBulkUpdate,
+  onReload,
   showAccountColumn = true,
   hideAccountFilter = false,
   multiAccountFilter = false,
@@ -107,11 +125,25 @@ const TransactionManager = ({
   enableBulkSelection = false,
   enableVirtualScroll = false,
   enableInlineEdit = false,
+  activityDrilldown = null,
+  activityDrilldownHighlightIds = null,
+  activityDrilldownIdsLoading = false,
+  activityDrilldownBannerLabel = '',
+  activityDrilldownFocusId = null,
+  activityDrilldownFocusLabel = '',
+  activityDrilldownConfirmedIds = null,
+  onActivityDrilldownBack,
+  onClearActivityDrilldown,
+  activityDrilldownEmptyMessage = null,
 }) => {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [sort, setSort] = useState(DEFAULT_TRANSACTION_SORT);
-  const [filters, setFilters] = useState({ ...DEFAULT_TRANSACTION_FILTERS });
+  const [filters, setFilters] = useState(() =>
+    activityDrilldown?.initialFilters
+      ? { ...activityDrilldown.initialFilters }
+      : { ...DEFAULT_TRANSACTION_FILTERS }
+  );
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 300);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -119,8 +151,40 @@ const TransactionManager = ({
   const [pageSize, setPageSize] = useState(defaultPageSize);
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [categorizationSummary, setCategorizationSummary] = useState(null);
+  const [splitTransaction, setSplitTransaction] = useState(null);
+  const [pairingTransfers, setPairingTransfers] = useState(false);
+  const [retrainingMl, setRetrainingMl] = useState(false);
   const scrollRef = useRef(null);
+  const scrollRestoreRef = useRef(null);
+  const tableScrollSnapshotRef = useRef(0);
   const [virtRange, setVirtRange] = useState({ start: 0, end: 60 });
+  const { payees: registerPayees, loading: payeesLoading } = useTransactionPayees(null);
+
+  useEffect(() => {
+    invalidateTransactionPayeesCache();
+  }, []);
+
+  const highlightIdSet = useMemo(() => {
+    if (!activityDrilldownHighlightIds) return null;
+    if (activityDrilldownHighlightIds instanceof Set) return activityDrilldownHighlightIds;
+    return new Set([...activityDrilldownHighlightIds].map(String));
+  }, [activityDrilldownHighlightIds]);
+
+  const drilldownFiltersKeyRef = useRef('');
+
+  useEffect(() => {
+    if (!activityDrilldown?.initialFilters) {
+      drilldownFiltersKeyRef.current = '';
+      return;
+    }
+    const key = JSON.stringify(activityDrilldown.initialFilters);
+    if (drilldownFiltersKeyRef.current === key) return;
+    drilldownFiltersKeyRef.current = key;
+    setFilters({ ...activityDrilldown.initialFilters });
+    setSearchInput('');
+    setPage(1);
+  }, [activityDrilldown?.initialFilters]);
 
   const filtersForQuery = useMemo(
     () => ({ ...filters, search: debouncedSearch }),
@@ -132,9 +196,39 @@ const TransactionManager = ({
     [transactions]
   );
 
+  const confirmedActivityIdSet = useMemo(() => {
+    if (!activityDrilldownConfirmedIds?.length) return null;
+    return new Set(activityDrilldownConfirmedIds.map(String));
+  }, [activityDrilldownConfirmedIds]);
+
+  const useExactActivityFilter =
+    Boolean(activityDrilldown) &&
+    !activityDrilldownIdsLoading &&
+    confirmedActivityIdSet &&
+    confirmedActivityIdSet.size > 0;
+
   const filtered = useMemo(
-    () => filterTransactions(activeTransactions, filtersForQuery, { categories, accounts }),
-    [activeTransactions, filtersForQuery, categories, accounts]
+    () =>
+      filterTransactions(activeTransactions, filtersForQuery, {
+        categories,
+        accounts,
+        includeTransactionIds: confirmedActivityIdSet
+          ? [...confirmedActivityIdSet]
+          : highlightIdSet?.size
+            ? [...highlightIdSet]
+            : undefined,
+        activityDrilldownOnly: useExactActivityFilter,
+      }),
+    [
+      activeTransactions,
+      filtersForQuery,
+      categories,
+      accounts,
+      highlightIdSet,
+      confirmedActivityIdSet,
+      useExactActivityFilter,
+      activityDrilldown,
+    ]
   );
 
   const sortedTransactions = useMemo(
@@ -146,7 +240,10 @@ const TransactionManager = ({
   const safePage = Math.min(page, totalPages);
 
   const useVirtual =
-    enableVirtualScroll && sortedTransactions.length >= VIRTUAL_THRESHOLD && !editingId;
+    enableVirtualScroll &&
+    !activityDrilldown &&
+    sortedTransactions.length >= VIRTUAL_THRESHOLD &&
+    !editingId;
 
   const paginatedTransactions = useMemo(() => {
     if (!enablePagination || useVirtual) return sortedTransactions;
@@ -206,8 +303,113 @@ const TransactionManager = ({
     : 0;
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!window.electronAPI?.getUncategorizedSummary) return;
+      try {
+        const res = await window.electronAPI.getUncategorizedSummary();
+        if (!cancelled && res?.success) setCategorizationSummary(res.data);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [transactions?.length]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.retrainCategoryMl) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const statusRes = await window.electronAPI.getCategoryMlModelStatus?.();
+        if (cancelled || !statusRes?.success) return;
+        if (statusRes.data?.ready && !statusRes.data?.trained) {
+          await window.electronAPI.retrainCategoryMl();
+        }
+      } catch {
+        /* ignore background ML train */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     setPage(1);
-  }, [filtersForQuery, sort, pageSize, transactions?.length]);
+  }, [filtersForQuery, sort, pageSize]);
+
+  useEffect(() => {
+    if (!activityDrilldown || !activityDrilldownFocusId) return;
+    const idx = sortedTransactions.findIndex(
+      (t) => String(t.id) === String(activityDrilldownFocusId)
+    );
+    if (idx < 0) return;
+    if (enablePagination && pageSize > 0) {
+      const targetPage = Math.floor(idx / pageSize) + 1;
+      if (targetPage !== safePage) {
+        setPage(targetPage);
+      }
+    }
+  }, [
+    activityDrilldown,
+    activityDrilldownFocusId,
+    sortedTransactions,
+    enablePagination,
+    pageSize,
+    safePage,
+  ]);
+
+  const displayRowIds = useMemo(
+    () => displayTransactions.map((tx) => String(tx.id)),
+    [displayTransactions]
+  );
+
+  useScrollToTransactionFocus({
+    containerRef: scrollRef,
+    focusTransactionId: activityDrilldownFocusId,
+    active: Boolean(activityDrilldown),
+    ready: !activityDrilldownIdsLoading && Boolean(activityDrilldownFocusId),
+    displayRowIds,
+  });
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    return () => {
+      if (el) tableScrollSnapshotRef.current = el.scrollTop;
+    };
+  });
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const saved = scrollRestoreRef.current;
+    if (saved) {
+      scrollRestoreRef.current = null;
+      const restore = () => {
+        if (saved.containerTop != null) {
+          el.scrollTop = saved.containerTop;
+        }
+        if (typeof window !== 'undefined' && saved.windowY != null) {
+          window.scrollTo(0, saved.windowY);
+        }
+      };
+      restore();
+      requestAnimationFrame(restore);
+      return;
+    }
+
+    if (activityDrilldown && activityDrilldownFocusId) {
+      return;
+    }
+
+    if (tableScrollSnapshotRef.current > 0) {
+      el.scrollTop = tableScrollSnapshotRef.current;
+    }
+  }, [transactions, activityDrilldown, activityDrilldownFocusId]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -218,7 +420,7 @@ const TransactionManager = ({
     setEditForm({
       date: transaction.date,
       payee: transaction.payee || transaction.description || '',
-      categoryId: transaction.category_id || '',
+      categoryId: categorySelectValueForTransaction(transaction),
       amount: Math.abs(transaction.amount),
       type: transaction.amount < 0 ? 'outflow' : 'inflow',
       memo: transaction.memo || '',
@@ -235,13 +437,26 @@ const TransactionManager = ({
       return;
     }
     const signedAmount = editForm.type === 'outflow' ? -Math.abs(amountMag) : Math.abs(amountMag);
+    const isIncome = editForm.type === 'inflow';
+    const rtaCheck = validateReadyToAssignSelection(editForm.categoryId, {
+      isIncome,
+      isTransfer: false,
+    });
+    if (!rtaCheck.ok) {
+      alert(rtaCheck.message || READY_TO_ASSIGN_VALIDATION_MSG);
+      return;
+    }
+    const storedCategoryId = normalizeCategoryIdForStorage(editForm.categoryId, { isIncome });
+    const apiCategoryId = isReadyToAssignSentinel(editForm.categoryId)
+      ? READY_TO_ASSIGN_CATEGORY_ID
+      : storedCategoryId;
     const updateData = {
       date: editForm.date,
       payee: editForm.payee,
       description: editForm.payee,
       amount: signedAmount,
-      category_id:
-        editForm.categoryId === 'inflow_ready_to_assign' ? null : editForm.categoryId || null,
+      category_id: apiCategoryId,
+      categoryId: apiCategoryId,
       memo: editForm.memo || null,
       cleared: editForm.cleared ? 1 : 0,
       is_cleared: editForm.cleared ? 1 : 0,
@@ -281,12 +496,24 @@ const TransactionManager = ({
     });
   };
 
-  const selectAllOnPage = () => {
-    const ids = displayTransactions.map((t) => t.id);
-    const allSelected = ids.length > 0 && ids.every((id) => selectedIds.has(id));
+  const filteredTransactionIds = useMemo(
+    () => sortedTransactions.map((t) => t.id).filter((id) => id != null),
+    [sortedTransactions]
+  );
+
+  const allFilteredSelected =
+    filteredTransactionIds.length > 0 &&
+    filteredTransactionIds.every((id) => selectedIds.has(id));
+
+  const someFilteredSelected =
+    filteredTransactionIds.some((id) => selectedIds.has(id)) && !allFilteredSelected;
+
+  const toggleSelectAllFiltered = () => {
     setSelectedIds((prev) => {
+      const ids = sortedTransactions.map((t) => t.id).filter((id) => id != null);
+      const allOn = ids.length > 0 && ids.every((id) => prev.has(id));
       const next = new Set(prev);
-      if (allSelected) ids.forEach((id) => next.delete(id));
+      if (allOn) ids.forEach((id) => next.delete(id));
       else ids.forEach((id) => next.add(id));
       return next;
     });
@@ -321,15 +548,85 @@ const TransactionManager = ({
     setSelectedIds(new Set(sortedTransactions.map((t) => t.id)));
   };
 
+  const captureScrollPosition = () => {
+    scrollRestoreRef.current = {
+      containerTop: scrollRef.current?.scrollTop ?? null,
+      windowY: typeof window !== 'undefined' ? window.scrollY : 0,
+    };
+  };
+
   const handleInlineUpdate = async (id, updates) => {
     if (!onUpdateTransaction) return;
+    captureScrollPosition();
     const result = await onUpdateTransaction(id, updates);
     if (result?.success === false) {
+      scrollRestoreRef.current = null;
       alert(result?.error || 'Could not save changes');
     }
   };
 
   const isInlineEditDisabled = (tx) => tx?.is_system === 1;
+
+  const isCategoryInlineDisabled = (tx) => tx?.is_system === 1;
+
+  const isPayeeInlineDisabled = (tx) => tx?.is_system === 1;
+
+  const canSplitTransaction = canSplitRegisterTransaction;
+
+  const handleSplitSaved = async () => {
+    setSplitTransaction(null);
+    if (onReload) {
+      await onReload({ quiet: true });
+    }
+  };
+
+  const handleRetrainMl = async () => {
+    if (!window.electronAPI?.retrainCategoryMl) return;
+    setRetrainingMl(true);
+    try {
+      const res = await window.electronAPI.retrainCategoryMl();
+      if (res?.success === false) {
+        alert(res.error || 'ML retrain failed');
+        return;
+      }
+      const data = res?.data;
+      if (data?.trained) {
+        alert(
+          `ML model updated (${data.sampleCount} samples, ${data.categoryCount} categories).`
+        );
+        if (onReload) await onReload({ quiet: true });
+      } else {
+        alert(
+          data?.reason === 'insufficient_samples'
+            ? `Need at least 12 categorized transactions (found ${data.sampleCount || 0}).`
+            : 'Could not train ML model yet.'
+        );
+      }
+    } finally {
+      setRetrainingMl(false);
+    }
+  };
+
+  const handlePairTransfers = async () => {
+    if (!window.electronAPI?.pairTransferTransactions) return;
+    setPairingTransfers(true);
+    try {
+      const res = await window.electronAPI.pairTransferTransactions();
+      if (res?.success === false) {
+        alert(res.error || 'Transfer scan failed');
+        return;
+      }
+      const n = res?.data?.pairsLinked ?? 0;
+      if (n > 0) {
+        alert(`Linked ${n} transfer pair(s) across accounts.`);
+        if (onReload) await onReload({ quiet: true });
+      } else {
+        alert('No new transfer pairs found in the last 90 days.');
+      }
+    } finally {
+      setPairingTransfers(false);
+    }
+  };
 
   const handleBulkDelete = async () => {
     if (!selectedIds.size) return;
@@ -374,15 +671,25 @@ const TransactionManager = ({
       <td style={editStyles.td}>
         <select
           value={editForm.categoryId || ''}
-          onChange={(e) => setEditForm({ ...editForm, categoryId: e.target.value })}
+          onChange={(e) => {
+            const next = e.target.value;
+            const check = validateReadyToAssignSelection(next, {
+              isIncome: editForm.type === 'inflow',
+              isTransfer: false,
+            });
+            if (!check.ok) {
+              alert(check.message || READY_TO_ASSIGN_VALIDATION_MSG);
+              return;
+            }
+            setEditForm({ ...editForm, categoryId: next });
+          }}
           style={editStyles.select}
         >
-          <option value="">Select category</option>
-          {(categories || []).map((cat) => (
-            <option key={cat.id} value={cat.id}>
-              {cat.name}
-            </option>
-          ))}
+          <TransactionCategorySelectOptions
+            categories={categories}
+            isIncome={editForm.type === 'inflow'}
+            emptyLabel="Select category"
+          />
         </select>
       </td>
       <td style={editStyles.td}>
@@ -456,16 +763,56 @@ const TransactionManager = ({
     sortedTransactions.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
   const rangeEnd = Math.min(safePage * pageSize, sortedTransactions.length);
 
+  const tableScrollStyle =
+    enablePagination || useVirtual
+      ? {
+          flex: '1 1 auto',
+          minHeight: 0,
+          maxHeight: 'min(70vh, calc(100dvh - 14rem))',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        }
+      : undefined;
+
   return (
-    <div style={{ width: '100%' }}>
+    <div
+      style={{
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+      }}
+    >
+      <TransactionSplitModal
+        open={!!splitTransaction}
+        transaction={splitTransaction}
+        categories={categories}
+        onClose={() => setSplitTransaction(null)}
+        onSaved={handleSplitSaved}
+      />
       <div
         style={{
           background: '#1F2937',
           borderRadius: '0.75rem',
           overflow: 'hidden',
           border: '1px solid #374151',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          flex: '1 1 auto',
         }}
       >
+        {activityDrilldown && (
+          <ActivityDrilldownBanner
+            label={activityDrilldownBannerLabel}
+            matchCount={confirmedActivityIdSet?.size ?? highlightIdSet?.size ?? sortedTransactions.length}
+            focusLabel={activityDrilldownFocusLabel}
+            loading={activityDrilldownIdsLoading}
+            onBackToBudget={onActivityDrilldownBack}
+            onClearFilters={onClearActivityDrilldown}
+          />
+        )}
         <TransactionToolbar
           filters={filters}
           onFiltersChange={setFilters}
@@ -477,17 +824,42 @@ const TransactionManager = ({
           multiAccountFilter={multiAccountFilter}
           resultCount={sortedTransactions.length}
           totalCount={activeTransactions.length}
+          categorizationSummary={categorizationSummary}
           extraActions={
-            enableBulkSelection && sortedTransactions.length > 0 ? (
-              <button
-                type="button"
-                style={bulkBarStyles.btn}
-                onClick={selectAllFiltered}
-                title="Select all transactions matching current filters"
-              >
-                Select all ({sortedTransactions.length})
-              </button>
-            ) : null
+            <>
+              {window.electronAPI?.retrainCategoryMl && (
+                <button
+                  type="button"
+                  style={bulkBarStyles.btn}
+                  disabled={retrainingMl}
+                  onClick={handleRetrainMl}
+                  title="Retrain on-device category ML from your categorized history"
+                >
+                  {retrainingMl ? 'Training ML…' : 'Retrain ML'}
+                </button>
+              )}
+              {window.electronAPI?.pairTransferTransactions && (
+                <button
+                  type="button"
+                  style={bulkBarStyles.btn}
+                  disabled={pairingTransfers}
+                  onClick={handlePairTransfers}
+                  title="Find matching opposite transactions across accounts"
+                >
+                  {pairingTransfers ? 'Scanning…' : 'Link transfers'}
+                </button>
+              )}
+              {enableBulkSelection && sortedTransactions.length > 0 ? (
+                <button
+                  type="button"
+                  style={bulkBarStyles.btn}
+                  onClick={selectAllFiltered}
+                  title="Select all transactions matching current filters"
+                >
+                  Select all ({sortedTransactions.length})
+                </button>
+              ) : null}
+            </>
           }
         />
 
@@ -502,6 +874,7 @@ const TransactionManager = ({
               style={{ ...editStyles.select, width: 'auto', minWidth: '160px' }}
             >
               <option value="">Bulk category…</option>
+              <option value={READY_TO_ASSIGN_CATEGORY_ID}>Ready to Assign (income)</option>
               {(categories || []).map((cat) => (
                 <option key={cat.id} value={cat.id}>
                   {cat.name}
@@ -579,25 +952,33 @@ const TransactionManager = ({
           </div>
         )}
 
-        <div
-          ref={scrollRef}
-          style={{
-            maxHeight: enablePagination || useVirtual ? 'min(70vh, 720px)' : undefined,
-            overflowY: enablePagination || useVirtual ? 'auto' : undefined,
-          }}
-        >
+        <div ref={scrollRef} style={tableScrollStyle}>
           <TransactionTable
+            key="transactions-table"
             transactions={displayTransactions}
             virtualPaddingTop={virtualPaddingTop}
             virtualPaddingBottom={virtualPaddingBottom}
             enableInlineEdit={enableInlineEdit}
             onInlineUpdate={enableInlineEdit ? handleInlineUpdate : undefined}
             isInlineEditDisabled={isInlineEditDisabled}
+            isCategoryInlineDisabled={isCategoryInlineDisabled}
+            isPayeeInlineDisabled={isPayeeInlineDisabled}
+            registerPayees={enableInlineEdit ? registerPayees : null}
+            registerPayeesLoading={payeesLoading}
             emptyMessage={
               useVirtual && sortedTransactions.length > 0
                 ? ''
-                : 'No transactions match your filters'
+                : activityDrilldownEmptyMessage ||
+                  (activityDrilldown && !activityDrilldownIdsLoading
+                    ? 'No transactions found for this category in the selected month.'
+                    : 'No transactions match your filters')
             }
+            isRowHighlighted={
+              highlightIdSet?.size
+                ? (tx) => highlightIdSet.has(String(tx.id))
+                : undefined
+            }
+            focusedTransactionId={activityDrilldown ? activityDrilldownFocusId : null}
             categories={categories}
             sort={sort}
             onSortChange={setSort}
@@ -606,56 +987,20 @@ const TransactionManager = ({
             showCheckbox={enableBulkSelection}
             selectedIds={selectedIds}
             onToggleSelect={(txId) => toggleSelect(txId)}
-            onSelectAll={selectAllOnPage}
-            allSelected={
-              displayTransactions.length > 0 &&
-              displayTransactions.every((t) => selectedIds.has(t.id))
-            }
+            onSelectAll={toggleSelectAllFiltered}
+            allSelected={allFilteredSelected}
+            someSelected={someFilteredSelected}
             editingId={editingId}
             renderEditRow={renderEditRow}
-            renderPayeeExtra={(tx) => (
-              <>
-                {(tx.is_flagged === 1 || tx.is_flagged === true) && (
-                  <span style={{ marginLeft: '0.35rem' }} title="Flagged">
-                    🚩
-                  </span>
-                )}
-                <PlaidTxnBadge transaction={tx} />
-                {tx.is_transfer === 1 && (
-                  <span style={{ marginLeft: '0.35rem', fontSize: '0.7rem', color: '#93C5FD' }}>
-                    Transfer
-                  </span>
-                )}
-              </>
-            )}
+            renderPayeeExtra={(tx) => <RegisterPayeeExtras transaction={tx} />}
             renderActions={(tx) => (
-              <>
-                <button
-                  type="button"
-                  onClick={() => handleEdit(tx)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-                  title="Edit"
-                >
-                  ✏️
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(tx.id)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: '0.5rem' }}
-                  title="Delete"
-                >
-                  🗑️
-                </button>
-                <input
-                  type="checkbox"
-                  checked={tx.is_cleared === 1 || tx.cleared === 1}
-                  onChange={() =>
-                    handleToggleCleared(tx.id, tx.is_cleared === 1 || tx.cleared === 1)
-                  }
-                  title="Cleared"
-                  style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }}
-                />
-              </>
+              <RegisterTransactionActions
+                transaction={tx}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onToggleCleared={handleToggleCleared}
+                onSplit={setSplitTransaction}
+              />
             )}
           />
         </div>

@@ -34,6 +34,14 @@ export const TRANSACTION_STATUS_OPTIONS = [
   { id: 'flagged', label: 'Flagged' },
 ];
 
+/** FR-11: filter by categorization state */
+export const CATEGORIZATION_FILTER_OPTIONS = [
+  { id: '', label: 'All categorization' },
+  { id: 'uncategorized', label: 'Uncategorized' },
+  { id: 'categorized', label: 'Categorized' },
+  { id: 'needs_review', label: 'Needs review' },
+];
+
 export const DEFAULT_TRANSACTION_FILTERS = Object.freeze({
   search: '',
   recentRange: 'all',
@@ -47,6 +55,7 @@ export const DEFAULT_TRANSACTION_FILTERS = Object.freeze({
   payee: '',
   transactionType: '',
   status: '',
+  categorizationStatus: '',
 });
 
 function norm(value) {
@@ -168,7 +177,7 @@ function resolveCategoryIds(f) {
 /**
  * @param {object[]} transactions
  * @param {object} filters
- * @param {{ categories?: object[], fixedAccountId?: string|null }} [opts]
+ * @param {{ categories?: object[], fixedAccountId?: string|null, includeTransactionIds?: string[], activityDrilldownOnly?: boolean }} [opts]
  */
 export function filterTransactions(transactions, filters, opts = {}) {
   const f = { ...DEFAULT_TRANSACTION_FILTERS, ...(filters || {}) };
@@ -181,9 +190,17 @@ export function filterTransactions(transactions, filters, opts = {}) {
   const presetRange = dateRangeForPreset(f.datePreset);
   const accountIds = resolveAccountIds(f, opts);
   const categoryIds = resolveCategoryIds(f);
+  const includeIds = Array.isArray(opts.includeTransactionIds)
+    ? new Set(opts.includeTransactionIds.map(String))
+    : null;
+  const activityDrilldownOnly = Boolean(opts.activityDrilldownOnly && includeIds?.size);
 
   return (transactions || []).filter((tx) => {
     if (tx?.is_deleted === 1 || tx?.is_deleted === true) return false;
+
+    if (activityDrilldownOnly) {
+      return includeIds.has(String(tx.id));
+    }
 
     if (!matchesSearch(tx, f.search, categoryNameById)) return false;
 
@@ -201,12 +218,18 @@ export function filterTransactions(transactions, filters, opts = {}) {
 
     if (categoryIds.length) {
       const matches = categoryIds.some((cid) => {
-        if (cid === 'ready_to_assign') {
+        if (cid === 'ready_to_assign' || cid === 'inflow_ready_to_assign') {
           return (tx.category_id == null || tx.category_id === '') && Number(tx.amount) > 0;
         }
         return String(tx.category_id) === cid;
       });
-      if (!matches) return false;
+      if (!matches) {
+        if (includeIds?.has(String(tx.id))) {
+          /* split parents and other activity contributors */
+        } else {
+          return false;
+        }
+      }
     }
 
     if (f.payee && !norm(getPayee(tx)).includes(norm(f.payee))) return false;
@@ -223,6 +246,20 @@ export function filterTransactions(transactions, filters, opts = {}) {
     if (f.status === 'uncleared' && !isUncleared(tx)) return false;
     if (f.status === 'reconciled' && !isReconciled(tx)) return false;
     if (f.status === 'flagged' && !isFlagged(tx)) return false;
+
+    if (f.categorizationStatus === 'uncategorized') {
+      if (tx.is_transfer === 1) return false;
+      if (tx.is_split_parent === 1) return false;
+      if (tx.category_id) return false;
+      return true;
+    }
+    if (f.categorizationStatus === 'categorized') {
+      if (tx.is_transfer === 1 || tx.is_split_parent === 1) return true;
+      return !!(tx.category_id || tx.mapping_status === 'categorized');
+    }
+    if (f.categorizationStatus === 'needs_review') {
+      return tx.mapping_status === 'needs_review' || !!tx.suggested_category_id;
+    }
 
     return true;
   });
@@ -241,5 +278,6 @@ export function countActiveFilters(filters, { hideAccountFilter = false } = {}) 
   if (f.payee) count += 1;
   if (f.transactionType) count += 1;
   if (f.status) count += 1;
+  if (f.categorizationStatus) count += 1;
   return count;
 }

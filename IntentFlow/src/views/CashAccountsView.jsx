@@ -531,9 +531,16 @@ const CashAccountsView = () => {
     return t === 'checking' ? '🏦' : '💰';
   };
 
-  const { checking: checkingAccounts, savings: savingsAccounts } = useMemo(
-    () => partitionCashAccounts(accounts),
-    [accounts]
+  const { checking: checkingAccounts, savings: savingsAccounts, all: cashAccounts } =
+    useMemo(() => partitionCashAccounts(accounts), [accounts]);
+
+  const combinedCashBalance = useMemo(
+    () =>
+      cashAccounts.reduce((sum, account) => {
+        const balance = Number(account?.balance);
+        return sum + (Number.isFinite(balance) ? balance : 0);
+      }, 0),
+    [cashAccounts]
   );
 
   const renderCashAccountSection = (title, sectionAccounts, emptyLabel) => (
@@ -606,13 +613,25 @@ const CashAccountsView = () => {
           <h1 style={styles.title}>Accounts</h1>
           <p style={styles.description}>Manage your checking and savings accounts</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowInlineModal(true)}
-          style={styles.addButton}
-        >
-          <span>+</span> New Account
-        </button>
+        <div style={styles.headerRight}>
+          <div
+            style={styles.combinedBalanceCard}
+            aria-label={`Combined checking and savings balance: ${formatCurrency(combinedCashBalance)}`}
+          >
+            <div style={styles.combinedBalanceLabel}>Combined Checking & Savings</div>
+            <div style={styles.combinedBalanceAmount}>{formatCurrency(combinedCashBalance)}</div>
+            <div style={styles.combinedBalanceMeta}>
+              {cashAccounts.length} connected account{cashAccounts.length === 1 ? '' : 's'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowInlineModal(true)}
+            style={styles.addButton}
+          >
+            <span>+</span> New Account
+          </button>
+        </div>
       </div>
 
       <div style={styles.accountsContainer}>
@@ -1109,8 +1128,42 @@ const styles = {
   header: {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    gap: '1.5rem',
     marginBottom: '2rem'
+  },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '1rem',
+    flexShrink: 0,
+  },
+  combinedBalanceCard: {
+    textAlign: 'right',
+    padding: '0.75rem 1rem',
+    background: 'rgba(255, 255, 255, 0.08)',
+    border: '1px solid rgba(147, 197, 253, 0.35)',
+    borderRadius: '0.75rem',
+    minWidth: '12rem',
+  },
+  combinedBalanceLabel: {
+    fontSize: '0.75rem',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    color: '#93C5FD',
+    marginBottom: '0.25rem',
+  },
+  combinedBalanceAmount: {
+    fontSize: '1.75rem',
+    fontWeight: '700',
+    color: '#4ADE80',
+    lineHeight: 1.2,
+  },
+  combinedBalanceMeta: {
+    marginTop: '0.35rem',
+    fontSize: '0.75rem',
+    color: '#9CA3AF',
   },
   title: {
     fontSize: '2rem',

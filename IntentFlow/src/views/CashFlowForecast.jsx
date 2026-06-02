@@ -1,5 +1,6 @@
 // src/views/CashFlowForecast.jsx
 import React, { useState, useEffect } from 'react';
+import { computeCreditCardDebtAmount } from '../utils/creditCardBalanceUtils.jsx';
 
 const CashFlowForecast = ({
     budgetData = { categories: [] },
@@ -88,8 +89,10 @@ const CashFlowForecast = ({
             .reduce((sum, c) => sum + (c.assigned || 0), 0);
 
         // Calculate minimum debt payments
-        const minCreditCardPayments = creditCards.reduce((sum, c) =>
-            sum + (c.minimumPayment || Math.max(25, Math.abs(c.balance || 0) * 0.02)), 0);
+        const minCreditCardPayments = creditCards.reduce((sum, c) => {
+            const debt = computeCreditCardDebtAmount(c.balance);
+            return sum + (debt > 0 ? (c.minimumPayment || Math.max(25, debt * 0.02)) : 0);
+        }, 0);
 
         const minLoanPayments = loans.reduce((sum, l) =>
             sum + (l.monthlyPayment || 0), 0);
@@ -100,8 +103,11 @@ const CashFlowForecast = ({
             fixedExpenses,
             minDebtPayments: minCreditCardPayments + minLoanPayments,
             netMonthlyCashflow: avgMonthlyIncome - avgMonthlyExpenses,
-            creditCardDebt: creditCards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0),
-            loanDebt: loans.reduce((sum, l) => sum + Math.abs(l.balance || 0), 0)
+            creditCardDebt: creditCards.reduce(
+                (sum, c) => sum + computeCreditCardDebtAmount(c.balance),
+                0
+            ),
+            loanDebt: loans.reduce((sum, l) => sum + Math.max(0, -(l.balance || 0)), 0)
         };
     };
 

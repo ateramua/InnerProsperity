@@ -1,6 +1,11 @@
 import React from 'react';
 import { isPlaidLinkedAccount } from '../../utils/accountRegisterBalance.jsx';
-import { isCreditCardAccountType } from '../../utils/accountBalanceEngine.jsx';
+import {
+  creditCardBalanceColor,
+  formatBalanceForAccountType,
+  getCreditCardBalanceState,
+  isCreditCardAccountType,
+} from '../../utils/creditCardBalanceUtils.jsx';
 
 const styles = {
   card: {
@@ -60,26 +65,28 @@ function formatCurrency(amount) {
 }
 
 function balanceColor(amount, accountType) {
-  const n = Number(amount) || 0;
   if (isCreditCardAccountType(accountType)) {
-    return n < 0 ? '#F87171' : '#4ADE80';
+    return creditCardBalanceColor(amount);
   }
+  const n = Number(amount) || 0;
   return n >= 0 ? '#4ADE80' : '#F87171';
 }
 
 function formatBalanceDisplay(amount, accountType) {
-  const n = Number(amount) || 0;
-  if (isCreditCardAccountType(accountType)) {
-    return formatCurrency(Math.abs(n));
-  }
-  return formatCurrency(n);
+  return formatBalanceForAccountType(amount, accountType, formatCurrency).text;
 }
 
 function balanceSuffix(amount, accountType) {
-  if (isCreditCardAccountType(accountType) && Number(amount) < 0) {
-    return ' (you owe)';
-  }
-  return '';
+  if (!isCreditCardAccountType(accountType)) return '';
+  return formatBalanceForAccountType(amount, accountType, formatCurrency).suffix;
+}
+
+function balanceStateIcon(amount, accountType) {
+  if (!isCreditCardAccountType(accountType)) return '';
+  const state = getCreditCardBalanceState(amount);
+  if (state === 'debt') return '🔴 ';
+  if (state === 'credit') return '🟢 ';
+  return '⚪ ';
 }
 
 /**
@@ -109,6 +116,7 @@ export default function AccountBalanceSummary({
         <div style={styles.item}>
           <div style={styles.label}>Working Balance</div>
           <div style={{ ...styles.value, color: balanceColor(working, accountType) }}>
+            {balanceStateIcon(working, accountType)}
             {formatBalanceDisplay(working, accountType)}
             {balanceSuffix(working, accountType) && (
               <span style={{ fontSize: '0.875rem', fontWeight: 500, color: '#9CA3AF' }}>

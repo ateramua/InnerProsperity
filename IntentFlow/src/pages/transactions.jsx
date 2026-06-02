@@ -5,7 +5,15 @@ import Link from 'next/link';
 import TransactionManager from '../components/TransactionManager';
 import TransactionImportModal from '../components/TransactionImportModal';
 import useConsolidatedTransactions from '../hooks/useConsolidatedTransactions';
+import useActivityDrilldown from '../hooks/useActivityDrilldown.jsx';
 import { createTransactionRegisterHandlers } from '../hooks/useTransactionRegisterHandlers.jsx';
+import { TransactionCategorySelectOptions } from '../components/transactions/TransactionCategorySelectOptions.jsx';
+import {
+  isReadyToAssignSentinel,
+  READY_TO_ASSIGN_CATEGORY_ID,
+  READY_TO_ASSIGN_VALIDATION_MSG,
+  validateReadyToAssignSelection,
+} from '../utils/readyToAssignCategory.jsx';
 
 const PAGE_DEFAULT = 25;
 
@@ -18,9 +26,33 @@ export default function TransactionsPage() {
     categories,
     loading,
     reload,
+    patchTransaction,
+    removeTransaction,
   } = useConsolidatedTransactions({ activeOnly: true });
 
-  const handlers = useMemo(() => createTransactionRegisterHandlers(reload), [reload]);
+  const {
+    drilldown,
+    highlightIdSet,
+    confirmedActivityIds,
+    focusTransactionId,
+    focusPayeeLabel,
+    initialFilters,
+    bannerLabel,
+    idsLoading: drilldownIdsLoading,
+    prepareReturnToBudget,
+    clearDrilldown,
+    emptyDrilldownMessage,
+  } = useActivityDrilldown({ categories, transactions });
+
+  const activityDrilldownConfig = useMemo(
+    () => (drilldown && initialFilters ? { initialFilters } : null),
+    [drilldown, initialFilters]
+  );
+
+  const handlers = useMemo(
+    () => createTransactionRegisterHandlers(reload, { patchTransaction, removeTransaction }),
+    [reload, patchTransaction, removeTransaction]
+  );
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [showImportPicker, setShowImportPicker] = useState(false);
@@ -75,13 +107,25 @@ export default function TransactionsPage() {
         ? -Math.abs(amountValue)
         : Math.abs(amountValue);
 
+    const rtaCheck = validateReadyToAssignSelection(transactionForm.categoryId, {
+      isIncome: transactionForm.type === 'inflow',
+      isTransfer: false,
+    });
+    if (!rtaCheck.ok) {
+      alert(rtaCheck.message || READY_TO_ASSIGN_VALIDATION_MSG);
+      return;
+    }
+    const categoryId = isReadyToAssignSentinel(transactionForm.categoryId)
+      ? READY_TO_ASSIGN_CATEGORY_ID
+      : transactionForm.categoryId || null;
+
     const result = await window.electronAPI.addTransaction({
       accountId: transactionForm.accountId,
       date: transactionForm.date,
       payee: transactionForm.payee,
       description: transactionForm.payee,
       amount,
-      categoryId: transactionForm.categoryId || null,
+      categoryId,
       memo: transactionForm.memo,
       cleared: transactionForm.cleared ? 1 : 0,
       is_cleared: transactionForm.cleared ? 1 : 0,
@@ -190,6 +234,7 @@ export default function TransactionsPage() {
             onToggleCleared={handlers.handleToggleCleared}
             onBulkDelete={handlers.handleBulkDelete}
             onBulkUpdate={handlers.handleBulkUpdate}
+            onReload={reload}
             showAccountColumn
             multiAccountFilter
             enablePagination
@@ -198,6 +243,19 @@ export default function TransactionsPage() {
             enableBulkSelection
             enableInlineEdit
             onNavigateToAccount={navigateToAccount}
+            activityDrilldown={activityDrilldownConfig}
+            activityDrilldownHighlightIds={highlightIdSet}
+            activityDrilldownIdsLoading={drilldownIdsLoading}
+            activityDrilldownBannerLabel={bannerLabel}
+            activityDrilldownFocusId={focusTransactionId}
+            activityDrilldownFocusLabel={focusPayeeLabel}
+            activityDrilldownConfirmedIds={confirmedActivityIds}
+            activityDrilldownEmptyMessage={emptyDrilldownMessage}
+            onActivityDrilldownBack={() => {
+              prepareReturnToBudget();
+              router.push('/');
+            }}
+            onClearActivityDrilldown={clearDrilldown}
           />
         )}
 
@@ -268,17 +326,25 @@ export default function TransactionsPage() {
                 <label style={modalStyles.label}>Category</label>
                 <select
                   value={transactionForm.categoryId}
-                  onChange={(e) =>
-                    setTransactionForm({ ...transactionForm, categoryId: e.target.value })
-                  }
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    const check = validateReadyToAssignSelection(next, {
+                      isIncome: transactionForm.type === 'inflow',
+                      isTransfer: false,
+                    });
+                    if (!check.ok) {
+                      alert(check.message || READY_TO_ASSIGN_VALIDATION_MSG);
+                      return;
+                    }
+                    setTransactionForm({ ...transactionForm, categoryId: next });
+                  }}
                   style={modalStyles.select}
                 >
-                  <option value="">Uncategorized</option>
-                  {categories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
+                  <TransactionCategorySelectOptions
+                    categories={categories}
+                    isIncome={transactionForm.type === 'inflow'}
+                    emptyLabel="Uncategorized"
+                  />
                 </select>
               </div>
               <div style={modalStyles.formGroup}>

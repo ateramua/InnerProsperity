@@ -1,6 +1,12 @@
 // src/components/accounts/AccountCard.jsx
 import React from 'react';
 import { useRouter } from 'next/router';
+import {
+    computeAvailableCredit,
+    formatBalanceForAccountType,
+    getCreditCardBalanceState,
+    isCreditCardAccountType,
+} from '../../utils/creditCardBalanceUtils.jsx';
 
 const AccountCard = ({ account }) => {
     const router = useRouter();
@@ -26,10 +32,20 @@ const AccountCard = ({ account }) => {
     };
 
     const getBalanceClass = (amount, type) => {
-        if (type === 'credit' || type === 'loan' || type === 'mortgage') {
-            return 'text-red-600';
+        if (isCreditCardAccountType(type)) {
+            const state = getCreditCardBalanceState(amount);
+            if (state === 'credit') return 'text-green-600';
+            if (state === 'debt') return 'text-red-600';
+            return 'text-gray-600';
         }
         return amount >= 0 ? 'text-green-600' : 'text-red-600';
+    };
+
+    const formatAccountBalance = (amount, type) => {
+        if (isCreditCardAccountType(type)) {
+            return formatBalanceForAccountType(amount, type, formatCurrency);
+        }
+        return { text: formatCurrency(amount), suffix: '' };
     };
 
     const handleClick = () => {
@@ -57,9 +73,14 @@ const AccountCard = ({ account }) => {
             <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
                 <div>
                     <p className="text-gray-500">Working</p>
-                    <p className={`font-medium ${getBalanceClass(account.working_balance, account.type)}`}>
-                        {formatCurrency(account.working_balance)}
-                    </p>
+                    {(() => {
+                        const bal = formatAccountBalance(account.working_balance, account.type);
+                        return (
+                            <p className={`font-medium ${getBalanceClass(account.working_balance, account.type)}`}>
+                                {bal.text}{bal.suffix}
+                            </p>
+                        );
+                    })()}
                 </div>
                 <div>
                     <p className="text-gray-500">Cleared</p>
@@ -84,7 +105,9 @@ const AccountCard = ({ account }) => {
                     <div className="flex justify-between text-xs mt-1">
                         <span className="text-gray-500">Available:</span>
                         <span className="font-medium text-green-600">
-                            {formatCurrency(account.credit_limit - Math.abs(account.working_balance))}
+                            {formatCurrency(
+                                computeAvailableCredit(account.credit_limit, account.working_balance)
+                            )}
                         </span>
                     </div>
                 </div>

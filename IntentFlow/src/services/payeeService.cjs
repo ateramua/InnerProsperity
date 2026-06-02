@@ -1,7 +1,12 @@
 // src/services/payeeService.cjs
+const { v4: uuidv4 } = require('uuid');
 const { getDatabase } = require('../db/database.cjs');
 const { getDatabasePath } = require('../db/database.config.js');
 const TransactionService = require('./transactions/transactionService.cjs');
+const {
+  isTransferPayeeLabel,
+  formatTransferPayeeName,
+} = require('../shared/transferPayeeUtils.cjs');
 
 class PayeeService {
   /**
@@ -128,7 +133,17 @@ class PayeeService {
    * @returns {string}
    */
   getReversePayeeName(sourceAccountName) {
-    return `Transfer: ${sourceAccountName}`;
+    return formatTransferPayeeName(sourceAccountName);
+  }
+
+  async getTransactionRow(database, transactionId, userId) {
+    return database.get(
+      `SELECT t.*, a.name AS account_name
+       FROM transactions t
+       JOIN accounts a ON t.account_id = a.id
+       WHERE t.id = ? AND t.user_id = ?`,
+      [transactionId, userId]
+    );
   }
 
   /**
@@ -238,106 +253,466 @@ class PayeeService {
   }
 
   /**
-   * Update a linked transfer transaction (both sides)
+   * Update a linked transfer transaction (both sides). Supports destination change (FR-6).
    */
   async updateLinkedTransfer(transactionId, userId, updates) {
     const database = await getDatabase();
-    
-    // Get the original transaction
+
     const transaction = await database.get(
       'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
       [transactionId, userId]
     );
-    
-    if (!transaction) {
-      throw new Error('Transaction not found');
-    }
-    
-    if (transaction.is_transfer !== 1 || !transaction.linked_transaction_id) {
+
+    if (!transaction) throw new Error('Transaction not found');
+    if (transaction.is_transfer !== 1) {
       throw new Error('Not a linked transfer transaction');
     }
-    
-    const linkedTransaction = await database.get(
-      'SELECT * FROM transactions WHERE id = ?',
-      [transaction.linked_transaction_id]
-    );
-    
+
+    const payee = updates.payee ?? updates.description;
+    if (updates.convertToRegular || (payee && !isTransferPayeeLabel(payee))) {
+      return this.unlinkTransferToRegular(transactionId, userId, updates);
+    }
+
+    let linkedTransaction = null;
+    if (transaction.linked_transaction_id) {
+      linkedTransaction = await database.get(
+        'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+        [transaction.linked_transaction_id, userId]
+      );
+    }
+    if (!linkedTransaction) {
+      const reverse = await database.get(
+        'SELECT * FROM transactions WHERE linked_transaction_id = ? AND user_id = ?',
+        [transactionId, userId]
+      );
+      linkedTransaction = reverse;
+    }
     if (!linkedTransaction) {
       throw new Error('Linked transaction not found');
     }
-    
+
+    const destId =
+      updates.destinationAccountId ??
+      updates.transferAccountId ??
+      null;
+
+    if (destId && String(destId) !== String(linkedTransaction.account_id)) {
+      return this.changeTransferDestination(
+        transaction,
+        linkedTransaction,
+        destId,
+        userId,
+        updates
+      );
+    }
+
     await database.run('BEGIN TRANSACTION');
-    
+
     try {
-      const oldAmount = transaction.amount;
-      const newAmount = updates.amount !== undefined ? updates.amount : oldAmount;
-      
-      // Update source transaction
-      const sourceUpdateFields = [];
-      const sourceUpdateValues = [];
-      
-      if (updates.date !== undefined) {
-        sourceUpdateFields.push('date = ?');
-        sourceUpdateValues.push(updates.date);
-      }
-      if (updates.payee !== undefined) {
-        sourceUpdateFields.push('payee = ?');
-        sourceUpdateValues.push(updates.payee);
-      }
-      if (updates.memo !== undefined) {
-        sourceUpdateFields.push('memo = ?');
-        sourceUpdateValues.push(updates.memo);
-      }
-      if (updates.amount !== undefined) {
-        sourceUpdateFields.push('amount = ?');
-        sourceUpdateValues.push(newAmount);
-      }
-      
-      sourceUpdateFields.push('updated_at = unixepoch()');
-      sourceUpdateValues.push(transactionId);
-      
-      if (sourceUpdateFields.length > 1) {
-        await database.run(
-          `UPDATE transactions SET ${sourceUpdateFields.join(', ')} WHERE id = ?`,
-          sourceUpdateValues
-        );
-      }
-      
-      // Update destination transaction (opposite amount)
+      const sourceAccount = await database.get(
+        'SELECT id, name FROM accounts WHERE id = ? AND user_id = ?',
+        [transaction.account_id, userId]
+      );
+      const destAccount = await database.get(
+        'SELECT id, name FROM accounts WHERE id = ? AND user_id = ?',
+        [linkedTransaction.account_id, userId]
+      );
+
+      const oldAmount = Number(transaction.amount);
+      const newAmount =
+        updates.amount !== undefined ? Number(updates.amount) : oldAmount;
       const oppositeAmount = -newAmount;
-      const destUpdateFields = [];
-      const destUpdateValues = [];
-      
+
+      const isOutflow = oldAmount < 0;
+      const thisPayee =
+        updates.payee !== undefined
+          ? updates.payee
+          : isOutflow
+            ? formatTransferPayeeName(destAccount?.name)
+            : formatTransferPayeeName(destAccount?.name);
+      const linkedPayee = formatTransferPayeeName(sourceAccount?.name);
+
+      const primaryFields = [];
+      const primaryValues = [];
       if (updates.date !== undefined) {
-        destUpdateFields.push('date = ?');
-        destUpdateValues.push(updates.date);
+        primaryFields.push('date = ?');
+        primaryValues.push(updates.date);
+      }
+      if (updates.payee !== undefined || updates.description !== undefined) {
+        primaryFields.push('payee = ?');
+        primaryValues.push(thisPayee);
       }
       if (updates.memo !== undefined) {
-        destUpdateFields.push('memo = ?');
-        destUpdateValues.push(updates.memo);
+        primaryFields.push('memo = ?');
+        primaryValues.push(updates.memo);
       }
       if (updates.amount !== undefined) {
-        destUpdateFields.push('amount = ?');
-        destUpdateValues.push(oppositeAmount);
+        primaryFields.push('amount = ?');
+        primaryValues.push(newAmount);
       }
-      
-      destUpdateFields.push('updated_at = unixepoch()');
-      destUpdateValues.push(linkedTransaction.id);
-      
-      if (destUpdateFields.length > 1) {
-        await database.run(
-          `UPDATE transactions SET ${destUpdateFields.join(', ')} WHERE id = ?`,
-          destUpdateValues
+      primaryFields.push(
+        'category_id = NULL',
+        "mapping_status = 'transfer'",
+        'updated_at = unixepoch()'
+      );
+      primaryValues.push(transactionId);
+      await database.run(
+        `UPDATE transactions SET ${primaryFields.join(', ')} WHERE id = ?`,
+        primaryValues
+      );
+
+      const linkedFields = [];
+      const linkedValues = [];
+      if (updates.date !== undefined) {
+        linkedFields.push('date = ?');
+        linkedValues.push(updates.date);
+      }
+      linkedFields.push('payee = ?');
+      linkedValues.push(linkedPayee);
+      if (updates.memo !== undefined) {
+        linkedFields.push('memo = ?');
+        linkedValues.push(
+          updates.memo || `Transfer from ${sourceAccount?.name || 'account'}`
         );
       }
-      
+      if (updates.amount !== undefined) {
+        linkedFields.push('amount = ?');
+        linkedValues.push(oppositeAmount);
+      }
+      linkedFields.push(
+        'category_id = NULL',
+        "mapping_status = 'transfer'",
+        'updated_at = unixepoch()'
+      );
+      linkedValues.push(linkedTransaction.id);
+      await database.run(
+        `UPDATE transactions SET ${linkedFields.join(', ')} WHERE id = ?`,
+        linkedValues
+      );
+
       await database.run('COMMIT');
 
       const txSvc = new TransactionService(getDatabasePath());
       await txSvc.updateAccountBalances(transaction.account_id);
       await txSvc.updateAccountBalances(linkedTransaction.account_id);
-      
-      return { success: true, data: { id: transactionId, linkedId: linkedTransaction.id } };
+
+      const row = await this.getTransactionRow(database, transactionId, userId);
+      return { success: true, data: row };
+    } catch (error) {
+      await database.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Move transfer to a different destination account; updates both payees (FR-6).
+   */
+  async changeTransferDestination(transaction, linkedTransaction, newDestAccountId, userId, updates = {}) {
+    if (String(newDestAccountId) === String(transaction.account_id)) {
+      throw new Error('Cannot transfer to the same account');
+    }
+
+    const database = await getDatabase();
+    const sourceAccount = await database.get(
+      'SELECT id, name FROM accounts WHERE id = ? AND user_id = ?',
+      [transaction.account_id, userId]
+    );
+    const newDest = await database.get(
+      'SELECT id, name FROM accounts WHERE id = ? AND user_id = ?',
+      [newDestAccountId, userId]
+    );
+    if (!sourceAccount || !newDest) throw new Error('Account not found');
+
+    const oldDestAccountId = linkedTransaction.account_id;
+    const isOutflow = Number(transaction.amount) < 0;
+    const thisPayee = formatTransferPayeeName(newDest.name);
+    const linkedPayee = formatTransferPayeeName(sourceAccount.name);
+
+    await database.run('BEGIN TRANSACTION');
+    try {
+      await database.run(
+        `UPDATE transactions SET
+          account_id = ?, payee = ?, counterparty_account_id = ?,
+          category_id = NULL, mapping_status = 'transfer', updated_at = unixepoch()
+         WHERE id = ? AND user_id = ?`,
+        [newDestAccountId, linkedPayee, transaction.account_id, linkedTransaction.id, userId]
+      );
+
+      const primaryFields = [
+        'payee = ?',
+        'counterparty_account_id = ?',
+        "mapping_status = 'transfer'",
+        'category_id = NULL',
+        'updated_at = unixepoch()',
+      ];
+      const primaryValues = [thisPayee, newDestAccountId];
+
+      if (updates.date !== undefined) {
+        primaryFields.unshift('date = ?');
+        primaryValues.unshift(updates.date);
+      }
+      if (updates.memo !== undefined) {
+        primaryFields.splice(-1, 0, 'memo = ?');
+        primaryValues.splice(primaryValues.length - 1, 0, updates.memo);
+      }
+
+      primaryValues.push(transaction.id, userId);
+      await database.run(
+        `UPDATE transactions SET ${primaryFields.join(', ')} WHERE id = ? AND user_id = ?`,
+        primaryValues
+      );
+
+      if (!transaction.linked_transaction_id) {
+        await database.run(
+          'UPDATE transactions SET linked_transaction_id = ? WHERE id = ?',
+          [linkedTransaction.id, transaction.id]
+        );
+        await database.run(
+          'UPDATE transactions SET linked_transaction_id = ? WHERE id = ?',
+          [transaction.id, linkedTransaction.id]
+        );
+      }
+
+      await database.run('COMMIT');
+
+      const txSvc = new TransactionService(getDatabasePath());
+      await txSvc.updateAccountBalances(transaction.account_id);
+      await txSvc.updateAccountBalances(oldDestAccountId);
+      await txSvc.updateAccountBalances(newDestAccountId);
+
+      const row = await this.getTransactionRow(database, transaction.id, userId);
+      return { success: true, data: row };
+    } catch (error) {
+      await database.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Remove transfer link; keep this row as a regular transaction (FR-6).
+   */
+  async unlinkTransferToRegular(transactionId, userId, updates = {}) {
+    const database = await getDatabase();
+    const transaction = await database.get(
+      'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+      [transactionId, userId]
+    );
+    if (!transaction) throw new Error('Transaction not found');
+    if (transaction.is_transfer !== 1) {
+      throw new Error('Not a transfer transaction');
+    }
+
+    const payee =
+      updates.payee ?? updates.description ?? transaction.payee ?? 'Transaction';
+    let linkedId = transaction.linked_transaction_id;
+    let peerAccountId = null;
+    if (linkedId) {
+      const peer = await database.get(
+        'SELECT id, account_id FROM transactions WHERE id = ?',
+        [linkedId]
+      );
+      if (peer) peerAccountId = peer.account_id;
+    }
+
+    await database.run('BEGIN TRANSACTION');
+    try {
+      if (linkedId) {
+        await database.run('DELETE FROM transactions WHERE id = ? AND user_id = ?', [
+          linkedId,
+          userId,
+        ]);
+      }
+
+      await database.run(
+        `UPDATE transactions SET
+          payee = ?, category_id = category_id,
+          is_transfer = 0, linked_transaction_id = NULL,
+          transfer_group_id = NULL, counterparty_account_id = NULL,
+          mapping_status = CASE WHEN category_id IS NOT NULL THEN 'categorized' ELSE 'uncategorized' END,
+          suggested_category_id = NULL, suggested_category_source = NULL,
+          updated_at = unixepoch()
+         WHERE id = ? AND user_id = ?`,
+        [payee, transactionId, userId]
+      );
+
+      if (updates.date !== undefined) {
+        await database.run('UPDATE transactions SET date = ? WHERE id = ?', [
+          updates.date,
+          transactionId,
+        ]);
+      }
+      if (updates.memo !== undefined) {
+        await database.run('UPDATE transactions SET memo = ? WHERE id = ?', [
+          updates.memo,
+          transactionId,
+        ]);
+      }
+      if (updates.amount !== undefined) {
+        await database.run('UPDATE transactions SET amount = ? WHERE id = ?', [
+          updates.amount,
+          transactionId,
+        ]);
+      }
+
+      await database.run('COMMIT');
+
+      const txSvc = new TransactionService(getDatabasePath());
+      await txSvc.updateAccountBalances(transaction.account_id);
+      if (peerAccountId) await txSvc.updateAccountBalances(peerAccountId);
+
+      const row = await this.getTransactionRow(database, transactionId, userId);
+      return { success: true, data: row };
+    } catch (error) {
+      await database.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Convert an existing transaction into a linked transfer (FR-3, FR-4).
+   */
+  async convertTransactionToTransfer(transactionId, userId, destinationAccountId, updates = {}) {
+    const database = await getDatabase();
+    const tx = await database.get(
+      'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+      [transactionId, userId]
+    );
+    if (!tx) throw new Error('Transaction not found');
+    if (tx.is_transfer === 1) throw new Error('Already a transfer');
+    if (tx.linked_transaction_id) {
+      throw new Error('Transaction is already linked');
+    }
+    if (String(tx.account_id) === String(destinationAccountId)) {
+      throw new Error('Cannot transfer to the same account');
+    }
+
+    const sourceAccount = await database.get(
+      'SELECT id, name FROM accounts WHERE id = ? AND user_id = ?',
+      [tx.account_id, userId]
+    );
+    const destAccount = await database.get(
+      'SELECT id, name FROM accounts WHERE id = ? AND user_id = ?',
+      [destinationAccountId, userId]
+    );
+    if (!sourceAccount || !destAccount) throw new Error('Account not found');
+
+    const absAmount = Math.abs(Number(tx.amount));
+    if (!Number.isFinite(absAmount) || absAmount === 0) {
+      throw new Error('Invalid transfer amount');
+    }
+
+    const isOutflow = Number(tx.amount) < 0;
+    const transferGroupId = uuidv4();
+    const cleared = tx.cleared ?? tx.is_cleared ?? 0;
+    const date = updates.date ?? tx.date;
+    const memo = updates.memo ?? tx.memo;
+
+    await database.run('BEGIN TRANSACTION');
+    try {
+      if (isOutflow) {
+        const sourcePayee = updates.payee || formatTransferPayeeName(destAccount.name);
+        await database.run(
+          `UPDATE transactions SET
+            payee = ?, amount = ?, date = ?, memo = ?,
+            category_id = NULL, is_transfer = 1, mapping_status = 'transfer',
+            transfer_group_id = ?, counterparty_account_id = ?,
+            suggested_category_id = NULL, suggested_category_source = NULL,
+            updated_at = unixepoch()
+           WHERE id = ?`,
+          [
+            sourcePayee,
+            -absAmount,
+            date,
+            memo,
+            transferGroupId,
+            destinationAccountId,
+            transactionId,
+          ]
+        );
+
+        const destResult = await database.run(
+          `INSERT INTO transactions
+           (account_id, amount, date, payee, category_id, memo, cleared,
+            is_transfer, transfer_group_id, counterparty_account_id, user_id, mapping_status, created_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, 'transfer', unixepoch())`,
+          [
+            destinationAccountId,
+            absAmount,
+            date,
+            formatTransferPayeeName(sourceAccount.name),
+            memo || `Transfer from ${sourceAccount.name}`,
+            cleared ? 1 : 0,
+            transferGroupId,
+            tx.account_id,
+            userId,
+          ]
+        );
+
+        await database.run(
+          'UPDATE transactions SET linked_transaction_id = ? WHERE id = ?',
+          [destResult.lastID, transactionId]
+        );
+        await database.run(
+          'UPDATE transactions SET linked_transaction_id = ? WHERE id = ?',
+          [transactionId, destResult.lastID]
+        );
+      } else {
+        const destPayee = updates.payee || formatTransferPayeeName(destAccount.name);
+        await database.run(
+          `UPDATE transactions SET
+            payee = ?, amount = ?, date = ?, memo = ?,
+            category_id = NULL, is_transfer = 1, mapping_status = 'transfer',
+            transfer_group_id = ?, counterparty_account_id = ?,
+            suggested_category_id = NULL, suggested_category_source = NULL,
+            updated_at = unixepoch()
+           WHERE id = ?`,
+          [
+            destPayee,
+            absAmount,
+            date,
+            memo,
+            transferGroupId,
+            destinationAccountId,
+            transactionId,
+          ]
+        );
+
+        const sourceResult = await database.run(
+          `INSERT INTO transactions
+           (account_id, amount, date, payee, category_id, memo, cleared,
+            is_transfer, transfer_group_id, counterparty_account_id, user_id, mapping_status, created_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, 'transfer', unixepoch())`,
+          [
+            destinationAccountId,
+            -absAmount,
+            date,
+            formatTransferPayeeName(sourceAccount.name),
+            memo || `Transfer from ${destAccount.name}`,
+            cleared ? 1 : 0,
+            transferGroupId,
+            tx.account_id,
+            userId,
+          ]
+        );
+
+        await database.run(
+          'UPDATE transactions SET linked_transaction_id = ? WHERE id = ?',
+          [sourceResult.lastID, transactionId]
+        );
+        await database.run(
+          'UPDATE transactions SET linked_transaction_id = ? WHERE id = ?',
+          [transactionId, sourceResult.lastID]
+        );
+      }
+
+      await database.run('COMMIT');
+
+      const txSvc = new TransactionService(getDatabasePath());
+      await txSvc.updateAccountBalances(tx.account_id);
+      await txSvc.updateAccountBalances(destinationAccountId);
+
+      const row = await this.getTransactionRow(database, transactionId, userId);
+      return { success: true, data: row };
     } catch (error) {
       await database.run('ROLLBACK');
       throw error;

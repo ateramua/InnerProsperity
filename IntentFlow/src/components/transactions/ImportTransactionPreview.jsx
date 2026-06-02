@@ -68,7 +68,8 @@ const styles = {
   panel: {
     border: '1px solid #334155',
     borderRadius: '8px',
-    overflow: 'hidden',
+    overflow: 'auto',
+    maxHeight: 'min(50vh, 420px)',
     background: '#1e293b',
   },
 };

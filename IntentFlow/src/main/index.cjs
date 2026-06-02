@@ -316,6 +316,7 @@ const updateService = requireModule('../services/realtime/updateService.cjs') ||
         'forecast:updated',
         'transaction:added',
         'transaction:updated',
+        'transaction:patched',
         'transaction:deleted',
         'budget:assigned',
         'budget:bulkAssigned',
@@ -708,6 +709,9 @@ const TransactionService = requireModule('../services/transactions/transactionSe
 const transactionLifecycle = requireModule('../services/transactions/transactionLifecycle.cjs') || {
     runPostTransactionEffects: async () => {}
 };
+const transactionCategorizationService =
+    requireModule('../services/transactions/transactionCategorizationService.cjs') ||
+    require(path.join(__dirname, '../services/transactions/transactionCategorizationService.cjs'));
 const transactionImportService = requireModule('../services/transactions/transactionImportService.cjs');
 const importCategoryMapping = requireModule('../services/transactions/importCategoryMapping.cjs');
 
@@ -1128,6 +1132,11 @@ function getPlaidSyncDeps() {
                 userId,
                 reason: 'plaid:transactions',
             });
+        },
+        applyCreditCardPaymentReserveDelta: async ({ userId, accountId, date, delta }) => {
+            const { applyCreditCardPaymentReserveDelta: applyReserve } = require('../services/transactions/creditCardReserveUtils.cjs');
+            const db = await getDatabase();
+            await applyReserve(db, { userId, accountId, date, delta });
         },
     };
 }
@@ -1753,7 +1762,7 @@ function setupIpcHandlers() {
         'get-account', 'update-account', 'delete-account', 'get-account-transactions',
         'get-accounts-dashboard', 'get-account-details', 'create-account', 'getCategories',
         'get-categories', 'create-category', 'delete-category', 'update-category',
-        'updateCategory', 'budget:getMonthSnapshot', 'get-groups', 'create-group', 'update-group', 'delete-group',
+        'updateCategory', 'budget:getMonthSnapshot', 'budget:getCategoryActivityTransactionIds', 'budget:listTimelineMonths', 'get-groups', 'create-group', 'update-group', 'delete-group',
         'get-groups-with-categories', 'save-settings', 'get-network-status',
         'subscribe-to-event', 'publish-event', 'validation:trackAccuracy', 'validation:getTrends',
         'validation:getCategoryAccuracy', 'validation:getConfidence', 'debug-db-path',
@@ -4153,12 +4162,32 @@ function setupIpcHandlers() {
         if (Object.prototype.hasOwnProperty.call(normalized, 'categoryId')) {
             let cid = normalized.categoryId;
             delete normalized.categoryId;
-            if (cid === 'inflow_ready_to_assign' || cid === '') cid = null;
+            if (
+                cid === 'inflow_ready_to_assign' ||
+                cid === 'ready_to_assign' ||
+                cid === ''
+            ) {
+                cid = null;
+            }
             normalized.category_id = cid;
         }
-        if (normalized.category_id === 'inflow_ready_to_assign' || normalized.category_id === '') {
+        if (
+            normalized.category_id === 'inflow_ready_to_assign' ||
+            normalized.category_id === 'ready_to_assign' ||
+            normalized.category_id === ''
+        ) {
             normalized.category_id = null;
         }
+        if (updates.destinationAccountId != null) {
+            normalized.destinationAccountId = updates.destinationAccountId;
+        }
+        if (updates.transferAccountId != null) {
+            normalized.destinationAccountId = updates.transferAccountId;
+        }
+        if (updates.convertToRegular === true) {
+            normalized.convertToRegular = true;
+        }
+        delete normalized.picked;
         return normalized;
     }
 
@@ -4229,41 +4258,38 @@ function setupIpcHandlers() {
                 date: transaction.date || new Date().toISOString().split('T')[0],
                 description: transaction.description || transaction.payee || 'Transaction',
                 amount,
-                categoryId: categoryId || null,
+                categoryId: null,
                 payee: transaction.payee || null,
                 memo: transaction.memo || null,
                 isCleared: transaction.cleared ? 1 : 0
             };
 
-            let creditReserveDelta = 0;
-            if (categoryId) {
-                const sourceAccount = await db.get(
-                    'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
-                    [transaction.accountId, currentUser.id]
-                );
-                if (sourceAccount?.type === 'credit') {
-                    if (amount < 0) {
-                        const spendAmount = Math.abs(amount);
-                        const envelope = await getCategoryMonthEnvelope(
-                            db,
-                            currentUser.id,
-                            categoryId,
-                            transactionData.date
-                        );
-                        const backedAmount = Math.min(spendAmount, Math.max(0, envelope.available));
-                        creditReserveDelta = backedAmount;
-                    } else if (amount > 0) {
-                        creditReserveDelta = -Math.abs(amount);
-                    }
-                }
-            }
-
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.createTransaction(transactionData);
 
-            // Save payee to payees table if it's a regular transaction and payee exists
-            if (transaction.payee && !transaction.isTransfer) {
+            let creditReserveDelta = 0;
+            const insertedRow = await db.get(
+                `SELECT id FROM transactions
+                 WHERE account_id = ? AND user_id = ? AND date = ? AND amount = ?
+                 ORDER BY created_at DESC LIMIT 1`,
+                [transaction.accountId, currentUser.id, transactionData.date, amount]
+            );
+            if (insertedRow?.id && transactionCategorizationService?.processImportedTransaction) {
+                const processed = await transactionCategorizationService.processImportedTransaction(
+                    db,
+                    currentUser.id,
+                    insertedRow.id,
+                    {
+                        merchantName: transaction.payee || transaction.description,
+                        description: transactionData.description,
+                        importSource: 'manual',
+                        plaidCategoryId: categoryId,
+                        isTransfer: false,
+                    }
+                );
+                creditReserveDelta = processed.creditReserveDelta || 0;
+            } else if (transaction.payee && !transaction.isTransfer) {
                 try {
                     await payeeService.createOrUpdatePayee(transaction.payee, currentUser.id);
                 } catch (payeeError) {
@@ -4312,8 +4338,48 @@ function setupIpcHandlers() {
             );
             if (!pre) return { success: false, error: 'Transaction not found' };
 
+            const normalizedTransfer = normalizeTransactionUpdatePayload(updates);
+
+            if (pre.is_transfer !== 1 && normalizedTransfer.destinationAccountId) {
+                const result = await payeeService.convertTransactionToTransfer(
+                    id,
+                    currentUser.id,
+                    normalizedTransfer.destinationAccountId,
+                    normalizedTransfer
+                );
+                const post = await database.get(
+                    'SELECT account_id, date FROM transactions WHERE id = ? AND user_id = ?',
+                    [id, currentUser.id]
+                );
+                const accountIds = [pre.account_id];
+                if (post?.account_id) accountIds.push(post.account_id);
+                if (normalizedTransfer.destinationAccountId) {
+                    accountIds.push(normalizedTransfer.destinationAccountId);
+                }
+                if (transactionLifecycle?.runPostTransactionEffects) {
+                    try {
+                        await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                            accountIds: [...new Set(accountIds)],
+                            dates: [pre.date, post?.date].filter(Boolean),
+                            skipLedgerSync: true
+                        });
+                    } catch (e) {
+                        console.warn('post-transaction budget refresh (convert transfer):', e?.message || e);
+                    }
+                }
+                notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:updated' });
+                if (updateService) updateService.publish('transaction:updated', result?.data ?? result);
+                return result?.success !== false
+                    ? { success: true, data: result?.data }
+                    : { success: false, error: result?.error || 'Update failed' };
+            }
+
             if (pre.is_transfer === 1) {
-                const result = await payeeService.updateLinkedTransfer(id, currentUser.id, updates);
+                const result = await payeeService.updateLinkedTransfer(
+                    id,
+                    currentUser.id,
+                    normalizedTransfer
+                );
                 const dates = [pre.date];
                 if (updates.date !== undefined && updates.date !== pre.date) {
                     dates.push(updates.date);
@@ -4339,13 +4405,39 @@ function setupIpcHandlers() {
                 }
                 notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:updated' });
                 if (updateService) updateService.publish('transaction:updated', result?.data ?? result);
-                return result?.success !== false ? result : { success: false, error: result?.error || 'Update failed' };
+                return result?.success !== false
+                    ? { success: true, data: result?.data }
+                    : { success: false, error: result?.error || 'Update failed' };
             }
 
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const normalizedUpdates = normalizeTransactionUpdatePayload(updates);
-            const result = await service.updateTransaction(id, currentUser.id, normalizedUpdates);
+
+            let creditReserveDelta = 0;
+            const categoryChanging =
+                Object.prototype.hasOwnProperty.call(normalizedUpdates, 'category_id');
+
+            if (
+                categoryChanging &&
+                transactionCategorizationService?.assignCategory &&
+                pre.is_transfer !== 1
+            ) {
+                const catResult = await transactionCategorizationService.assignCategory(
+                    database,
+                    currentUser.id,
+                    id,
+                    normalizedUpdates.category_id,
+                    { source: 'user_action', learnRule: true, applyCreditReserve: true }
+                );
+                creditReserveDelta = catResult.creditReserveDelta || 0;
+                delete normalizedUpdates.category_id;
+            }
+
+            let result = null;
+            if (Object.keys(normalizedUpdates).length > 0) {
+                result = await service.updateTransaction(id, currentUser.id, normalizedUpdates);
+            }
 
             const post = await database.get(
                 'SELECT account_id, date FROM transactions WHERE id = ? AND user_id = ?',
@@ -4365,9 +4457,28 @@ function setupIpcHandlers() {
                     console.warn('post-transaction budget refresh (update):', e?.message || e);
                 }
             }
+            if (creditReserveDelta !== 0) {
+                await applyCreditCardPaymentReserveDelta(database, {
+                    userId: currentUser.id,
+                    accountId: pre.account_id,
+                    date: post?.date || pre.date,
+                    delta: creditReserveDelta
+                });
+            }
+            const updatedRow = await database.get(
+                `SELECT t.*, a.name AS account_name, c.name AS category_name
+                 FROM transactions t
+                 JOIN accounts a ON t.account_id = a.id
+                 LEFT JOIN categories c ON t.category_id = c.id
+                 WHERE t.id = ? AND t.user_id = ?`,
+                [id, currentUser.id]
+            );
             notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:updated' });
-            if (updateService) updateService.publish('transaction:updated', result);
-            return { success: true, data: result };
+            if (updateService) {
+                updateService.publish('transaction:updated', updatedRow);
+                updateService.publish('transaction:patched', updatedRow);
+            }
+            return { success: true, data: updatedRow };
         } catch (error) {
             console.error('Error in updateTransaction:', error);
             return { success: false, error: error.message };
@@ -4456,11 +4567,52 @@ function setupIpcHandlers() {
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const normalizedUpdates = normalizeTransactionUpdatePayload(updates);
-            const result = await service.bulkUpdateTransactions(
-                idList,
-                currentUser.id,
-                normalizedUpdates
-            );
+
+            let bulkResult = { updated: 0, skipped: 0, accountIds: [], dates: [] };
+
+            if (
+                Object.prototype.hasOwnProperty.call(normalizedUpdates, 'category_id') &&
+                transactionCategorizationService?.bulkAssignCategory
+            ) {
+                const db = await getDatabase();
+                const catBulk = await transactionCategorizationService.bulkAssignCategory(
+                    db,
+                    currentUser.id,
+                    idList,
+                    normalizedUpdates.category_id,
+                    { source: 'user_action', learnRule: true, applyCreditReserve: true }
+                );
+                bulkResult.dates = catBulk.dates || [];
+                bulkResult.accountIds = catBulk.accountIds || [];
+                bulkResult.updated = catBulk.results.filter((r) => r.success).length;
+                for (const r of catBulk.results) {
+                    if (r.success && r.creditReserveDelta) {
+                        await applyCreditCardPaymentReserveDelta(db, {
+                            userId: currentUser.id,
+                            accountId: r.accountId,
+                            date: (r.dates && r.dates[0]) || bulkResult.dates[0],
+                            delta: r.creditReserveDelta,
+                        });
+                    }
+                }
+                delete normalizedUpdates.category_id;
+            }
+
+            if (Object.keys(normalizedUpdates).length > 0) {
+                const result = await service.bulkUpdateTransactions(
+                    idList,
+                    currentUser.id,
+                    normalizedUpdates
+                );
+                bulkResult = {
+                    ...result,
+                    updated: (bulkResult.updated || 0) + (result.updated || 0),
+                    accountIds: [...new Set([...(bulkResult.accountIds || []), ...(result.accountIds || [])])],
+                    dates: [...new Set([...(bulkResult.dates || []), ...(result.dates || [])])],
+                };
+            }
+
+            const result = bulkResult;
 
             if (transactionLifecycle?.runPostTransactionEffects && result.dates?.length) {
                 try {
@@ -4532,6 +4684,176 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('transactions:bulkDelete error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:pairTransfers', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const { pairTransfersForUser } = require('../services/transactions/plaidTransferPairing.cjs');
+            const db = await getDatabase();
+            const result = await pairTransfersForUser(db, currentUser.id, { lookbackDays: 90 });
+            if (transactionLifecycle?.runPostTransactionEffects && result.accountIds?.length) {
+                await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                    accountIds: result.accountIds,
+                    dates: [],
+                    skipLedgerSync: true,
+                    forwardMonths: 3,
+                });
+            }
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'transaction:transfer-pairing',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:pairTransfers error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:getMlModelStatus', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const db = await getDatabase();
+            const { categoryMlService } = require('../services/transactions/categoryMlService.cjs');
+            const status = await categoryMlService.getModelStatus(db, currentUser.id);
+            return { success: true, data: status };
+        } catch (error) {
+            console.error('transactions:getMlModelStatus error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:retrainCategoryMl', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const db = await getDatabase();
+            const result = await transactionCategorizationService.retrainMlModel(db, currentUser.id);
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:retrainCategoryMl error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:getMlSuggestion', async (event, transactionId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const db = await getDatabase();
+            const data = await transactionCategorizationService.getMlSuggestionForTransaction(
+                db,
+                currentUser.id,
+                transactionId
+            );
+            return { success: true, data };
+        } catch (error) {
+            console.error('transactions:getMlSuggestion error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:getUncategorizedSummary', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            if (!transactionCategorizationService?.getUncategorizedSummary) {
+                return { success: true, data: { uncategorizedCount: 0, uncategorizedTotalAmount: 0, needsReviewCount: 0 } };
+            }
+            const data = await transactionCategorizationService.getUncategorizedSummary(currentUser.id);
+            return { success: true, data };
+        } catch (error) {
+            console.error('transactions:getUncategorizedSummary error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:getSplits', async (event, transactionId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const db = await getDatabase();
+            const data = await transactionCategorizationService.getTransactionSplits(
+                db,
+                currentUser.id,
+                transactionId
+            );
+            return { success: true, data };
+        } catch (error) {
+            console.error('transactions:getSplits error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:clearSplits', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const transactionId =
+                typeof payload === 'string' ? payload : payload?.transactionId;
+            if (!transactionId) return { success: false, error: 'transactionId required' };
+            const db = await getDatabase();
+            const result = await transactionCategorizationService.clearTransactionSplits(
+                db,
+                currentUser.id,
+                transactionId,
+                { categoryId: payload?.categoryId ?? null }
+            );
+            const tx = await db.get(
+                'SELECT account_id, date FROM transactions WHERE id = ?',
+                [transactionId]
+            );
+            if (transactionLifecycle?.runPostTransactionEffects && tx) {
+                await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                    accountIds: [tx.account_id],
+                    dates: [tx.date],
+                    skipLedgerSync: true,
+                });
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:split-cleared' });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:clearSplits error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('transactions:setSplits', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const { transactionId, splits } = payload || {};
+            if (!transactionId || !Array.isArray(splits)) {
+                return { success: false, error: 'transactionId and splits required' };
+            }
+            const db = await getDatabase();
+            const result = await transactionCategorizationService.setTransactionSplits(
+                db,
+                currentUser.id,
+                transactionId,
+                splits,
+                { source: 'user_action' }
+            );
+            const tx = await db.get(
+                'SELECT account_id, date FROM transactions WHERE id = ?',
+                [transactionId]
+            );
+            if (transactionLifecycle?.runPostTransactionEffects && tx) {
+                await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                    accountIds: [tx.account_id],
+                    dates: [tx.date],
+                    skipLedgerSync: true,
+                });
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:split' });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('transactions:setSplits error:', error);
             return { success: false, error: error.message };
         }
     });
@@ -4912,6 +5234,24 @@ function setupIpcHandlers() {
         }
     });
 
+    ipcMain.handle('budget:listTimelineMonths', async (event, userId) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: true, data: { months: [], currentMonthKey: monthlyBudgetService.toLocalMonthKey(new Date()) } };
+            }
+            const data = await monthlyBudgetService.listBudgetTimelineMonths(dbConnection, targetUserId);
+            return { success: true, data };
+        } catch (error) {
+            console.error('budget:listTimelineMonths error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('budget:getMonthSnapshot', async (event, userId, monthKey) => {
         try {
             const dbConnection = await getDatabase();
@@ -4930,6 +5270,30 @@ function setupIpcHandlers() {
         } catch (error) {
             console.error('budget:getMonthSnapshot error:', error);
             return { success: false, error: error.message, data: { categories: [], monthKey: '', isCurrentCalendarMonth: false } };
+        }
+    });
+
+    ipcMain.handle('budget:getCategoryActivityTransactionIds', async (event, userId, categoryId, monthKey) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: true, data: { transaction_ids: [] } };
+            }
+            const mKey = monthlyBudgetService.toLocalMonthKey(monthKey || new Date());
+            const ids = await monthlyBudgetService.getCategoryActivityTransactionIds(
+                dbConnection,
+                targetUserId,
+                categoryId,
+                mKey
+            );
+            return { success: true, data: { transaction_ids: ids, monthKey: mKey, categoryId } };
+        } catch (error) {
+            console.error('budget:getCategoryActivityTransactionIds error:', error);
+            return { success: false, error: error.message, data: { transaction_ids: [] } };
         }
     });
 

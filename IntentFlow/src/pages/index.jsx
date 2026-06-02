@@ -35,9 +35,10 @@ export default function HomePage() {
     (eventType) => {
       switch (eventType) {
         case 'transaction:added':
-        case 'transaction:updated':
         case 'transaction:deleted':
-          loadAccounts();
+          loadAccounts(true);
+          break;
+        case 'transaction:updated':
           break;
 
         case 'budget:assigned':

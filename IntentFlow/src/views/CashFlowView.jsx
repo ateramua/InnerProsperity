@@ -185,8 +185,11 @@ const CashFlowView = ({
       const endingSavings = startingSavings + (netCashflow * 0.4);
 
       // 8. DEBT CALCULATIONS
-      const totalCreditCardDebt = creditCards.reduce((sum, c) => sum + Math.abs(c.balance || 0), 0);
-      const totalLoanDebt = loans.reduce((sum, l) => sum + Math.abs(l.balance || 0), 0);
+      const totalCreditCardDebt = creditCards.reduce(
+        (sum, c) => sum + Math.max(0, -(c.balance || 0)),
+        0
+      );
+      const totalLoanDebt = loans.reduce((sum, l) => sum + Math.max(0, -(l.balance || 0)), 0);
       const totalDebt = totalCreditCardDebt + totalLoanDebt;
       
       // Calculate debt paid this month (from debt-related categories)

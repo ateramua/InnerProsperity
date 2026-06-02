@@ -174,12 +174,14 @@ class TransactionService {
         const query = `
     SELECT 
       t.*,
+      c.name AS category_name,
       CASE 
         WHEN t.is_transfer = 1 AND t.counterparty_account_id IS NOT NULL 
         THEN (SELECT name FROM accounts WHERE id = t.counterparty_account_id)
         ELSE NULL 
       END as transfer_counterparty_name
     FROM transactions t
+    LEFT JOIN categories c ON t.category_id = c.id
     WHERE t.account_id = ? AND t.user_id = ?
       AND (t.is_deleted IS NULL OR t.is_deleted = 0)
     ORDER BY t.date DESC, t.created_at DESC

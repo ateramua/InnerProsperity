@@ -31,6 +31,8 @@
     "test:underfunded": "node scripts/test-underfunded-engine.cjs",
     "test:ready-to-assign": "node scripts/test-ready-to-assign-engine.cjs",
     "test:transaction-import": "node scripts/test-transaction-import-banks.cjs",
+    "test:category-ml": "node scripts/test-category-ml.cjs",
+    "test:transaction-categorization": "node scripts/test-transaction-categorization.cjs && node scripts/test-transfer-pairing.cjs && node scripts/test-category-ml.cjs",
     "test:account-balance": "node scripts/test-account-balance-engine.cjs",
     "plaid:relay": "node scripts/plaid-webhook-relay.cjs",
     "plaid:relay-example": "node scripts/plaid-webhook-relay.example.cjs",

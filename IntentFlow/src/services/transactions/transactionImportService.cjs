@@ -5,6 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const TransactionService = require('./transactionService.cjs');
 const { runPostTransactionEffects } = require('./transactionLifecycle.cjs');
+const {
+  transactionCategorizationService,
+} = require('./transactionCategorizationService.cjs');
+const { applyCreditCardPaymentReserveDelta } = require('./creditCardReserveUtils.cjs');
+const { pairTransfersForUser } = require('./plaidTransferPairing.cjs');
 const bankProfiles = require('./bankImportProfiles.cjs');
 
 const TX_HEADER_ALIASES = {
@@ -171,7 +176,8 @@ function resolveCategoryId(categoryName, categoriesByName, categoryMappings = nu
 
   if (categoryMappings && Object.prototype.hasOwnProperty.call(categoryMappings, key)) {
     const mapped = categoryMappings[key];
-    if (mapped == null || mapped === '' || mapped === 'inflow_ready_to_assign') return null;
+    const { isReadyToAssignSentinel } = require('../../shared/readyToAssignCategory.cjs');
+    if (mapped == null || mapped === '' || isReadyToAssignSentinel(mapped)) return null;
     return mapped;
   }
 
@@ -397,6 +403,34 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
         memo: row.memo,
         isCleared: row.cleared ? 1 : 0,
       });
+      const inserted = await db.get(
+        `SELECT id FROM transactions
+         WHERE account_id = ? AND user_id = ? AND date = ? AND amount = ? AND payee = ?
+         ORDER BY created_at DESC LIMIT 1`,
+        [accountId, userId, row.date, row.amount, row.payee]
+      );
+      if (inserted?.id) {
+        const processed = await transactionCategorizationService.processImportedTransaction(
+          db,
+          userId,
+          inserted.id,
+          {
+            merchantName: row.payee,
+            description: row.description,
+            importSource: 'csv',
+            plaidCategoryId: row.categoryId,
+            isTransfer: false,
+          }
+        );
+        if (processed.creditReserveDelta) {
+          await applyCreditCardPaymentReserveDelta(db, {
+            userId,
+            accountId,
+            date: row.date,
+            delta: processed.creditReserveDelta,
+          });
+        }
+      }
       seen.add(key);
       imported++;
       dates.push(row.date);
@@ -410,6 +444,11 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
   }
 
   if (imported > 0) {
+    try {
+      await pairTransfersForUser(db, userId, { lookbackDays: 90 });
+    } catch (e) {
+      console.warn('import transfer pairing:', e?.message || e);
+    }
     try {
       await runPostTransactionEffects(userId, {
         accountIds: [accountId],

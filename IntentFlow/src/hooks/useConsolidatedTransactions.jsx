@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { loadAllAccountsViaApi } from '../utils/cashAccountUtils';
 import useRealtimeUpdates from './useRealtimeUpdates';
 import { subscribeAccountsChanged } from '../utils/accountRefreshEvents.jsx';
+import { applyTransactionPatch } from '../utils/transactionPatchUtils.jsx';
 
 function isActiveAccount(account) {
   return account?.is_active !== 0 && String(account?.account_status || 'active') === 'active';
@@ -18,6 +19,22 @@ export default function useConsolidatedTransactions({ activeOnly = true } = {}) 
   const [error, setError] = useState(null);
 
   const loadRef = useRef(null);
+  const categoriesRef = useRef([]);
+  /** Skip redundant realtime full/patch updates right after a local optimistic patch. */
+  const skipRealtimePatchUntilRef = useRef(new Map());
+  const accountsReloadTimerRef = useRef(null);
+
+  useEffect(() => {
+    categoriesRef.current = categories;
+  }, [categories]);
+
+  const shouldSkipRealtimePatch = useCallback((txId) => {
+    const until = skipRealtimePatchUntilRef.current.get(String(txId));
+    if (!until) return false;
+    if (until > Date.now()) return true;
+    skipRealtimePatchUntilRef.current.delete(String(txId));
+    return false;
+  }, []);
 
   const loadRegisterData = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) {
@@ -85,14 +102,82 @@ export default function useConsolidatedTransactions({ activeOnly = true } = {}) 
 
   loadRef.current = loadRegisterData;
 
+  const patchTransaction = useCallback((id, patch, { local = false } = {}) => {
+    if (id == null || !patch) return;
+    if (local) {
+      skipRealtimePatchUntilRef.current.set(String(id), Date.now() + 2500);
+    }
+    setTransactions((prev) => {
+      const idx = prev.findIndex((t) => String(t.id) === String(id));
+      if (idx < 0) return prev;
+      const merged = applyTransactionPatch(prev[idx], patch, {
+        categories: categoriesRef.current,
+      });
+      const next = [...prev];
+      next[idx] = merged;
+      return next;
+    });
+  }, []);
+
+  const removeTransaction = useCallback((id) => {
+    if (id == null) return;
+    setTransactions((prev) => prev.filter((t) => String(t.id) !== String(id)));
+  }, []);
+
+  const handleRealtimeUpdate = useCallback((eventType, data) => {
+    const txId = data?.id ?? data?.transaction_id;
+    if (eventType === 'transaction:updated') {
+      if (txId != null) {
+        if (!shouldSkipRealtimePatch(txId)) {
+          patchTransaction(txId, data);
+        }
+        return;
+      }
+      loadRef.current({ quiet: true });
+      return;
+    }
+    if (eventType === 'transaction:deleted' && txId != null) {
+      if (!shouldSkipRealtimePatch(txId)) {
+        removeTransaction(txId);
+      }
+      return;
+    }
+    if (eventType === 'transaction:added') {
+      loadRef.current({ quiet: true });
+    }
+  }, [patchTransaction, removeTransaction, shouldSkipRealtimePatch]);
+
   useEffect(() => {
     loadRegisterData();
-    return subscribeAccountsChanged(() => loadRef.current({ quiet: true }));
+    const scheduleAccountsReload = () => {
+      if (accountsReloadTimerRef.current) clearTimeout(accountsReloadTimerRef.current);
+      accountsReloadTimerRef.current = setTimeout(() => {
+        accountsReloadTimerRef.current = null;
+        loadRef.current({ quiet: true });
+      }, 400);
+    };
+    return subscribeAccountsChanged(scheduleAccountsReload);
   }, [loadRegisterData]);
 
+  useEffect(
+    () => () => {
+      if (accountsReloadTimerRef.current) clearTimeout(accountsReloadTimerRef.current);
+    },
+    []
+  );
+
   useRealtimeUpdates(
-    ['transaction:added', 'transaction:updated', 'transaction:deleted'],
-    () => loadRef.current({ quiet: true })
+    ['transaction:added', 'transaction:updated', 'transaction:deleted', 'transaction:patched'],
+    (eventType, data) => {
+      if (eventType === 'transaction:patched') {
+        const txId = data?.id ?? data?.transaction_id;
+        if (txId != null && !shouldSkipRealtimePatch(txId)) {
+          patchTransaction(txId, data);
+        }
+        return;
+      }
+      handleRealtimeUpdate(eventType, data);
+    }
   );
 
   const activeAccounts = useMemo(
@@ -117,5 +202,7 @@ export default function useConsolidatedTransactions({ activeOnly = true } = {}) 
     error,
     accountNameById,
     reload: loadRegisterData,
+    patchTransaction,
+    removeTransaction,
   };
 }

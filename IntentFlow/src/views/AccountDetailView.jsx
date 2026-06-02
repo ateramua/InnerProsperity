@@ -23,6 +23,18 @@ import {
   DEFAULT_TRANSACTION_FILTERS,
   filterTransactions,
 } from '../utils/transactionFilterUtils.jsx';
+import useRegisterTableInlineEdit from '../hooks/useRegisterTableInlineEdit.jsx';
+import useRegisterTransactionRowActions from '../hooks/useRegisterTransactionRowActions.jsx';
+import RegisterTransactionActions from '../components/transactions/RegisterTransactionActions.jsx';
+import RegisterPayeeExtras from '../components/transactions/RegisterPayeeExtras.jsx';
+import TransactionSplitModal from '../components/transactions/TransactionSplitModal.jsx';
+import { enrichTransactionsWithCategoryNames } from '../utils/categoryDisplayUtils.jsx';
+import { computeAvailableCredit } from '../utils/creditCardBalanceUtils.jsx';
+import {
+  buildIncomeCategoryOptions,
+  categorySelectValueForTransaction,
+  isReadyToAssignSentinel,
+} from '../utils/readyToAssignCategory.jsx';
 
 const TRANSACTIONS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_TRANSACTIONS_PER_PAGE = 25;
@@ -157,7 +169,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   // Get filtered categories based on transaction type
   const getFilteredCategories = () => {
     if (newTransaction.transactionType === 'inflow') {
-      return [{ id: 'inflow_ready_to_assign', name: '💰 Inflow: Ready to Assign' }];
+      return buildIncomeCategoryOptions(
+        (categories || []).filter((cat) => cat && !isCategoryArchived(cat))
+      );
     }
     if (!categories || categories.length === 0) {
       return [];
@@ -169,6 +183,49 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const getAllCategories = () => {
     return categories.filter((cat) => cat && !isCategoryArchived(cat));
   };
+
+  const editableCategories = useMemo(
+    () => categories.filter((cat) => cat && !isCategoryArchived(cat)),
+    [categories]
+  );
+
+  const {
+    registerPayees,
+    registerPayeesLoading,
+    handleInlineUpdate,
+    isInlineEditDisabled,
+    isCategoryInlineDisabled,
+    isPayeeInlineDisabled,
+  } = useRegisterTableInlineEdit({
+    accountId: account?.id,
+    transactions,
+    allTransactions,
+    setTransactions,
+    setAllTransactions,
+    categories: editableCategories,
+  });
+
+  const reloadRegisterAfterRowAction = useCallback(async () => {
+    if (!account?.id) return;
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      const userId = userResult?.data?.id;
+      if (userId) {
+        await syncAccountDisplayAfterMutation(account.id, userId);
+      }
+    } catch (e) {
+      console.warn('reload after row action:', e?.message || e);
+    }
+    setRefreshCounter((c) => c + 1);
+  }, [account?.id]);
+
+  const {
+    splitTransaction,
+    setSplitTransaction,
+    handleDeleteRow,
+    handleToggleClearedRow,
+    handleSplitSaved,
+  } = useRegisterTransactionRowActions({ onAfterMutation: reloadRegisterAfterRowAction });
 
   const getTransactionCategoryLabel = (tx, category) => {
     if (tx.isLoanPayment) return '🏦 Loan Transfer';
@@ -529,7 +586,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       date: formatDateForInput(transaction.date),
       payee: transaction.payee || '',
       amount: Math.abs(transaction.amount).toString(),
-      categoryId: transaction.category_id || (transaction.amount > 0 ? 'inflow_ready_to_assign' : ''),
+      categoryId: categorySelectValueForTransaction(transaction),
       memo: transaction.memo || ''
     });
   };
@@ -636,7 +693,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         description: editFormData.payee,
         amount: newAmount,
         category_id:
-          editFormData.categoryId === 'inflow_ready_to_assign'
+          isReadyToAssignSentinel(editFormData.categoryId)
             ? null
             : editFormData.categoryId,
         memo: editFormData.memo || null,
@@ -738,7 +795,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       let transactionAmount = isExpense ? -amountValue : amountValue;
 
       const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
-        scheduledTx.categoryId === 'inflow_ready_to_assign';
+        isReadyToAssignSentinel(scheduledTx.categoryId);
 
       const transactionData = {
         accountId: account.id,
@@ -799,9 +856,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   };
 
   // Load regular transactions; returns register sum (all non-deleted rows).
-  const loadTransactions = useCallback(async (id) => {
-    const targetId = id || account?.id;
+  const loadTransactions = useCallback(async (id, accountOverride = null) => {
+    const targetId = id || accountOverride?.id || account?.id;
     if (!targetId) return null;
+    const acct = accountOverride ?? account;
     try {
       if (window.electronAPI?.getAccountTransactions) {
         const result = await window.electronAPI.getAccountTransactions(targetId);
@@ -809,18 +867,21 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           const allActive = (result.data || []).filter(
             (tx) => tx.is_deleted !== 1 && tx.is_deleted !== true
           );
-          const balances = account
-            ? computeRegisterBalances(account, allActive)
+          const namedActive = enrichTransactionsWithCategoryNames(allActive, categories);
+          const balances = acct
+            ? computeRegisterBalances(acct, namedActive)
             : null;
-          const registerSum = balances?.working_balance ?? computeRegisterBalanceFromTransactions(allActive, account?.type);
+          const registerSum =
+            balances?.working_balance ??
+            computeRegisterBalanceFromTransactions(namedActive, acct);
           setRegisterBalance(registerSum);
           setAllTransactions(
-            account
-              ? computeTransactionsWithRunningBalance(account, allActive)
-              : allActive
+            acct
+              ? computeTransactionsWithRunningBalance(acct, namedActive)
+              : namedActive
           );
           const today = getTodayLocalDate();
-          const regularTransactions = allActive.filter(
+          const regularTransactions = namedActive.filter(
             (tx) => tx.date <= today || tx.cleared === 1
           );
           setTransactions(regularTransactions);
@@ -831,7 +892,17 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       console.error('Error loading transactions:', error);
     }
     return null;
-  }, [account?.id]);
+  }, [account, categories]);
+
+  useEffect(() => {
+    if (!categories?.length) return;
+    setTransactions((prev) =>
+      prev?.length ? enrichTransactionsWithCategoryNames(prev, categories) : prev
+    );
+    setAllTransactions((prev) =>
+      prev?.length ? enrichTransactionsWithCategoryNames(prev, categories) : prev
+    );
+  }, [categories]);
 
   /** Reload account row + transactions and apply register balance on this page only. */
   const syncAccountDisplayAfterMutation = useCallback(async (targetId, userId) => {
@@ -929,10 +1000,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }
   };
 
-  // Load categories when modal opens
+  // Categories are required for the register table (inline category dropdown / labels).
+  useEffect(() => {
+    if (definitiveAccountId) {
+      loadCategories();
+    }
+  }, [definitiveAccountId]);
+
   useEffect(() => {
     if (showAddTransaction) {
-      loadCategories();
       loadLoanAccounts();
       fetchPayees();
     }
@@ -950,59 +1026,60 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     return () => window.removeEventListener('accounts-updated', handleAccountsUpdated);
   }, [definitiveAccountId]);
 
-  // Fetch account
+  // Always hydrate the full account row (initial_balance, etc.) — summary cards omit required fields.
   useEffect(() => {
-    console.log('🟢 Account fetch effect running', { propAccount, accountId, definitiveAccountId, refreshCounter });
-    if (propAccount) {
-      setAccount(propAccount);
+    const targetId = definitiveAccountId || propAccount?.id;
+    if (!targetId) {
       setLoading(false);
       return;
     }
-    if (definitiveAccountId) {
-      let isMounted = true;
-      const fetchAccount = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-          const userResult = await window.electronAPI?.getCurrentUser?.();
-          const userId = userResult?.data?.id || 2;
-          const result = await window.electronAPI?.getAccountById?.(definitiveAccountId, userId);
-          if (result?.success && result.data) {
-            if (isMounted) setAccount(result.data);
-          } else {
-            if (isMounted) setError('Account not found');
-          }
-        } catch (err) {
-          console.error('❌ Fetch error:', err);
-          if (isMounted) setError('Failed to load account');
-        } finally {
-          if (isMounted) setLoading(false);
+    let isMounted = true;
+    const fetchAccount = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const userResult = await window.electronAPI?.getCurrentUser?.();
+        const userId = userResult?.data?.id || 2;
+        const result = await window.electronAPI?.getAccountById?.(targetId, userId);
+        if (result?.success && result.data) {
+          if (isMounted) setAccount(result.data);
+        } else if (propAccount && isMounted) {
+          setAccount(propAccount);
+          setError('Account not found');
+        } else if (isMounted) {
+          setError('Account not found');
         }
-      };
-      fetchAccount();
-      return () => {
-        isMounted = false;
-      };
-    } else {
-      setLoading(false);
-    }
-  }, [propAccount, definitiveAccountId, refreshCounter]);
+      } catch (err) {
+        console.error('❌ Fetch error:', err);
+        if (isMounted) setError('Failed to load account');
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+    void fetchAccount();
+    return () => {
+      isMounted = false;
+    };
+  }, [propAccount?.id, definitiveAccountId, refreshCounter]);
 
-  // Load transactions and apply register balance for Plaid-linked accounts on this page
+  // Load transactions once the full account row is available (needs initial_balance).
   useEffect(() => {
     if (!account?.id) return;
+    if (!Object.prototype.hasOwnProperty.call(account, 'initial_balance')) return;
     let cancelled = false;
     (async () => {
-      const reg = await loadTransactions(account.id);
+      const reg = await loadTransactions(account.id, account);
       if (cancelled || reg == null) return;
       setAccount((prev) => {
-        if (!prev || !isPlaidLinkedAccount(prev)) return prev;
-        return withRegisterDisplayBalance(prev, reg);
+        if (!prev) return prev;
+        return isPlaidLinkedAccount(prev)
+          ? withRegisterDisplayBalance(prev, reg)
+          : { ...prev, balance: reg, working_balance: reg };
       });
     })();
     loadScheduledTransactions();
     return () => { cancelled = true; };
-  }, [account?.id, refreshCounter, loadTransactions]);
+  }, [account?.id, account?.initial_balance, refreshCounter, loadTransactions]);
 
   const loadAccountData = async (id) => {
     const targetId = id || account?.id;
@@ -1102,7 +1179,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }
 
     const isReadyToAssign = newTransaction.transactionType === 'inflow' &&
-      newTransaction.categoryId === 'inflow_ready_to_assign';
+      isReadyToAssignSentinel(newTransaction.categoryId);
 
     const transactionData = {
       accountId: account.id,
@@ -1490,7 +1567,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
   const isCreditCard = account.type === 'credit';
   const creditLimit = account.credit_limit || account.limit || 0;
-  const availableCredit = isCreditCard ? creditLimit + displayBalance : 0;
+  const availableCredit = isCreditCard
+    ? computeAvailableCredit(creditLimit, displayBalance)
+    : 0;
 
   // Check if this is a loan account for special display
   const isLoanAccount = account.type === 'loan';
@@ -1760,12 +1839,19 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
             <TransactionTable
               transactions={paginatedTransactions}
-              categories={categories}
+              categories={editableCategories}
               sort={transactionSort}
               onSortChange={setTransactionSort}
               formatDate={formatDisplayDate}
               showRunningBalance
               formatRunningBalance={(bal) => formatBalanceDisplay(bal, account?.type)}
+              enableInlineEdit
+              onInlineUpdate={handleInlineUpdate}
+              isInlineEditDisabled={isInlineEditDisabled}
+              isCategoryInlineDisabled={isCategoryInlineDisabled}
+              isPayeeInlineDisabled={isPayeeInlineDisabled}
+              registerPayees={registerPayees}
+              registerPayeesLoading={registerPayeesLoading}
               emptyMessage="No transactions match your search or filters"
               showCheckbox
               selectedIds={selectedTransactions}
@@ -1784,26 +1870,26 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                   (tx.isLoanPaymentInflow === true || tx.is_transfer === 1);
                 const isInterestCharge = tx.isInterestCharge === true;
                 const isPrincipalPayment = tx.isPrincipalPayment === true;
-                const isTransfer = tx.is_transfer === 1;
                 return (
-                  <>
-                    <PlaidTxnBadge transaction={tx} />
-                    {isInterestCharge && (
-                      <div style={styles.interestBadgeSmall}>💰 Interest Charge</div>
-                    )}
-                    {isPrincipalPayment && (
-                      <div style={styles.principalBadgeSmall}>📉 Principal Payment</div>
-                    )}
-                    {isInflowToLoan && !isInterestCharge && !isPrincipalPayment && (
-                      <div style={styles.paymentBadgeSmall}>💵 Payment Received</div>
-                    )}
-                    {tx.isLoanPayment && !isInflowToLoan && !isInterestCharge && (
-                      <div style={styles.loanPaymentBadgeSmall}>🏦 Loan Payment</div>
-                    )}
-                    {isTransfer && !isInflowToLoan && !isInterestCharge && !isPrincipalPayment && (
-                      <div style={styles.transferBadgeSmall}>🔄 Account Transfer</div>
-                    )}
-                  </>
+                  <RegisterPayeeExtras
+                    transaction={tx}
+                    extra={
+                      <>
+                        {isInterestCharge && (
+                          <div style={styles.interestBadgeSmall}>💰 Interest Charge</div>
+                        )}
+                        {isPrincipalPayment && (
+                          <div style={styles.principalBadgeSmall}>📉 Principal Payment</div>
+                        )}
+                        {isInflowToLoan && !isInterestCharge && !isPrincipalPayment && (
+                          <div style={styles.paymentBadgeSmall}>💵 Payment Received</div>
+                        )}
+                        {tx.isLoanPayment && !isInflowToLoan && !isInterestCharge && (
+                          <div style={styles.loanPaymentBadgeSmall}>🏦 Loan Payment</div>
+                        )}
+                      </>
+                    }
+                  />
                 );
               }}
               renderEditRow={(tx) => {
@@ -1811,7 +1897,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 const isOutflow = tx.amount < 0;
                 const editCategories = [
                   ...(tx.amount > 0
-                    ? [{ id: 'inflow_ready_to_assign', name: '💰 Inflow: Ready to Assign' }]
+                    ? buildIncomeCategoryOptions(editableCategories)
                     : []),
                   ...getAllCategories(),
                 ];
@@ -1898,9 +1984,13 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 );
               }}
               renderActions={(tx) => (
-                <button onClick={() => startEditing(tx)} style={styles.editButton}>
-                  ✏️ Edit
-                </button>
+                <RegisterTransactionActions
+                  transaction={tx}
+                  onEdit={startEditing}
+                  onDelete={handleDeleteRow}
+                  onToggleCleared={handleToggleClearedRow}
+                  onSplit={setSplitTransaction}
+                />
               )}
             />
           </>
@@ -1923,6 +2013,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
             setRefreshCounter((c) => c + 1);
           }
         }}
+      />
+
+      <TransactionSplitModal
+        open={!!splitTransaction}
+        transaction={splitTransaction}
+        categories={editableCategories}
+        onClose={() => setSplitTransaction(null)}
+        onSaved={handleSplitSaved}
       />
 
       {/* Add Transaction Modal */}

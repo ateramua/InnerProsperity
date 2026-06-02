@@ -75,3 +75,43 @@ export function parseStoredUtcTimestamp(value) {
 export function formatStoredTimestampLocalDate(value, options) {
   return parseStoredUtcTimestamp(value).toLocaleDateString(undefined, options);
 }
+
+/** Human-readable label for a budget month key (e.g. "June 2026"). */
+export function formatBudgetMonthLabel(monthKey) {
+  return monthKeyToLocalDate(monthKey).toLocaleString('default', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+export function compareBudgetMonthKeys(a, b) {
+  return String(a || '').localeCompare(String(b || ''));
+}
+
+/** Inclusive calendar range for a budget month key (YYYY-MM-01). */
+export function dateRangeForBudgetMonthKey(monthKey) {
+  const d = monthKeyToLocalDate(monthKey);
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const pad = (n) => String(n).padStart(2, '0');
+  const from = `${y}-${pad(m + 1)}-01`;
+  const last = new Date(y, m + 1, 0);
+  const to = `${y}-${pad(m + 1)}-${pad(last.getDate())}`;
+  return { from, to };
+}
+
+/** Inclusive range of YYYY-MM-01 keys from min through max. */
+export function enumerateBudgetMonthKeys(minMonthKey, maxMonthKey) {
+  const min = formatBudgetMonthKey(monthKeyToLocalDate(minMonthKey));
+  const max = formatBudgetMonthKey(monthKeyToLocalDate(maxMonthKey));
+  if (compareBudgetMonthKeys(min, max) > 0) return [min];
+
+  const keys = [];
+  let cursor = monthKeyToLocalDate(min);
+  const end = monthKeyToLocalDate(max);
+  while (cursor.getTime() <= end.getTime()) {
+    keys.push(formatBudgetMonthKey(cursor));
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1, 12, 0, 0, 0);
+  }
+  return keys;
+}

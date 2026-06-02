@@ -277,6 +277,11 @@ class AccountService {
                 return null;
             }
 
+            if (updates.name && updates.name !== existing.name) {
+                const { syncTransferPayeesAfterAccountRename } = require('../transactions/transferPayeeSync.cjs');
+                await syncTransferPayeesAfterAccountRename(db, userId, id, updates.name);
+            }
+
             return this.getAccountById(id, userId);
         } catch (error) {
             console.error('❌ Error in updateAccount:', error);
@@ -484,6 +489,7 @@ class AccountService {
                 name: account.name,
                 type: account.type,
                 balance: account.balance || 0,
+                initial_balance: account.initial_balance ?? 0,
                 institution: account.institution || '',
                 account_type_category: account.account_type_category || 'budget',
                 cleared_balance: account.cleared_balance || account.balance || 0,
@@ -744,8 +750,12 @@ async deleteScheduledTransaction(id, userId) {
 
             if (!account) return null;
 
-            // Calculate available credit
-            account.available_credit = (account.credit_limit || 0) - Math.abs(account.current_balance || 0);
+            // Calculate available credit (signed balance: negative debt, positive credit)
+            const { computeAvailableCredit } = require('../../shared/creditCardBalanceUtils.cjs');
+            account.available_credit = computeAvailableCredit(
+                account.credit_limit || 0,
+                account.current_balance || 0
+            );
 
             // Get upcoming payments
             const upcomingPayments = await db.all(`

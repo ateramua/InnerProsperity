@@ -86,7 +86,8 @@ async function saveImportCategoryMappings(db, userId, mappings, institutionKey =
     if (!key) continue;
     if (categoryId == null || categoryId === '') continue;
 
-    const cid = categoryId === 'inflow_ready_to_assign' ? null : categoryId;
+    const { isReadyToAssignSentinel } = require('../../shared/readyToAssignCategory.cjs');
+    const cid = isReadyToAssignSentinel(categoryId) ? null : categoryId;
     await db.run(
       `INSERT INTO import_category_mappings (user_id, institution_key, bank_category, category_id, updated_at)
        VALUES (?, ?, ?, ?, datetime('now'))

@@ -152,16 +152,12 @@ function toLocalMonthKey(input) {
  * @param {boolean} isCurrentCalendarMonth
  */
 function resolveBudgetedForMonth(cat, mb, isCurrentCalendarMonth) {
-  const fromCat = isCurrentCalendarMonth ? Number(cat?.assigned) || 0 : 0;
   if (mb == null) {
-    return fromCat;
+    return isCurrentCalendarMonth ? Number(cat?.assigned) || 0 : 0;
   }
-  const fromMb = Number(mb.budgeted_amount) || 0;
-  // Heal drift: legacy rows sometimes have categories.assigned ahead of monthly_budgets.
-  if (isCurrentCalendarMonth && fromCat > fromMb + 0.005) {
-    return fromCat;
-  }
-  return fromMb;
+  // monthly_budgets.budgeted_amount is authoritative; never inflate from categories.assigned
+  // (upward heal changed global totalAssigned and Ready to Assign during unrelated workflows).
+  return Number(mb.budgeted_amount) || 0;
 }
 
 async function readMonthBudgeted(db, userId, categoryId, monthKey) {
@@ -190,20 +186,87 @@ function addCalendarMonths(monthKey, delta) {
 }
 
 /** @deprecated Use per-category totals from categoryAvailableEngine; kept for callers expecting a map. */
+/**
+ * Parent transaction IDs that contribute to category activity in a budget month
+ * (direct categorizations + split lines; excludes transfers).
+ */
+async function getCategoryActivityTransactionIds(db, userId, categoryId, monthKey) {
+  const ym = String(monthKey || '').slice(0, 7);
+  if (!categoryId || !ym) return [];
+
+  const isReadyToAssign =
+    categoryId === 'inflow_ready_to_assign' || categoryId === '__ready_to_assign__';
+
+  if (isReadyToAssign) {
+    const rows = await db.all(
+      `
+      SELECT DISTINCT t.id
+      FROM transactions t
+      WHERE t.user_id = ?
+        AND (t.category_id IS NULL OR t.category_id = '')
+        AND IFNULL(t.is_transfer, 0) = 0
+        AND t.amount > 0
+        AND strftime('%Y-%m', t.date) = ?
+    `,
+      [userId, ym]
+    );
+    return (rows || []).map((r) => String(r.id));
+  }
+
+  const rows = await db.all(
+    `
+    SELECT DISTINCT tx_id AS id FROM (
+      SELECT CAST(t.id AS TEXT) AS tx_id
+      FROM transactions t
+      WHERE t.user_id = ?
+        AND t.category_id = ?
+        AND IFNULL(t.is_transfer, 0) = 0
+        AND strftime('%Y-%m', t.date) = ?
+      UNION
+      SELECT CAST(t.id AS TEXT) AS tx_id
+      FROM transaction_splits ts
+      INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
+      WHERE ts.user_id = ?
+        AND ts.category_id = ?
+        AND IFNULL(t.is_transfer, 0) = 0
+        AND strftime('%Y-%m', t.date) = ?
+    )
+  `,
+    [userId, categoryId, ym, userId, categoryId, ym]
+  );
+  return (rows || []).map((r) => String(r.id));
+}
+
 async function getActivityTotalsByCategoryForMonth(db, userId, monthKey) {
   const ym = monthKey.slice(0, 7);
   const rows = await db.all(
     `
-    SELECT
-      t.category_id AS category_id,
-      COALESCE(SUM(CASE WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0 ELSE -t.amount END), 0) AS activity
-    FROM transactions t
-    WHERE t.user_id = ?
-      AND t.category_id IS NOT NULL
-      AND strftime('%Y-%m', t.date) = ?
-    GROUP BY t.category_id
+    SELECT category_id, COALESCE(SUM(activity_line), 0) AS activity
+    FROM (
+      SELECT
+        t.category_id AS category_id,
+        CASE WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0 ELSE -t.amount END AS activity_line
+      FROM transactions t
+      WHERE t.user_id = ?
+        AND t.category_id IS NOT NULL
+        AND strftime('%Y-%m', t.date) = ?
+      UNION ALL
+      SELECT
+        ts.category_id,
+        CASE
+          WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0
+          WHEN t.amount < 0 THEN -ts.amount
+          WHEN t.amount > 0 THEN ts.amount
+          ELSE 0
+        END AS activity_line
+      FROM transaction_splits ts
+      INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
+      WHERE ts.user_id = ?
+        AND strftime('%Y-%m', t.date) = ?
+    )
+    GROUP BY category_id
   `,
-    [userId, ym]
+    [userId, ym, userId, ym]
   );
   const map = Object.create(null);
   for (const r of rows || []) {
@@ -375,6 +438,82 @@ async function refreshBudgetMonthsForward(db, userId, startMonthKey, forwardMont
 }
 
 /**
+ * Recompute activity/available for specific categories from startMonth forward.
+ * Preserves budgeted_amount from monthly_budgets (no global assigned inflation).
+ */
+async function refreshCategoryEnvelopesForward(
+  db,
+  userId,
+  startMonthKey,
+  categoryIds,
+  forwardMonths = 36
+) {
+  const ids = [...new Set((categoryIds || []).map((id) => String(id)).filter(Boolean))];
+  if (!ids.length) return;
+
+  let key = toLocalMonthKey(startMonthKey);
+  const todayKey = toLocalMonthKey(new Date());
+  const n = Math.max(1, Math.min(Number(forwardMonths) || 36, 120));
+
+  for (let i = 0; i < n; i++) {
+    const isCurrentCalendarMonth = key === todayKey;
+    const prevMonthKey = addCalendarMonths(key, -1);
+    const [rowThisMonth, rowPrevMonth] = await Promise.all([
+      getMonthlyRowMap(db, key, ids),
+      getMonthlyRowMap(db, prevMonthKey, ids),
+    ]);
+
+    await runBudgetTransaction(db, async () => {
+      for (const categoryId of ids) {
+        const cat = await db.get(
+          `SELECT * FROM categories
+           WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?`,
+          [categoryId, userId]
+        );
+        if (!cat) continue;
+
+        const mb = rowThisMonth.get(categoryId);
+        const prevRow = rowPrevMonth.get(categoryId);
+        const previousAvailable = prevRow ? Number(prevRow.available_amount) || 0 : 0;
+        const budgeted = mb == null ? 0 : Number(mb.budgeted_amount) || 0;
+
+        const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
+          monthKey: key,
+          previousAvailable,
+          budgeted,
+          isCurrentCalendarMonth,
+        });
+
+        await upsertMonthlyRow(db, {
+          category_id: categoryId,
+          month: key,
+          budgeted_amount: envelope.assigned,
+          activity_amount: envelope.activity,
+          available_amount: envelope.available,
+        });
+
+        if (isCurrentCalendarMonth) {
+          await db.run(
+            `UPDATE categories
+             SET assigned = ?, available = ?, activity = ?, updated_at = datetime('now')
+             WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?`,
+            [
+              envelope.assigned,
+              envelope.available,
+              envelope.activity,
+              categoryId,
+              userId,
+            ]
+          );
+        }
+      }
+    });
+
+    key = addCalendarMonths(key, 1);
+  }
+}
+
+/**
  * Rows where legacy repair treated orphan Available as Assigned (budgeted ≈ available,
  * no activity, no prior-month carryover). Those inflate global RTA while the month UI shows
  * envelope Assigned = 0 after a fresh snapshot.
@@ -490,12 +629,10 @@ async function getGlobalAssignmentTotals(db, userId) {
 
   for (const row of mbRows || []) {
     const month = toLocalMonthKey(row.month);
-    let amount = Number(row.mb_budgeted) || 0;
+    const amount = roundMoney(Number(row.mb_budgeted) || 0);
     if (month === todayKey) {
-      amount = Math.max(amount, Number(row.category_assigned) || 0);
       seenCurrentMonth.add(String(row.category_id));
     }
-    amount = roundMoney(amount);
     if (amount > 0.005) {
       assignmentRows.push({
         month,
@@ -756,13 +893,11 @@ async function applyMonthBudgetBulk(db, userId, monthKey, assignments, opts = {}
   }
 
   return withBudgetDbLock(async () => {
-  if (Number.isFinite(opts.totalCash) && mode === 'delta') {
-    const positiveDeltaSum = rows.reduce((sum, item) => {
-      const d = Number(item?.delta) || 0;
-      return d > 0 ? sum + d : sum;
-    }, 0);
-    if (positiveDeltaSum > 0) {
-      await assertSufficientReadyToAssign(db, userId, positiveDeltaSum, opts.totalCash);
+  if (Number.isFinite(opts.totalCash) && mode === 'delta' && !opts.skipRtaCheck) {
+    const netDeltaSum = rows.reduce((sum, item) => sum + (Number(item?.delta) || 0), 0);
+    const newAssignmentFromPool = netDeltaSum > 0.005 ? netDeltaSum : 0;
+    if (newAssignmentFromPool > 0) {
+      await assertSufficientReadyToAssign(db, userId, newAssignmentFromPool, opts.totalCash);
     }
   }
 
@@ -822,7 +957,22 @@ async function applyMonthBudgetBulk(db, userId, monthKey, assignments, opts = {}
 async function applyMonthBudgetBulkAndRefresh(db, userId, monthKey, assignments, opts = {}) {
   const result = await applyMonthBudgetBulk(db, userId, monthKey, assignments, opts);
   const forwardMonths = Number(opts.forwardMonths) || 36;
-  await refreshBudgetMonthsForward(db, userId, result.monthKey, forwardMonths);
+  const isMoveMoney =
+    opts.auditSource === 'move_money' || opts.auditSource === 'move_money_undo';
+  if (isMoveMoney) {
+    const categoryIds = (assignments || [])
+      .map((item) => item?.categoryId)
+      .filter((id) => id !== undefined && id !== null && String(id).trim() !== '');
+    await refreshCategoryEnvelopesForward(
+      db,
+      userId,
+      result.monthKey,
+      categoryIds,
+      forwardMonths
+    );
+  } else {
+    await refreshBudgetMonthsForward(db, userId, result.monthKey, forwardMonths);
+  }
   return result;
 }
 
@@ -1189,16 +1339,125 @@ async function auditBudgetMonthIntegrity(db, userId, monthKey) {
   };
 }
 
+function formatMonthLabel(monthKey) {
+  const mk = toLocalMonthKey(monthKey);
+  const y = parseInt(mk.slice(0, 4), 10);
+  const m = parseInt(mk.slice(5, 7), 10);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return mk;
+  return new Date(y, m - 1, 1, 12, 0, 0, 0).toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function enumerateMonthKeysInclusive(minMonthKey, maxMonthKey) {
+  const min = toLocalMonthKey(minMonthKey);
+  const max = toLocalMonthKey(maxMonthKey);
+  if (min > max) return [min];
+
+  const keys = [];
+  let y = parseInt(min.slice(0, 4), 10);
+  let m = parseInt(min.slice(5, 7), 10);
+  const endY = parseInt(max.slice(0, 4), 10);
+  const endM = parseInt(max.slice(5, 7), 10);
+
+  while (y < endY || (y === endY && m <= endM)) {
+    keys.push(`${y}-${pad2(m)}-01`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return keys;
+}
+
+/**
+ * Timeline for the budget month dropdown: earliest budget month through
+ * max(furthest budgeted month, current calendar month), every month in between.
+ */
+async function listBudgetTimelineMonths(db, userId) {
+  const currentKey = toLocalMonthKey(new Date());
+
+  const bounds = await db.get(
+    `
+    SELECT MIN(mb.month) AS min_month, MAX(mb.month) AS max_month
+    FROM monthly_budgets mb
+    INNER JOIN categories c ON CAST(c.id AS TEXT) = CAST(mb.category_id AS TEXT)
+    WHERE c.user_id = ?
+  `,
+    [userId]
+  );
+
+  const activityRows = await db.all(
+    `
+    SELECT DISTINCT mb.month AS month
+    FROM monthly_budgets mb
+    INNER JOIN categories c ON CAST(c.id AS TEXT) = CAST(mb.category_id AS TEXT)
+    WHERE c.user_id = ?
+      AND (
+        ABS(COALESCE(mb.budgeted_amount, 0)) > 0.005
+        OR ABS(COALESCE(mb.activity_amount, 0)) > 0.005
+        OR ABS(COALESCE(mb.available_amount, 0)) > 0.005
+      )
+  `,
+    [userId]
+  );
+
+  const budgetedSet = new Set(
+    (activityRows || []).map((r) => toLocalMonthKey(r.month))
+  );
+
+  let minKey = bounds?.min_month ? toLocalMonthKey(bounds.min_month) : currentKey;
+  let maxBudgetedKey = bounds?.max_month ? toLocalMonthKey(bounds.max_month) : currentKey;
+  const maxKey = maxBudgetedKey > currentKey ? maxBudgetedKey : currentKey;
+
+  if (minKey > maxKey) minKey = currentKey;
+  if (!bounds?.min_month && budgetedSet.size === 0) {
+    return {
+      currentMonthKey: currentKey,
+      minMonthKey: currentKey,
+      maxMonthKey: currentKey,
+      months: [
+        {
+          monthKey: currentKey,
+          label: formatMonthLabel(currentKey),
+          isCurrentMonth: true,
+          hasBudgetData: false,
+        },
+      ],
+    };
+  }
+
+  const monthKeys = enumerateMonthKeysInclusive(minKey, maxKey);
+  const months = monthKeys.map((monthKey) => ({
+    monthKey,
+    label: formatMonthLabel(monthKey),
+    isCurrentMonth: monthKey === currentKey,
+    hasBudgetData: budgetedSet.has(monthKey),
+  }));
+
+  return {
+    currentMonthKey: currentKey,
+    minMonthKey: minKey,
+    maxMonthKey: maxKey,
+    maxBudgetedMonthKey: maxBudgetedKey,
+    months,
+  };
+}
+
 module.exports = {
   toLocalMonthKey,
   resolveBudgetedForMonth,
   readMonthBudgeted,
   addCalendarMonths,
   getActivityTotalsByCategoryForMonth,
+  getCategoryActivityTransactionIds,
   getBudgetMonthSnapshot,
   enrichCategoriesWithUnderfunded,
   enrichBudgetSnapshot,
   refreshBudgetMonthsForward,
+  refreshCategoryEnvelopesForward,
   applyMonthBudgetedAmount,
   applyMonthBudgetDelta,
   applyMonthAssignedAndAvailable,
@@ -1212,6 +1471,7 @@ module.exports = {
   auditBudgetMonthIntegrity,
   getGlobalAssignmentTotals,
   getGlobalBudgetSummary,
+  listBudgetTimelineMonths,
   findPhantomImplicitAssignmentRows,
   releasePhantomImplicitAssignments,
   assertSufficientReadyToAssign,
