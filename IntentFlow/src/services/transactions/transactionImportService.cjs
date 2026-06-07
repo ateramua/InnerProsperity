@@ -5,11 +5,13 @@ const fs = require('fs');
 const path = require('path');
 const TransactionService = require('./transactionService.cjs');
 const { runPostTransactionEffects } = require('./transactionLifecycle.cjs');
+const readyToAssignPoolService = require('../budget/readyToAssignPoolService.cjs');
 const {
   transactionCategorizationService,
 } = require('./transactionCategorizationService.cjs');
 const { applyCreditCardPaymentReserveDelta } = require('./creditCardReserveUtils.cjs');
 const { pairTransfersForUser } = require('./plaidTransferPairing.cjs');
+const { classifyTransactionPair } = require('../accounts/transactionDedup.cjs');
 const bankProfiles = require('./bankImportProfiles.cjs');
 
 const TX_HEADER_ALIASES = {
@@ -121,15 +123,22 @@ function parseCsvContent(content, fileName = '') {
 }
 
 function readImportFile(filePath) {
-  const ext = path.extname(filePath || '').toLowerCase();
-  if (ext !== '.csv' && ext !== '.txt') {
+  try {
+    const ext = path.extname(filePath || '').toLowerCase();
+    if (ext !== '.csv' && ext !== '.txt') {
+      return {
+        ok: false,
+        error: 'Only CSV files are supported for transaction import right now.',
+      };
+    }
+    const content = fs.readFileSync(filePath, 'utf8');
+    return { ok: true, content, format: 'csv', fileName: path.basename(filePath) };
+  } catch (error) {
     return {
       ok: false,
-      error: 'Only CSV files are supported for transaction import right now.',
+      error: error?.message || 'Could not read import file',
     };
   }
-  const content = fs.readFileSync(filePath, 'utf8');
-  return { ok: true, content, format: 'csv', fileName: path.basename(filePath) };
 }
 
 function parseDate(value) {
@@ -353,6 +362,21 @@ function dedupeKey(date, amount, payee) {
   return `${date}|${amount}|${normKey(payee)}`;
 }
 
+function findUnclearedImportMatch(unclearedRows, row) {
+  let probableMatch = null;
+  for (const pending of unclearedRows) {
+    const kind = classifyTransactionPair(pending, {
+      date: row.date,
+      amount: row.amount,
+      payee: row.payee,
+      description: row.description,
+    });
+    if (kind === 'exact') return pending;
+    if (kind === 'probable') probableMatch = pending;
+  }
+  return probableMatch;
+}
+
 async function importTransactionsForAccount(db, dbPath, userId, accountId, normalizedRows, options = {}) {
   const account = await db.get(
     `SELECT id, type, user_id FROM accounts WHERE id = ? AND user_id = ?`,
@@ -378,8 +402,18 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
     (existing || []).map((t) => dedupeKey(t.date, Number(t.amount), t.payee || ''))
   );
 
+  const unclearedPending = await db.all(
+    `SELECT * FROM transactions
+     WHERE account_id = ? AND user_id = ?
+       AND IFNULL(is_deleted, 0) = 0
+       AND IFNULL(is_cleared, 0) = 0`,
+    [accountId, userId]
+  );
+  const matchedPendingIds = new Set();
+
   const txSvc = new TransactionService(dbPath);
   let imported = 0;
+  let matched = 0;
   let skipped = 0;
   let failed = 0;
   const dates = [];
@@ -391,6 +425,35 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
       skipped++;
       continue;
     }
+
+    const pendingCandidates = unclearedPending.filter((t) => !matchedPendingIds.has(t.id));
+    const pendingMatch = findUnclearedImportMatch(pendingCandidates, row);
+    if (pendingMatch) {
+      try {
+        await db.run(
+          `UPDATE transactions
+           SET is_cleared = 1,
+               payee = COALESCE(?, payee),
+               memo = COALESCE(?, memo),
+               updated_at = datetime('now')
+           WHERE id = ? AND user_id = ?`,
+          [row.payee || null, row.memo || null, pendingMatch.id, userId]
+        );
+        matchedPendingIds.add(pendingMatch.id);
+        seen.add(key);
+        matched++;
+        dates.push(row.date);
+        continue;
+      } catch (err) {
+        failed++;
+        failures.push({
+          lineNumber: row.lineNumber,
+          message: err?.message || 'Match update failed',
+        });
+        continue;
+      }
+    }
+
     try {
       await txSvc.createTransaction({
         accountId,
@@ -428,7 +491,15 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
             accountId,
             date: row.date,
             delta: processed.creditReserveDelta,
+            userIntentAssignment: true,
           });
+        }
+        const poolTx = await db.get(
+          'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+          [inserted.id, userId]
+        );
+        if (poolTx) {
+          await readyToAssignPoolService.syncPoolForTransaction(db, userId, poolTx, 'apply');
         }
       }
       seen.add(key);
@@ -443,7 +514,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
     }
   }
 
-  if (imported > 0) {
+  if (imported > 0 || matched > 0) {
     try {
       await pairTransfersForUser(db, userId, { lookbackDays: 90 });
     } catch (e) {
@@ -463,6 +534,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
   return {
     success: true,
     imported,
+    matched,
     skipped,
     failed,
     failures,

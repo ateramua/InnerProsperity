@@ -137,14 +137,23 @@ const handleCreateAccount = async () => {
     const userId = userResult.data.id;
     
     // Prepare account data with proper structure
+    const account_type_category =
+      newAccountData.account_type_category ||
+      (['investment'].includes(newAccountData.type)
+        ? 'tracking'
+        : ['credit', 'mortgage', 'loan'].includes(newAccountData.type)
+          ? 'budget'
+          : 'budget');
+
     const accountData = {
       name: newAccountData.name.trim(),
       type: newAccountData.type,
-      account_type_category: 'budget',
+      account_type_category,
       balance: parseFloat(newAccountData.balance) || 0,
       currency: 'USD',
       institution: newAccountData.institution.trim() || null,
-      user_id: userId
+      user_id: userId,
+      on_budget: account_type_category === 'tracking' ? 0 : 1,
     };
 
     console.log('📝 Creating account with data:', accountData);

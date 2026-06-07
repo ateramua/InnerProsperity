@@ -1,4 +1,4 @@
-// src/utils/accountUtils.js
+// src/utils/accountUtils.jsx
 /**
  * Shared utility functions for account operations
  * Use this across all account-related components to ensure consistency
@@ -98,4 +98,4 @@ const accountUtils = {
   }
 };
 
-module.exports = { accountUtils };
+export { accountUtils };

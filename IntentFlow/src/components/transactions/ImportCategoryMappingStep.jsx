@@ -133,7 +133,8 @@ export default function ImportCategoryMappingStep({
       <h4 style={styles.sectionTitle}>Map bank categories (optional)</h4>
       <p style={styles.transferNote}>
         After import, IntentFlow scans for matching amounts across your accounts and links internal
-        transfers. Linked rows use payee <strong>Transfer: Account Name</strong> and do not use a
+        transfers. Linked rows use payee <strong>Transfer: to Account Name</strong> or{' '}
+        <strong>Payment: to Account Name</strong> and do not use a
         budget category.
       </p>
       {institutionLabel ? (

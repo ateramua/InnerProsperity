@@ -28,8 +28,29 @@ import TransactionSplitModal from '../../components/transactions/TransactionSpli
 import { enrichTransactionsWithCategoryNames } from '../../utils/categoryDisplayUtils.jsx';
 import {
     buildIncomeCategoryOptions,
+    buildTransactionAmountUpdate,
+    categorySelectValueForTransaction,
+    getTransactionEditAmountMagnitude,
+    getTransactionEditType,
+    isIncomeTransaction,
     isReadyToAssignSentinel,
 } from '../../utils/readyToAssignCategory.jsx';
+import {
+    countSelectedInList,
+    isTransactionSelected,
+    normalizeTransactionId,
+    pruneTransactionSelection,
+} from '../../utils/transactionSelectionUtils.jsx';
+import AccountRoutingPayeeOptions from '../../components/transactions/AccountRoutingPayeeOptions.jsx';
+import {
+    buildAccountPayeeOptions,
+    formatPaymentPayeeName,
+    formatTransferPayeeName,
+    getAllRoutingPayees,
+    mapPayeesFromFormApi,
+    parsePaymentDestinationName,
+    EMPTY_PAYEES_FORM,
+} from '../../utils/transferPayeeUtils.jsx';
 
 const AccountDetailPage = () => {
     const router = useRouter();
@@ -54,9 +75,10 @@ const AccountDetailPage = () => {
     const [transactionError, setTransactionError] = useState('');
     const [showScheduledSection, setShowScheduledSection] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [approvingScheduledId, setApprovingScheduledId] = useState(null);
 
     // ===================== PAYEE DROPDOWN STATE =====================
-    const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+    const [payees, setPayees] = useState(EMPTY_PAYEES_FORM);
     const [loadingPayees, setLoadingPayees] = useState(false);
     const [selectedPayeeType, setSelectedPayeeType] = useState(null);
 
@@ -80,6 +102,7 @@ const AccountDetailPage = () => {
         payee: '',
         categoryId: '',
         amount: '',
+        type: 'outflow',
         memo: ''
     });
     const [isUpdating, setIsUpdating] = useState(false);
@@ -196,40 +219,47 @@ const AccountDetailPage = () => {
             if (userResult?.success && userResult?.data) {
                 const userId = userResult.data.id;
 
-                // Get all accounts for transfer payees
-                const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-                const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+                let nextPayees = EMPTY_PAYEES_FORM;
 
-                // Filter out current account for transfers
-                const transferPayees = allAccounts
-                    .filter(acc => acc.id !== account?.id)
-                    .map(acc => ({
-                        id: `transfer_${acc.id}`,
-                        name: `Transfer: ${acc.name}`,
-                        isTransfer: true,
-                        transferAccountId: acc.id,
-                        accountType: acc.type
-                    }));
-
-                // Get regular payees from payees table
-                let regularPayees = [];
-                try {
-                    const payeesResult = await window.electronAPI.getPayees(userId);
-                    if (payeesResult?.success) {
-                        regularPayees = (payeesResult.data || [])
-                            .filter(p => !p.is_transfer_payee)
-                            .map(p => ({
-                                id: p.id,
-                                name: p.name,
-                                isTransfer: false,
-                                usageCount: p.usage_count
-                            }));
+                if (window.electronAPI.getPayeesForForm) {
+                    const formRes = await window.electronAPI.getPayeesForForm({
+                        userId,
+                        currentAccountId: account?.id,
+                    });
+                    if (formRes?.success && formRes.data) {
+                        nextPayees = mapPayeesFromFormApi(formRes.data);
                     }
-                } catch (err) {
-                    console.log('Payees table not yet set up, using empty list');
                 }
 
-                setPayees({ transferPayees, regularPayees });
+                if (!nextPayees.paymentPayees.length && !nextPayees.transferPayees.length) {
+                    const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+                    const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+                    const built = buildAccountPayeeOptions(allAccounts, account?.id);
+                    nextPayees = { ...nextPayees, ...built };
+                }
+
+                if (!nextPayees.regularPayees.length) {
+                    try {
+                        const payeesResult = await window.electronAPI.getPayees(userId);
+                        if (payeesResult?.success) {
+                            nextPayees = {
+                                ...nextPayees,
+                                regularPayees: (payeesResult.data || [])
+                                    .filter((p) => !p.is_transfer_payee)
+                                    .map((p) => ({
+                                        id: p.id,
+                                        name: p.name,
+                                        isTransfer: false,
+                                        usageCount: p.usage_count,
+                                    })),
+                            };
+                        }
+                    } catch (err) {
+                        console.log('Payees table not yet set up, using empty list');
+                    }
+                }
+
+                setPayees(nextPayees);
             }
         } catch (error) {
             console.error('Error fetching payees:', error);
@@ -269,8 +299,11 @@ const AccountDetailPage = () => {
             
             // Check if this is a credit card payment transfer
             if (payee.accountType === 'credit') {
-                const matchedCredit = creditCardPaymentCategories.find(c => 
-                    c.name.toLowerCase() === payee.name.replace('Transfer: ', '').toLowerCase()
+                const destName =
+                    parsePaymentDestinationName(payee.name) ||
+                    payee.name.replace(/^Transfer:\s*(?:to\s+)?/i, '').trim();
+                const matchedCredit = creditCardPaymentCategories.find(
+                    (c) => c.name.toLowerCase() === destName.toLowerCase()
                 );
                 if (matchedCredit) {
                     setIsCreditCardTransfer(true);
@@ -345,16 +378,11 @@ const AccountDetailPage = () => {
             >
                 <option value="">-- Select or enter payee --</option>
                 
-                {/* Section 1: Payments & Transfers */}
-                {payees.transferPayees.length > 0 && (
-                    <optgroup label="📤 PAYMENTS & TRANSFERS">
-                        {payees.transferPayees.map(payee => (
-                            <option key={payee.id} value={JSON.stringify(payee)}>
-                                {payee.name}
-                            </option>
-                        ))}
-                    </optgroup>
-                )}
+                <AccountRoutingPayeeOptions
+                    paymentPayees={payees.paymentPayees}
+                    transferPayees={payees.transferPayees}
+                    serializeValue={(payee) => JSON.stringify(payee)}
+                />
                 
                 {/* Section 2: Recent Payees */}
                 {payees.regularPayees.length > 0 && (
@@ -405,70 +433,36 @@ const AccountDetailPage = () => {
         }
     };
 
-    // Create a transfer transaction to credit card
-    const createCreditCardTransferTransaction = async (amountValue, userId) => {
-        const isExpense = transactionForm.transactionType === 'outflow';
-        const transactionAmount = isExpense ? -amountValue : amountValue;
-
-        const transactionData = {
-            accountId: account.id,
-            date: transactionForm.date,
-            payee: transactionForm.payee,
-            description: transactionForm.payee,
-            amount: transactionAmount,
-            categoryId: null,
-            memo: transactionForm.memo || `Payment to ${selectedCreditCardCategory?.name}`,
-            cleared: transactionForm.cleared ? 1 : 0,
-            frequency: transactionForm.frequency || null,
-            isCreditCardPayment: true,
-            isTransfer: 1,
-            transferAccountId: selectedCreditCardCategory ? 
-                creditCardPaymentCategories.find(c => c.id === selectedCreditCardCategory.id)?.linked_account_id : null,
-            linkedCreditCardCategoryId: selectedCreditCardCategory?.id,
-            linkedCreditCardName: selectedCreditCardCategory?.name
-        };
-
-        const result = await window.electronAPI.addTransaction(transactionData);
-        if (!result.success) {
-            throw new Error(result.error || 'Failed to add credit card payment');
+    /** Two-sided transfer (checking/savings → credit, loan, or other account). */
+    const createLinkedAccountTransfer = async (amountValue, userId) => {
+        const destinationAccountId = transactionForm.transferAccountId;
+        if (!destinationAccountId) {
+            throw new Error('Select a destination account for this transfer');
         }
 
-        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-        if (accountsResult?.success) {
-            const creditCardAccount = accountsResult.data.find(acc =>
-                acc.type === 'credit' && acc.name.toLowerCase() === selectedCreditCardCategory?.name.toLowerCase()
-            );
+        if (!window.electronAPI?.createLinkedTransfer) {
+            throw new Error('Transfer API is not available. Restart the app and try again.');
+        }
 
-            if (creditCardAccount) {
-                const creditCardTransactionData = {
-                    accountId: creditCardAccount.id,
-                    date: transactionForm.date,
-                    payee: `Transfer: ${account.name}`,
-                    description: `Transfer: ${account.name}`,
-                    amount: amountValue,
-                    categoryId: null,
-                    memo: transactionForm.memo || `Payment from ${account.name}`,
-                    cleared: transactionForm.cleared ? 1 : 0,
-                    frequency: transactionForm.frequency || null,
-                    isLinkedTransfer: true,
-                    isTransfer: 1,
-                    transferAccountId: account.id,
-                    sourceAccountId: account.id,
-                    sourceAccountName: account.name,
-                    linkedTransactionId: result.data?.id
-                };
+        const transferResult = await window.electronAPI.createLinkedTransfer({
+            sourceAccountId: account.id,
+            destinationAccountId,
+            amount: amountValue,
+            date: transactionForm.date,
+            sourcePayeeName: transactionForm.payee,
+            memo: transactionForm.memo,
+            cleared: transactionForm.cleared,
+        });
 
-                await window.electronAPI.addTransaction(creditCardTransactionData);
-            }
+        if (!transferResult?.success) {
+            throw new Error(transferResult?.error || 'Failed to create transfer');
         }
 
         const summary = await window.electronAPI.getAccountsSummary(userId);
         const refreshed = summary?.success && summary.data
-            ? summary.data.find(a => a.id === account.id)
+            ? summary.data.find((a) => a.id === account.id)
             : null;
-        const newBalance = refreshed != null ? refreshed.balance : account.balance;
-
-        return newBalance;
+        return refreshed != null ? refreshed.balance : account.balance;
     };
 
     // Calculate balance change
@@ -642,8 +636,8 @@ const AccountDetailPage = () => {
         const inflowTransactionData = {
             accountId: selectedLoanAccount.id,
             date: transactionForm.date,
-            payee: `Transfer: ${account.name}`,
-            description: `Transfer: ${account.name}`,
+            payee: formatTransferPayeeName(account.name),
+            description: formatTransferPayeeName(account.name),
             amount: breakdown.principalPortion,
             categoryId: null,
             memo: transactionForm.memo || `Payment from ${account.name}`,
@@ -762,8 +756,9 @@ const AccountDetailPage = () => {
         setEditFormData({
             date: formatDateForInput(transaction.date),
             payee: transaction.payee || '',
-            categoryId: transaction.category_id || '',
-            amount: Math.abs(transaction.amount).toString(),
+            categoryId: categorySelectValueForTransaction(transaction) || transaction.category_id || '',
+            amount: getTransactionEditAmountMagnitude(transaction),
+            type: getTransactionEditType(transaction),
             memo: transaction.memo || ''
         });
     };
@@ -776,6 +771,7 @@ const AccountDetailPage = () => {
             payee: '',
             categoryId: '',
             amount: '',
+            type: 'outflow',
             memo: ''
         });
     };
@@ -820,22 +816,17 @@ const AccountDetailPage = () => {
                 throw new Error('Transaction not found');
             }
 
-            const isExpense = originalTransaction.amount < 0;
-            const newIsExpense = isReadyToAssignSentinel(editFormData.categoryId) ? false :
-                (editFormData.categoryId && categories.find(c => c.id === editFormData.categoryId)?.type === 'expense');
-
-            let newAmount = amountValue;
-            if (newIsExpense !== undefined) {
-                newAmount = newIsExpense ? -amountValue : amountValue;
-            } else {
-                newAmount = isExpense ? -amountValue : amountValue;
-            }
+            const amountUpdate = buildTransactionAmountUpdate(
+                originalTransaction,
+                amountValue,
+                editFormData.type
+            );
 
             const updateData = {
                 date: editFormData.date,
                 payee: editFormData.payee,
                 description: editFormData.payee,
-                amount: newAmount,
+                ...amountUpdate,
                 category_id:
                     isReadyToAssignSentinel(editFormData.categoryId)
                         ? null
@@ -870,13 +861,21 @@ const AccountDetailPage = () => {
         }
     };
 
+    const normalizeScheduledTransaction = (row) => ({
+        ...row,
+        transactionType: row.transactionType ?? row.transaction_type ?? 'outflow',
+        categoryId: row.categoryId ?? row.category_id ?? null,
+    });
+
     // Load scheduled transactions
-    const loadScheduledTransactions = async () => {
+    const loadScheduledTransactions = async (targetAccountId) => {
+        const accountId = targetAccountId || account?.id;
         try {
-            if (window.electronAPI.getScheduledTransactions && account?.id) {
-                const result = await window.electronAPI.getScheduledTransactions(account.id);
+            if (window.electronAPI.getScheduledTransactions && accountId) {
+                const result = await window.electronAPI.getScheduledTransactions(accountId);
                 if (result?.success) {
-                    setScheduledTransactions(result.data || []);
+                    const rows = (result.data || []).map(normalizeScheduledTransaction);
+                    setScheduledTransactions(rows);
                 }
             }
         } catch (error) {
@@ -886,7 +885,10 @@ const AccountDetailPage = () => {
 
     // Approve a scheduled transaction
     const handleApproveScheduled = async (scheduledTx) => {
-        setRefreshing(true);
+        const scheduledId = scheduledTx.id;
+        if (!scheduledId || approvingScheduledId) return;
+
+        setApprovingScheduledId(scheduledId);
         try {
             const userResult = await window.electronAPI.getCurrentUser();
             if (!userResult?.success || !userResult?.data) {
@@ -895,13 +897,14 @@ const AccountDetailPage = () => {
             }
 
             const userId = userResult.data.id;
-            const isExpense = scheduledTx.transactionType === 'outflow';
+            const txType = scheduledTx.transactionType ?? scheduledTx.transaction_type ?? 'outflow';
+            const categoryId = scheduledTx.categoryId ?? scheduledTx.category_id ?? null;
+            const isExpense = txType === 'outflow';
             const amountValue = Math.abs(parseFloat(scheduledTx.amount));
 
             let transactionAmount = isExpense ? -amountValue : amountValue;
 
-            const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
-                isReadyToAssignSentinel(scheduledTx.categoryId);
+            const isReadyToAssign = txType === 'inflow' && isReadyToAssignSentinel(categoryId);
 
             const transactionData = {
                 accountId: account.id,
@@ -909,7 +912,7 @@ const AccountDetailPage = () => {
                 payee: scheduledTx.payee,
                 description: scheduledTx.payee,
                 amount: transactionAmount,
-                categoryId: isReadyToAssign ? null : scheduledTx.categoryId,
+                categoryId: isReadyToAssign ? null : categoryId,
                 memo: scheduledTx.memo,
                 cleared: 1
             };
@@ -920,16 +923,24 @@ const AccountDetailPage = () => {
                 return;
             }
 
-            await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
+            await window.electronAPI.deleteScheduledTransaction(scheduledId);
 
-            await loadAccountData(account.id);
-            await loadScheduledTransactions();
+            setScheduledTransactions((prev) => prev.filter((tx) => tx.id !== scheduledId));
 
-            const summary = await window.electronAPI.getAccountsSummary(userId);
-            const refreshed = summary?.success && summary.data
-                ? summary.data.find(a => a.id === account.id)
-                : null;
-            const newBalance = refreshed != null ? refreshed.balance : account.balance;
+            const [, newBalance] = await Promise.all([
+                loadScheduledTransactions(account.id),
+                (async () => {
+                    const transactionsResult = await window.electronAPI.getAccountTransactions(account.id);
+                    if (transactionsResult?.success) {
+                        applyAccountTransactions(transactionsResult.data, account);
+                    }
+                    const summary = await window.electronAPI.getAccountsSummary(userId);
+                    const refreshed = summary?.success && summary.data
+                        ? summary.data.find((a) => a.id === account.id)
+                        : null;
+                    return refreshed != null ? refreshed.balance : account.balance;
+                })(),
+            ]);
 
             window.dispatchEvent(new CustomEvent('accounts-updated'));
             window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
@@ -938,8 +949,9 @@ const AccountDetailPage = () => {
         } catch (error) {
             console.error('Error approving scheduled transaction:', error);
             alert('Error approving transaction: ' + error.message);
+            await loadScheduledTransactions(account.id);
         } finally {
-            setRefreshing(false);
+            setApprovingScheduledId(null);
         }
     };
 
@@ -1021,89 +1033,21 @@ const AccountDetailPage = () => {
         handleSplitSaved,
     } = useRegisterTransactionRowActions({ onAfterMutation: reloadRegisterAfterRowAction });
 
-    // Handle transaction selection
-    const handleSelectTransaction = (transactionId) => {
-        const newSelected = new Set(selectedTransactions);
-        if (newSelected.has(transactionId)) {
-            newSelected.delete(transactionId);
-        } else {
-            newSelected.add(transactionId);
-        }
-        setSelectedTransactions(newSelected);
-    };
-
-    // Handle select all
-    const handleSelectAll = () => {
-        if (selectedTransactions.size === transactions.length && transactions.length > 0) {
-            setSelectedTransactions(new Set());
-        } else {
-            const allIds = transactions.map(t => t.id);
-            setSelectedTransactions(new Set(allIds));
-        }
-    };
-
-    // Handle delete selected transactions
-    const handleDeleteSelected = async () => {
-        if (selectedTransactions.size === 0) {
-            alert('Please select at least one transaction to delete.');
-            return;
-        }
-
-        setShowDeleteModal(true);
-    };
-
-    // Confirm deletion
-    const confirmDelete = async () => {
-        setIsDeleting(true);
-        try {
-            const userResult = await window.electronAPI.getCurrentUser();
-            if (!userResult?.success || !userResult?.data) {
-                alert('Please log in to delete transactions');
-                return;
-            }
-
-            const userId = userResult.data.id;
-            const selectedIds = [...selectedTransactions];
-
-            if (!window.electronAPI?.bulkDeleteTransactions) {
-                throw new Error('Bulk delete is not available. Restart the app and try again.');
-            }
-
-            const deleteResult = await window.electronAPI.bulkDeleteTransactions(selectedIds);
-            if (!deleteResult?.success) {
-                throw new Error(deleteResult?.error || 'Bulk delete failed');
-            }
-
-            const deletedCount = deleteResult.data?.deleted ?? selectedIds.length;
-
-            await loadAccountData(account.id);
-
-            const summary = await window.electronAPI.getAccountsSummary(userId);
-            const refreshed = summary?.success && summary.data
-                ? summary.data.find(a => a.id === account.id)
-                : null;
-            const newBalance = refreshed != null ? refreshed.balance : account.balance;
-
-            setSelectedTransactions(new Set());
-            setShowDeleteModal(false);
-
-            window.dispatchEvent(new CustomEvent('accounts-updated'));
-            window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-
-            alert(`✅ Successfully deleted ${deletedCount} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
-        } catch (error) {
-            console.error('Error deleting transactions:', error);
-            alert('Error deleting transactions: ' + error.message);
-        } finally {
-            setIsDeleting(false);
-        }
-    };
-
     useEffect(() => {
         if (id) {
             loadAccountData(id);
         }
     }, [id]);
+
+    useEffect(() => {
+        const onAccountsUpdated = () => {
+            if (account?.id) {
+                loadScheduledTransactions(account.id);
+            }
+        };
+        window.addEventListener('accounts-updated', onAccountsUpdated);
+        return () => window.removeEventListener('accounts-updated', onAccountsUpdated);
+    }, [account?.id]);
 
     useEffect(() => {
         if (!categories?.length) return;
@@ -1227,7 +1171,7 @@ const AccountDetailPage = () => {
             }
 
             await loadCategories();
-            await loadScheduledTransactions();
+            await loadScheduledTransactions(accountId);
         } catch (error) {
             console.error('Error loading account data:', error);
         } finally {
@@ -1267,15 +1211,13 @@ const AccountDetailPage = () => {
 
         let transactionAmount = 0;
 
-        // Handle credit card transfer
-        if (transactionForm.isTransfer && selectedCreditCardCategory && account.type !== 'credit') {
-            return await createCreditCardTransferTransaction(amountValue, userId);
-        }
-
-        // Handle loan payment (YNAB-style with interest calculation)
-        if (transactionForm.isTransfer && isLoanPayment && selectedLoanAccount) {
-            const result = await createLoanPaymentTransaction(amountValue, userId);
-            return result.newBalance;
+        // Handle account-to-account transfer (including credit card payments)
+        if (transactionForm.isTransfer && transactionForm.transferAccountId) {
+            if (isLoanPayment && selectedLoanAccount) {
+                const result = await createLoanPaymentTransaction(amountValue, userId);
+                return result.newBalance;
+            }
+            return await createLinkedAccountTransfer(amountValue, userId);
         }
 
         // Handle regular transaction
@@ -1505,6 +1447,132 @@ const AccountDetailPage = () => {
         }
     }, [transactionsPage, totalTransactionPages]);
 
+    const registerTransactionsForSelection = useMemo(
+        () => (allTransactions.length ? allTransactions : transactions),
+        [allTransactions, transactions],
+    );
+
+    useEffect(() => {
+        setSelectedTransactions(new Set());
+    }, [id]);
+
+    useEffect(() => {
+        setSelectedTransactions((prev) => {
+            const pruned = pruneTransactionSelection(prev, registerTransactionsForSelection);
+            if (pruned.size === prev.size) {
+                let unchanged = true;
+                for (const entry of prev) {
+                    if (!pruned.has(entry)) {
+                        unchanged = false;
+                        break;
+                    }
+                }
+                if (unchanged) return prev;
+            }
+            return pruned;
+        });
+    }, [registerTransactionsForSelection]);
+
+    const handleSelectTransaction = useCallback((transactionId) => {
+        const key = normalizeTransactionId(transactionId);
+        if (!key) return;
+        setSelectedTransactions((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
+    }, []);
+
+    const handleSelectAll = useCallback(() => {
+        const scopeIds = sortedTransactions
+            .map((t) => normalizeTransactionId(t.id))
+            .filter(Boolean);
+        if (!scopeIds.length) return;
+        setSelectedTransactions((prev) => {
+            const next = new Set(prev);
+            const allScopeSelected = scopeIds.every((entry) => next.has(entry));
+            if (allScopeSelected) {
+                scopeIds.forEach((entry) => next.delete(entry));
+            } else {
+                scopeIds.forEach((entry) => next.add(entry));
+            }
+            return next;
+        });
+    }, [sortedTransactions]);
+
+    const effectiveSelectedCount = useMemo(
+        () => countSelectedInList(selectedTransactions, registerTransactionsForSelection),
+        [selectedTransactions, registerTransactionsForSelection],
+    );
+
+    const selectedTransactionsListForDelete = useMemo(
+        () =>
+            registerTransactionsForSelection.filter((t) =>
+                isTransactionSelected(selectedTransactions, t.id),
+            ),
+        [registerTransactionsForSelection, selectedTransactions],
+    );
+
+    const handleDeleteSelected = useCallback(() => {
+        if (selectedTransactionsListForDelete.length === 0) {
+            alert('Please select at least one transaction to delete.');
+            return;
+        }
+        setShowDeleteModal(true);
+    }, [selectedTransactionsListForDelete.length]);
+
+    const confirmDelete = useCallback(async () => {
+        setIsDeleting(true);
+        try {
+            const userResult = await window.electronAPI.getCurrentUser();
+            if (!userResult?.success || !userResult?.data) {
+                alert('Please log in to delete transactions');
+                return;
+            }
+
+            const userId = userResult.data.id;
+            const selectedIds = selectedTransactionsListForDelete.map((t) => t.id);
+
+            if (!selectedIds.length) {
+                alert('Please select at least one transaction to delete.');
+                return;
+            }
+
+            if (!window.electronAPI?.bulkDeleteTransactions) {
+                throw new Error('Bulk delete is not available. Restart the app and try again.');
+            }
+
+            const deleteResult = await window.electronAPI.bulkDeleteTransactions(selectedIds);
+            if (!deleteResult?.success) {
+                throw new Error(deleteResult?.error || 'Bulk delete failed');
+            }
+
+            const deletedCount = deleteResult.data?.deleted ?? selectedIds.length;
+
+            await loadAccountData(account.id);
+
+            const summary = await window.electronAPI.getAccountsSummary(userId);
+            const refreshed = summary?.success && summary.data
+                ? summary.data.find((a) => a.id === account.id)
+                : null;
+            const newBalance = refreshed != null ? refreshed.balance : account.balance;
+
+            setSelectedTransactions(new Set());
+            setShowDeleteModal(false);
+
+            window.dispatchEvent(new CustomEvent('accounts-updated'));
+            window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+
+            alert(`✅ Successfully deleted ${deletedCount} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
+        } catch (error) {
+            console.error('Error deleting transactions:', error);
+            alert('Error deleting transactions: ' + error.message);
+        } finally {
+            setIsDeleting(false);
+        }
+    }, [account?.id, selectedTransactionsListForDelete]);
+
     const transactionRangeStart = totalTransactionCount === 0
         ? 0
         : (safeTransactionsPage - 1) * transactionsPerPage + 1;
@@ -1574,7 +1642,7 @@ const AccountDetailPage = () => {
                     <div style={styles.loanViewInfoContent}>
                         <strong>📋 Viewing a Loan Account:</strong><br />
                         To make a payment to this loan, you need to use your <strong>checking or savings account</strong>.<br />
-                        <code style={styles.codeExample}>Transfer: {account.name}</code><br />
+                        <code style={styles.codeExample}>{formatPaymentPayeeName(account.name)}</code><br />
                         The system will automatically calculate interest (first payment of month) and apply the rest to principal.
                     </div>
                 </div>
@@ -1585,7 +1653,7 @@ const AccountDetailPage = () => {
                 <div style={styles.loanPaymentTipBanner}>
                     <div style={styles.loanPaymentTipIcon}>💡</div>
                     <div style={styles.loanPaymentTipContent}>
-                        <strong>Make a Loan Payment:</strong> Select a transfer from the Payee dropdown to record a payment. Interest will be calculated automatically (first payment of month only).
+                        <strong>Make a Loan Payment:</strong> Choose <strong>Payment: to …</strong> in the Payee dropdown. Interest is calculated automatically (first payment of month only).
                     </div>
                 </div>
             )}
@@ -1636,15 +1704,18 @@ const AccountDetailPage = () => {
                                         <div style={styles.scheduledActions}>
                                             <button
                                                 onClick={() => handleApproveScheduled(tx)}
-                                                style={styles.approveButton}
-                                                disabled={refreshing}
+                                                style={{
+                                                    ...styles.approveButton,
+                                                    ...(approvingScheduledId === tx.id ? styles.approveButtonBusy : {}),
+                                                }}
+                                                disabled={!!approvingScheduledId || refreshing}
                                             >
-                                                ✅ Approve
+                                                {approvingScheduledId === tx.id ? '⏳ Approving…' : '✅ Approve'}
                                             </button>
                                             <button
                                                 onClick={() => handleRejectScheduled(tx)}
                                                 style={styles.rejectButton}
-                                                disabled={refreshing}
+                                                disabled={!!approvingScheduledId || refreshing}
                                             >
                                                 ❌ Reject
                                             </button>
@@ -1668,12 +1739,12 @@ const AccountDetailPage = () => {
                     </p>
                 </div>
                 <div style={styles.headerButtons}>
-                    {selectedTransactions.size > 0 && (
+                    {effectiveSelectedCount > 0 && (
                         <button
                             onClick={handleDeleteSelected}
                             style={styles.deleteSelectedButton}
                         >
-                            🗑️ Delete Selected ({selectedTransactions.size})
+                            🗑️ Delete Selected ({effectiveSelectedCount})
                         </button>
                     )}
                     <button
@@ -1795,9 +1866,10 @@ const AccountDetailPage = () => {
                             onToggleSelect={(txId) => handleSelectTransaction(txId)}
                             onSelectAll={handleSelectAll}
                             allSelected={
-                                selectedTransactions.size === paginatedTransactions.length &&
                                 paginatedTransactions.length > 0 &&
-                                paginatedTransactions.every((t) => selectedTransactions.has(t.id))
+                                paginatedTransactions.every((t) =>
+                                    isTransactionSelected(selectedTransactions, t.id),
+                                )
                             }
                             editingId={editingTransactionId}
                             renderPayeeExtra={(tx) => (
@@ -1823,7 +1895,6 @@ const AccountDetailPage = () => {
                                 const editCategories = categories.filter(
                                     (cat) => cat && !isCategoryArchived(cat)
                                 );
-                                const isOutflow = tx.amount < 0;
                                 return (
                                     <tr key={tx.id} style={{ background: 'rgba(16, 185, 129, 0.08)' }}>
                                         <td style={styles.tableEditCell}>
@@ -1861,28 +1932,38 @@ const AccountDetailPage = () => {
                                             </select>
                                         </td>
                                         <td style={styles.tableEditCell}>
-                                            {isOutflow ? (
-                                                <input
-                                                    type="number"
-                                                    value={editFormData.amount}
-                                                    onChange={(e) => handleEditChange('amount', e.target.value)}
-                                                    style={styles.editInput}
-                                                    step="0.01"
-                                                    min="0"
-                                                />
-                                            ) : null}
+                                            <input
+                                                type="number"
+                                                value={editFormData.type === 'outflow' ? editFormData.amount : ''}
+                                                onChange={(e) =>
+                                                    setEditFormData((prev) => ({
+                                                        ...prev,
+                                                        type: 'outflow',
+                                                        amount: e.target.value,
+                                                    }))
+                                                }
+                                                style={styles.editInput}
+                                                step="0.01"
+                                                min="0"
+                                                placeholder="0.00"
+                                            />
                                         </td>
                                         <td style={styles.tableEditCell}>
-                                            {!isOutflow ? (
-                                                <input
-                                                    type="number"
-                                                    value={editFormData.amount}
-                                                    onChange={(e) => handleEditChange('amount', e.target.value)}
-                                                    style={styles.editInput}
-                                                    step="0.01"
-                                                    min="0"
-                                                />
-                                            ) : null}
+                                            <input
+                                                type="number"
+                                                value={editFormData.type === 'inflow' ? editFormData.amount : ''}
+                                                onChange={(e) =>
+                                                    setEditFormData((prev) => ({
+                                                        ...prev,
+                                                        type: 'inflow',
+                                                        amount: e.target.value,
+                                                    }))
+                                                }
+                                                style={styles.editInput}
+                                                step="0.01"
+                                                min="0"
+                                                placeholder="0.00"
+                                            />
                                         </td>
                                         <td style={styles.tableEditCell}>
                                             <button
@@ -1973,7 +2054,7 @@ const AccountDetailPage = () => {
                             </div>
 
                             {/* Manual Payee Input (shown when "Other" is selected or payee needs manual entry) */}
-                            {(transactionForm.payee === '' || (transactionForm.payee && !payees.transferPayees.some(p => p.name === transactionForm.payee) &&
+                            {(transactionForm.payee === '' || (transactionForm.payee && !getAllRoutingPayees(payees).some(p => p.name === transactionForm.payee) &&
                              !payees.regularPayees.some(p => p.name === transactionForm.payee))) && (
                                 <div style={styles.formGroup}>
                                     <label style={styles.label}>Enter Payee Name</label>
@@ -2173,7 +2254,7 @@ const AccountDetailPage = () => {
 
                         <div style={styles.modalBody}>
                             <p style={styles.confirmText}>
-                                Are you sure you want to delete <strong>{selectedTransactions.size}</strong> transaction(s)?
+                                Are you sure you want to delete <strong>{effectiveSelectedCount}</strong> transaction(s)?
                             </p>
                             <div style={styles.confirmDetails}>
                                 <div style={styles.confirmDetailItem}>
@@ -2181,7 +2262,7 @@ const AccountDetailPage = () => {
                                     <strong>{formatCurrency(account.balance)}</strong>
                                 </div>
                                 {(() => {
-                                    const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
+                                    const selectedTransactionsList = selectedTransactionsListForDelete;
                                     const totalImpact = selectedTransactionsList.reduce((sum, t) => sum + calculateBalanceChangeForTransaction(t), 0);
                                     return (
                                         <div style={styles.confirmDetailItem}>
@@ -2195,7 +2276,13 @@ const AccountDetailPage = () => {
                                 <div style={styles.confirmDetailItem}>
                                     <span>New Balance:</span>
                                     <strong style={{ color: '#4ADE80' }}>
-                                        {formatCurrency(account.balance + transactions.filter(t => selectedTransactions.has(t.id)).reduce((sum, t) => sum + calculateBalanceChangeForTransaction(t), 0))}
+                                        {formatCurrency(
+                                            account.balance +
+                                                selectedTransactionsListForDelete.reduce(
+                                                    (sum, t) => sum + calculateBalanceChangeForTransaction(t),
+                                                    0,
+                                                ),
+                                        )}
                                     </strong>
                                 </div>
                             </div>
@@ -2217,7 +2304,7 @@ const AccountDetailPage = () => {
                                 onClick={confirmDelete}
                                 disabled={isDeleting}
                             >
-                                {isDeleting ? 'Deleting...' : `Delete ${selectedTransactions.size} Transaction(s)`}
+                                {isDeleting ? 'Deleting...' : `Delete ${effectiveSelectedCount} Transaction(s)`}
                             </button>
                         </div>
                     </div>
@@ -2453,6 +2540,10 @@ const styles = {
             opacity: 0.5,
             cursor: 'not-allowed',
         },
+    },
+    approveButtonBusy: {
+        opacity: 0.85,
+        cursor: 'wait',
     },
     rejectButton: {
         padding: '0.25rem 0.75rem',

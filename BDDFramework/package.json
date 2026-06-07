@@ -1,0 +1,15 @@
+{
+  "name": "intentflow-bdd-framework",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BDD-style orchestration tests for IntentFlow budget flows (Smart Assign, Fund Underfunded, Unassign Month).",
+  "scripts": {
+    "test": "playwright test",
+    "test:budget-flow": "playwright test specs/budget-flow-orchestration.spec.js",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}

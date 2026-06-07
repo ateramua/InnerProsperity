@@ -48,6 +48,11 @@ export function isAccountActive(account) {
   return account.is_active !== 0 && account.is_active !== false;
 }
 
+export function isAccountHidden(account) {
+  if (!account) return false;
+  return account.is_hidden === 1 || account.is_hidden === true || account.is_hidden === '1';
+}
+
 /** @deprecated Use isAccountActive */
 export const isCashAccountActive = isAccountActive;
 
@@ -61,8 +66,16 @@ export function filterActiveAccounts(list) {
   return list.filter((a) => a && isAccountActive(a));
 }
 
-/** Active checking + savings (and savings-like types) for the cash accounts page. */
+/** Active checking + savings for UI lists (excludes hidden accounts). */
 export function filterActiveCashAccounts(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (a) => a && isAccountActive(a) && isCashAccountType(a) && !isAccountHidden(a)
+  );
+}
+
+/** All active cash accounts including hidden — for RTA / budget cash totals. */
+export function filterBudgetCashAccounts(list) {
   if (!Array.isArray(list)) return [];
   return list.filter((a) => a && isAccountActive(a) && isCashAccountType(a));
 }
@@ -217,7 +230,7 @@ export function getBudgetCashBalanceForAccount(account) {
 /** Sum on-budget checking + savings for Ready to Assign numerator. */
 export function sumTotalBudgetCash(accounts) {
   if (!Array.isArray(accounts)) return 0;
-  return filterActiveCashAccounts(accounts).reduce(
+  return filterBudgetCashAccounts(accounts).reduce(
     (sum, acc) => sum + getBudgetCashBalanceForAccount(acc),
     0
   );

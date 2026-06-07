@@ -143,7 +143,7 @@ async function printReport(db, userId, monthKey) {
   console.log(`Month key (view):     ${monthKey}`);
   console.log(`Cash (checking+savings): $${cash.toFixed(2)}`);
   console.log(`Σ Assigned (all months): $${global.totalAssigned.toFixed(2)}`);
-  console.log(`Ready to Assign (global): $${global.readyToAssign.toFixed(2)}  (= cash − Σ assigned)`);
+  console.log(`Ready to Assign (global): $${global.readyToAssign.toFixed(2)}  (persisted unallocated pool)`);
   console.log(`Reserved in future:     $${global.futureAssigned.toFixed(2)}`);
   console.log(`Σ Category Available (${monthKey}): $${sumAvailable.toFixed(2)}  (this month only)`);
   console.log(`Legacy RTA (cash − Σ avail this month): $${legacyRta.toFixed(2)}  [deprecated view]`);
@@ -238,15 +238,32 @@ async function printReport(db, userId, monthKey) {
     );
   }
 
+  const globalReadyToAssign = global.readyToAssign;
+
   console.log('');
   console.log('=== Fund trace summary ===');
-  console.log(`Every dollar in cash is accounted for:`);
-  console.log(`  $${readyToAssign.toFixed(2)} Ready to Assign`);
+  console.log('Current-month envelope check (legacy view):');
+  console.log(`  $${legacyRta.toFixed(2)} Ready to Assign  (cash − Σ available this month)`);
   console.log(`+ $${sumAvailable.toFixed(2)} in category Available envelopes`);
   console.log(`= $${cash.toFixed(2)} total cash`);
   console.log('');
+  console.log('Global pool check (YNAB-style, used by Prosperity Map):');
+  console.log(`  $${globalReadyToAssign.toFixed(2)} Ready to Assign  (persisted unallocated pool)`);
+  console.log(`  Σ assigned all months: $${global.totalAssigned.toFixed(2)}`);
+  console.log(`  Reserved in future months: $${global.futureAssigned.toFixed(2)}`);
+  console.log(`  Formula gap (legacy − global): $${roundMoney(legacyRta - globalReadyToAssign).toFixed(2)}`);
+  console.log('');
 
-  return { cash, sumAvailable, readyToAssign, orphanSum, orphanRows };
+  return {
+    cash,
+    sumAvailable,
+    readyToAssign: globalReadyToAssign,
+    globalReadyToAssign,
+    legacyReadyToAssign: legacyRta,
+    global,
+    orphanSum,
+    orphanRows,
+  };
 }
 
 async function backupDatabase(dbPath) {
@@ -373,7 +390,9 @@ async function main() {
       console.log('\nConsolidate (dry run): converts Available → Assigned with zero carryover.');
       console.log('Pass --apply to execute (creates DB backup first).');
     } else {
-      const result = await consolidateAvailableIntoMonthAssignments(db, userId, monthKey);
+      const result = await consolidateAvailableIntoMonthAssignments(db, userId, monthKey, {
+        userIntentAssignment: true,
+      });
       console.log(`\nConsolidated ${result.conversions.length} categories into assignment records.`);
       for (const row of result.conversions.slice(0, 25)) {
         console.log(`  • ${row.name}: Assigned $${Number(row.assigned).toFixed(2)}, Available $${Number(row.available).toFixed(2)}`);
@@ -395,7 +414,9 @@ async function main() {
       console.log('\nRollback (dry run): zeros envelopes from this month forward → funds return to Ready to Assign.');
       console.log('Pass --apply to execute (creates DB backup first).');
     } else {
-      const result = await resetEnvelopesFromMonth(db, userId, monthKey);
+      const result = await resetEnvelopesFromMonth(db, userId, monthKey, {
+        userIntentAssignment: true,
+      });
       console.log(`\nReset ${result.categoriesReset} categories from ${result.monthKey} forward.`);
       await printReport(db, userId, monthKey);
       await printDetailedAudit(db, userId, monthKey);

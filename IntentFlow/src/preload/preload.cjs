@@ -3,11 +3,36 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 console.log('🔌 Preload script loaded');
 
+/** Mutable BDD hooks — contextBridge exports cannot be patched from page.evaluate. */
+const bddImportHooks = {
+  pickResult: null,
+  importContent: null,
+};
+
 ipcRenderer.on('accounts-updated', (_event, detail) => {
   window.dispatchEvent(new CustomEvent('accounts-updated', { detail }));
 });
 
 try {
+  contextBridge.exposeInMainWorld('__intentflowBdd', {
+    setTransactionImportPick: (result) => {
+      bddImportHooks.pickResult = result;
+    },
+    clearTransactionImportPick: () => {
+      bddImportHooks.pickResult = null;
+    },
+    setTransactionImportContent: (content) => {
+      bddImportHooks.importContent = content == null ? null : String(content);
+    },
+    clearTransactionImportContent: () => {
+      bddImportHooks.importContent = null;
+    },
+    clearTransactionImportHooks: () => {
+      bddImportHooks.pickResult = null;
+      bddImportHooks.importContent = null;
+    },
+  });
+
   contextBridge.exposeInMainWorld('electronAPI', {
 
     // ==================== PLAID ====================
@@ -124,12 +149,26 @@ try {
     getAccountTransactions: (accountId) =>
       ipcRenderer.invoke('getAccountTransactions', accountId),
 
-    pickTransactionImportFile: () =>
-      ipcRenderer.invoke('transactions:pickImportFile'),
-    previewTransactionImport: (payload) =>
-      ipcRenderer.invoke('transactions:previewImport', payload),
-    executeTransactionImport: (payload) =>
-      ipcRenderer.invoke('transactions:executeImport', payload),
+    pickTransactionImportFile: () => {
+      if (bddImportHooks.pickResult) {
+        return Promise.resolve(bddImportHooks.pickResult);
+      }
+      return ipcRenderer.invoke('transactions:pickImportFile');
+    },
+    previewTransactionImport: (payload) => {
+      const merged =
+        bddImportHooks.importContent != null
+          ? { ...payload, content: bddImportHooks.importContent }
+          : payload;
+      return ipcRenderer.invoke('transactions:previewImport', merged);
+    },
+    executeTransactionImport: (payload) => {
+      const merged =
+        bddImportHooks.importContent != null
+          ? { ...payload, content: bddImportHooks.importContent }
+          : payload;
+      return ipcRenderer.invoke('transactions:executeImport', merged);
+    },
     getImportCategoryMappings: (institutionKey) =>
       ipcRenderer.invoke('import-get-category-mappings', { institutionKey: institutionKey || '' }),
     listImportCategoryMappings: () => ipcRenderer.invoke('import-list-category-mappings'),
@@ -154,8 +193,10 @@ try {
     createAccount: (accountData) => ipcRenderer.invoke('accounts:create', accountData),
     updateAccount: (id, userId, updates) =>
       ipcRenderer.invoke('accounts:update', id, userId, updates),
-    deleteAccount: (id, userId) =>
-      ipcRenderer.invoke('accounts:delete', id, userId),
+    deleteAccount: (id, userId, opts) =>
+      ipcRenderer.invoke('accounts:delete', id, userId, opts),
+    applyManualBalanceAdjustment: (payload) =>
+      ipcRenderer.invoke('accounts:applyManualAdjustment', payload),
     ensureCreditCardPaymentCategories: (userId) =>
       ipcRenderer.invoke('accounts:ensureCreditCardPaymentCategories', userId),
     permanentlyDeleteCreditAccount: (id, userId) =>
@@ -217,6 +258,18 @@ try {
 
     resetBudgetEnvelopes: (userId, monthKey) =>
       ipcRenderer.invoke('budget:resetEnvelopes', userId, monthKey),
+
+    setReadyToAssignPool: (userId, targetBalance) =>
+      ipcRenderer.invoke('budget:setReadyToAssignPool', userId, targetBalance),
+
+    reconcileBudgetPoolEnvelope: (userId) =>
+      ipcRenderer.invoke('budget:reconcilePoolEnvelope', userId),
+
+    getBudgetIntegrityState: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:getIntegrityState', userId, monthKey),
+
+    scopeActiveAccountsExcept: (userId, keepAccountNames) =>
+      ipcRenderer.invoke('budget:scopeActiveAccounts', userId, keepAccountNames),
 
     unassignMonthBudget: (userId, monthKey) =>
       ipcRenderer.invoke('budget:unassignMonth', userId, monthKey),
@@ -288,6 +341,7 @@ try {
     // Scheduled transactions
     getScheduledTransactions: (accountId) => ipcRenderer.invoke('scheduled-transactions:get', accountId),
     addScheduledTransaction: (data) => ipcRenderer.invoke('scheduled-transactions:add', data),
+    postScheduledTransaction: (id) => ipcRenderer.invoke('scheduled-transactions:post', id),
     deleteScheduledTransaction: (id) => ipcRenderer.invoke('scheduled-transactions:delete', id),
 
     getYearlyForecast: (userId, years) =>
@@ -295,6 +349,21 @@ try {
 
     getRecommendations: (userId) =>
       ipcRenderer.invoke('forecast:recommendations', userId),
+
+    createForecastShare: (payload) =>
+      ipcRenderer.invoke('cash-forecast:share:create', payload),
+
+    getForecastShare: (shareId) =>
+      ipcRenderer.invoke('cash-forecast:share:get', shareId),
+
+    getForecastRecurringPrefs: () =>
+      ipcRenderer.invoke('cash-forecast:recurring-prefs:get'),
+
+    setForecastRecurringPref: (recurringId, status, override) =>
+      ipcRenderer.invoke('cash-forecast:recurring-prefs:set', recurringId, status, override),
+
+    listCashForecastScheduled: () =>
+      ipcRenderer.invoke('cash-forecast:scheduled:list'),
 
     // ==================== MONEY MAP ====================
     buildMoneyMap: (userId) =>
@@ -397,6 +466,11 @@ try {
 
     // ==================== UTIL ====================
     ping: () => ipcRenderer.invoke('ping'),
+
+    // ==================== WINDOW (automation / E2E) ====================
+    maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
+    isWindowMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+    quitApp: () => ipcRenderer.invoke('app:quit'),
   });
 
   console.log('✅ electronAPI successfully exposed');

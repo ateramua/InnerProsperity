@@ -610,7 +610,11 @@ async function applyImport(db, userId, monthKey, previewItems, options, deps) {
           userId,
           categoryId,
           targetMonth,
-          normalized.assigned
+          normalized.assigned,
+          {
+            auditSource: 'table_import',
+            userIntentAssignment: true,
+          }
         );
         result.applied++;
       }

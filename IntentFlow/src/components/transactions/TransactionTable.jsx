@@ -9,6 +9,7 @@ import {
   getTransactionPayee,
 } from '../../utils/transactionDisplayUtils.jsx';
 import { InlinePayeeField, InlineCategoryField } from './InlineTransactionFields.jsx';
+import { isTransactionSelected, normalizeTransactionId } from '../../utils/transactionSelectionUtils.jsx';
 
 const styles = {
   container: {
@@ -277,9 +278,9 @@ function TransactionTable({
               const selected = isRowSelected
                 ? isRowSelected(tx)
                 : selectedIds instanceof Set
-                  ? selectedIds.has(tx.id)
+                  ? isTransactionSelected(selectedIds, tx.id)
                   : Array.isArray(selectedIds)
-                    ? selectedIds.includes(tx.id)
+                    ? selectedIds.some((id) => normalizeTransactionId(id) === normalizeTransactionId(tx.id))
                     : false;
               const highlighted = isRowHighlighted ? isRowHighlighted(tx) : false;
               const focused =

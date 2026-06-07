@@ -245,20 +245,10 @@ const PropertyMapView = ({ onNavigate }) => {
         console.error(`Spending category ${spendingCategoryId} not found`);
         return false;
       }
-      
-      const newSpendingAssigned = (spendingCategory.assigned || 0) - amount;
 
       const ccMonth = budgetMonthKeyOpt || formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
 
-      await window.electronAPI.updateCategory(
-        spendingCategoryId,
-        {
-          assigned: newSpendingAssigned,
-          budget_month: ccMonth
-        }
-      );
-
-      const newPaymentAssigned = (paymentCategory.assigned || 0) + amount;
+      const newPaymentAssigned = roundMoney((paymentCategory.assigned || 0) + amount);
 
       await window.electronAPI.updateCategory(
         paymentCategory.id,
@@ -486,6 +476,13 @@ const PropertyMapView = ({ onNavigate }) => {
   const getMonthAssignedTotal = (overrideRows = null) => {
     const active = getActiveBudgetCategories(overrideRows);
     return roundMoney(active.reduce((sum, cat) => sum + (Number(cat.assigned) || 0), 0));
+  };
+
+  const getMonthUnassignableTotal = (overrideRows = null) => {
+    const active = getActiveBudgetCategories(overrideRows);
+    return roundMoney(
+      active.reduce((sum, cat) => sum + Math.max(0, Number(cat.assigned) || 0), 0),
+    );
   };
 
   const updateMonthMetricsFromCategories = (categoriesOverride = null) => {
@@ -1608,16 +1605,16 @@ const PropertyMapView = ({ onNavigate }) => {
     });
 
     await loadCategoriesFromDB(0, { monthDate: monthKeyToLocalDate(monthKey) });
-    const monthAssignedTotal = getMonthAssignedTotal();
+    const monthUnassignableTotal = getMonthUnassignableTotal();
 
-    if (monthAssignedTotal <= 0) {
+    if (monthUnassignableTotal <= 0) {
       alert(`No assigned amounts to clear for ${monthLabel}.`);
       return;
     }
 
     if (
       !confirm(
-        `Unassign all ${formatCurrency(monthAssignedTotal)} from ${monthLabel}?\n\n` +
+        `Unassign all ${formatCurrency(monthUnassignableTotal)} from ${monthLabel}?\n\n` +
           `This clears Assigned for every category in this month and returns the same amount to Ready to Assign.`,
       )
     ) {
@@ -1631,7 +1628,7 @@ const PropertyMapView = ({ onNavigate }) => {
         throw new Error(res?.error || 'Unassign failed');
       }
 
-      const released = roundMoney(res.data?.totalReleased ?? monthAssignedTotal);
+      const released = roundMoney(res.data?.totalReleased ?? monthUnassignableTotal);
       const count = res.data?.categoriesUpdated ?? 0;
 
       const reloaded = await loadCategoriesFromDB(0, {
@@ -2681,7 +2678,10 @@ const PropertyMapView = ({ onNavigate }) => {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold uppercase tracking-[0.3em] text-[#F0F9FF]/65">Ready to Assign</p>
-                  <p className={`mt-3 text-4xl font-semibold ${budgetSummary.unassigned < 0 ? 'text-rose-400' : 'text-[#F0F9FF]'}`}>
+                  <p
+                    data-testid="pm-ready-to-assign"
+                    className={`mt-3 text-4xl font-semibold ${budgetSummary.unassigned < 0 ? 'text-rose-400' : 'text-[#F0F9FF]'}`}
+                  >
                     {budgetSummary.unassigned < 0 && <span className="mr-2" aria-hidden>⚠️</span>}
                     {formatCurrency(budgetSummary.unassigned)}
                   </p>
@@ -2746,6 +2746,7 @@ const PropertyMapView = ({ onNavigate }) => {
               <div className="mt-5 grid gap-3">
                 <Button
                   variant="pmSecondary"
+                  data-testid="pm-smart-assign-button"
                   disabled={isQuickAssigning || isMonthBudgetLoading}
                   onClick={() => void handleQuickAssign('smart')}
                 >
@@ -2753,6 +2754,7 @@ const PropertyMapView = ({ onNavigate }) => {
                 </Button>
                 <Button
                   variant="pmSecondary"
+                  data-testid="pm-fund-underfunded-button"
                   disabled={isQuickAssigning || isMonthBudgetLoading}
                   onClick={() => void handleQuickAssign('underfunded')}
                 >
@@ -2774,12 +2776,13 @@ const PropertyMapView = ({ onNavigate }) => {
                 </Button>
                 <Button
                   variant="pmSecondary"
-                  disabled={isUnassigningMonth || getMonthAssignedTotal() <= 0}
+                  data-testid="pm-unassign-month-button"
+                  disabled={isUnassigningMonth || getMonthUnassignableTotal() <= 0}
                   onClick={() => void handleUnassignMonth()}
                 >
                   {isUnassigningMonth
                     ? 'Unassigning…'
-                    : `↩ Unassign Month (${formatCurrency(getMonthAssignedTotal())})`}
+                    : `↩ Unassign Month (${formatCurrency(getMonthUnassignableTotal())})`}
                 </Button>
               </div>
             </div>
@@ -2801,6 +2804,7 @@ const PropertyMapView = ({ onNavigate }) => {
                   Budget month
                 </span>
                 <select
+                  data-testid="pm-budget-month-select"
                   value={selectedBudgetMonthKey}
                   onChange={(e) => setSelectedMonth(monthKeyToLocalDate(e.target.value))}
                   disabled={isMonthBudgetLoading || budgetMonthOptions.length === 0}

@@ -1,24 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-
-function normalizeTransferPayee(row) {
-  return {
-    id: row.id || `transfer_${row.transfer_account_id || row.transferAccountId}`,
-    name: row.name,
-    isTransfer: true,
-    transferAccountId: row.transfer_account_id ?? row.transferAccountId,
-    accountType: row.account_type ?? row.accountType,
-  };
-}
-
-function normalizeRegularPayee(row) {
-  return {
-    id: row.id,
-    name: row.name,
-    isTransfer: false,
-    transferAccountId: null,
-    usageCount: row.usage_count ?? row.usageCount,
-  };
-}
+import {
+  buildAccountPayeeOptions,
+  getAllRoutingPayees,
+  mapPayeesFromFormApi,
+  mapRoutingPayeeOption,
+  EMPTY_PAYEES_FORM,
+} from '../utils/transferPayeeUtils.jsx';
 
 export function serializePayeeOption(payee) {
   return JSON.stringify({
@@ -27,6 +14,8 @@ export function serializePayeeOption(payee) {
     isTransfer: Boolean(payee.isTransfer),
     transferAccountId: payee.transferAccountId ?? null,
     accountType: payee.accountType ?? null,
+    payeeKind: payee.payeeKind ?? null,
+    isPaymentPayee: Boolean(payee.isPaymentPayee),
   });
 }
 
@@ -42,7 +31,7 @@ export function parsePayeeOption(value) {
 export function findPayeeOptionByName(payees, payeeName) {
   const name = (payeeName || '').trim();
   if (!name) return null;
-  const all = [...(payees?.transferPayees || []), ...(payees?.regularPayees || [])];
+  const all = [...getAllRoutingPayees(payees), ...(payees?.regularPayees || [])];
   return all.find((p) => p.name === name) || null;
 }
 
@@ -54,16 +43,15 @@ async function fetchAllPayeesForForm() {
   if (sharedPayeesCachePromise) return sharedPayeesCachePromise;
 
   sharedPayeesCachePromise = (async () => {
-    const empty = { transferPayees: [], regularPayees: [] };
     if (!window.electronAPI?.getCurrentUser) {
-      sharedPayeesCache = empty;
-      return empty;
+      sharedPayeesCache = EMPTY_PAYEES_FORM;
+      return EMPTY_PAYEES_FORM;
     }
     const userResult = await window.electronAPI.getCurrentUser();
     const userId = userResult?.success ? userResult.data?.id : null;
     if (!userId) {
-      sharedPayeesCache = empty;
-      return empty;
+      sharedPayeesCache = EMPTY_PAYEES_FORM;
+      return EMPTY_PAYEES_FORM;
     }
 
     if (window.electronAPI.getPayeesForForm) {
@@ -72,10 +60,7 @@ async function fetchAllPayeesForForm() {
         currentAccountId: undefined,
       });
       if (res?.success && res.data) {
-        const data = {
-          transferPayees: (res.data.transferPayees || []).map(normalizeTransferPayee),
-          regularPayees: (res.data.regularPayees || []).map(normalizeRegularPayee),
-        };
+        const data = mapPayeesFromFormApi(res.data);
         sharedPayeesCache = data;
         return data;
       }
@@ -83,26 +68,26 @@ async function fetchAllPayeesForForm() {
 
     const accountsResult = await window.electronAPI.getAccountsSummary?.(userId);
     const allAccounts = accountsResult?.success ? accountsResult.data || [] : [];
-    const transferPayees = allAccounts
-      .filter((acc) => acc?.id != null)
-      .map((acc) =>
-        normalizeTransferPayee({
-          id: `transfer_${acc.id}`,
-          name: `Transfer: ${acc.name}`,
-          transfer_account_id: acc.id,
-          account_type: acc.type,
-        })
-      );
+    const built = buildAccountPayeeOptions(allAccounts, undefined);
+    const data = {
+      paymentPayees: built.paymentPayees.map((p) => mapRoutingPayeeOption(p)),
+      transferPayees: built.transferPayees.map((p) => mapRoutingPayeeOption(p)),
+      regularPayees: [],
+    };
 
-    let regularPayees = [];
     const payeesResult = await window.electronAPI.getPayees?.(userId);
     if (payeesResult?.success) {
-      regularPayees = (payeesResult.data || [])
+      data.regularPayees = (payeesResult.data || [])
         .filter((p) => !p.is_transfer_payee)
-        .map(normalizeRegularPayee);
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          isTransfer: false,
+          transferAccountId: null,
+          usageCount: p.usage_count ?? p.usageCount,
+        }));
     }
 
-    const data = { transferPayees, regularPayees };
     sharedPayeesCache = data;
     return data;
   })();
@@ -119,11 +104,23 @@ export function invalidateTransactionPayeesCache() {
 }
 
 export function filterTransferPayeesForAccount(payees, accountId) {
-  if (accountId == null) return payees?.transferPayees || [];
+  const regularPayees = payees?.regularPayees || [];
+  const paymentPayees = payees?.paymentPayees || [];
+  const transferPayees = payees?.transferPayees || [];
+
+  if (accountId == null) {
+    return { paymentPayees, transferPayees, regularPayees };
+  }
+
   const exclude = String(accountId);
-  return (payees?.transferPayees || []).filter(
-    (p) => String(p.transferAccountId) !== exclude
-  );
+  const filterList = (list) =>
+    (list || []).filter((p) => String(p.transferAccountId) !== exclude);
+
+  return {
+    paymentPayees: filterList(paymentPayees),
+    transferPayees: filterList(transferPayees),
+    regularPayees,
+  };
 }
 
 /**
@@ -131,28 +128,29 @@ export function filterTransferPayeesForAccount(payees, accountId) {
  * @param {string|null} excludeAccountId - when set, filters transfers client-side after shared load
  */
 export default function useTransactionPayees(excludeAccountId = null, { enabled = true } = {}) {
-  const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+  const [payees, setPayees] = useState({
+    paymentPayees: [],
+    transferPayees: [],
+    regularPayees: [],
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
     if (!enabled) return;
     if (!window.electronAPI?.getPayeesForForm && !window.electronAPI?.getCurrentUser) {
-      setPayees({ transferPayees: [], regularPayees: [] });
+      setPayees({ paymentPayees: [], transferPayees: [], regularPayees: [] });
       return;
     }
     setLoading(true);
     setError(null);
     try {
       const data = await fetchAllPayeesForForm();
-      setPayees({
-        transferPayees: filterTransferPayeesForAccount(data, excludeAccountId),
-        regularPayees: data.regularPayees || [],
-      });
+      setPayees(filterTransferPayeesForAccount(data, excludeAccountId));
     } catch (e) {
       console.error('useTransactionPayees:', e);
       setError(e.message || 'Failed to load payees');
-      setPayees({ transferPayees: [], regularPayees: [] });
+      setPayees({ paymentPayees: [], transferPayees: [], regularPayees: [] });
     } finally {
       setLoading(false);
     }

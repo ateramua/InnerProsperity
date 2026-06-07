@@ -1,6 +1,6 @@
 /**
  * Global Ready to Assign — shared pool across all budget months.
- * RTA = total cash − Σ assigned amounts (all months).
+ * RTA = persisted unallocated pool when provided, else total cash − Σ assigned (legacy).
  */
 
 export function roundMoney(n) {
@@ -29,7 +29,7 @@ export function normalizeMonthKey(monthKey) {
  * @param {string} currentMonthKey Calendar current month (anchor for "future")
  * @param {number} totalCash
  */
-export function computeGlobalBudgetSummary(rows, currentMonthKey, totalCash) {
+export function computeGlobalBudgetSummary(rows, currentMonthKey, totalCash, opts = {}) {
   const anchor = normalizeMonthKey(currentMonthKey);
   let totalAssigned = 0;
   let futureAssigned = 0;
@@ -60,7 +60,10 @@ export function computeGlobalBudgetSummary(rows, currentMonthKey, totalCash) {
   totalAssigned = roundMoney(totalAssigned);
   futureAssigned = roundMoney(futureAssigned);
   const cash = roundMoney(totalCash);
-  const readyToAssign = roundMoney(cash - totalAssigned);
+  const readyToAssign =
+    opts.readyToAssignBalance != null && Number.isFinite(Number(opts.readyToAssignBalance))
+      ? roundMoney(opts.readyToAssignBalance)
+      : roundMoney(cash - totalAssigned);
 
   futureBreakdown.sort((a, b) => {
     if (a.monthKey !== b.monthKey) return a.monthKey.localeCompare(b.monthKey);

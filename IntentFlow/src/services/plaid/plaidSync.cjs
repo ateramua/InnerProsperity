@@ -579,7 +579,16 @@ async function syncTransactionsForItem(itemId, deps) {
           accountId,
           date: plaidTx.date,
           delta: processed.creditReserveDelta,
+          userIntentAssignment: true,
         });
+      }
+      const poolTx = await db.get(
+        'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+        [inserted.id, uid]
+      );
+      if (poolTx) {
+        const readyToAssignPoolService = require('../budget/readyToAssignPoolService.cjs');
+        await readyToAssignPoolService.syncPoolForTransaction(db, uid, poolTx, 'apply');
       }
     }
     updatedAccounts.add(accountId);
@@ -656,10 +665,12 @@ async function syncTransactionsForItem(itemId, deps) {
 
   for (const plaidTx of removed) {
     const existingTx = await db.get(
-      `SELECT account_id FROM transactions WHERE plaid_transaction_id = ?`,
+      `SELECT * FROM transactions WHERE plaid_transaction_id = ?`,
       [plaidTx.transaction_id]
     );
     if (existingTx) {
+      const readyToAssignPoolService = require('../budget/readyToAssignPoolService.cjs');
+      await readyToAssignPoolService.syncPoolForTransaction(db, userId, existingTx, 'reverse');
       await db.run(
         `UPDATE transactions SET
           is_deleted = 1,

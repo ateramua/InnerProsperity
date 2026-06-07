@@ -13,6 +13,10 @@ class UserService {
   init() {
     const dbPath = getDatabasePath();
     this.db = new sqlite3.Database(dbPath);
+    this.db.serialize(() => {
+      this.db.run('PRAGMA journal_mode = WAL');
+      this.db.run('PRAGMA busy_timeout = 10000');
+    });
   }
 
   // Hash password with salt

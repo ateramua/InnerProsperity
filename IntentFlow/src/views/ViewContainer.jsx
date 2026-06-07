@@ -7,7 +7,6 @@ import AccountDetailView from './AccountDetailView';
 import MoneyMapView from './MoneyMapView';
 import ProsperityOptimizerView from './ProsperityOptimizerView';
 import CashFlowView from './CashFlowView';
-import CashFlowForecast from './CashFlowForecast';
 import StrategicInvestmentPortfolio from './StrategicInvestmentPortfolio';
 import CreditCardManager from './CreditCardManager';
 import CreditCardPlanner from './CreditCardPlanner';
@@ -809,19 +808,9 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
         );
 
       case 'cashflow':
-        return (
-          <CashFlowView
-            budgetData={budgetData}
-            transactions={transactions}
-            accounts={accounts}
-            creditCards={creditCards}
-            loans={loans}
-          />
-        );
-
       case 'cashflow-forecast':
         return (
-          <CashFlowForecast
+          <CashFlowView
             budgetData={budgetData}
             transactions={transactions}
             accounts={accounts}

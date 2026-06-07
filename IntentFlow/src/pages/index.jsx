@@ -110,7 +110,15 @@ export default function HomePage() {
     };
   }, []);
 
-  // Redirect to login if not authenticated
+  // Open view from URL query (?view=cashflow&share=...)
+  useEffect(() => {
+    if (!router.isReady) return;
+    const view = router.query?.view;
+    if (typeof view === 'string' && view) {
+      setCurrentView(view);
+    }
+  }, [router.isReady, router.query?.view]);
+
   useEffect(() => {
     if (!loading && !isAuthenticated) {
       router.replace('/login');

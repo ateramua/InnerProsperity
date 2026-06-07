@@ -130,6 +130,9 @@ async function runMigrations(existingDb) {
             '029_transaction_categorization.cjs',
             '030_category_ml_models.cjs',
             '031_payee_category_learning.cjs',
+            '032_forecast_shares_and_prefs.cjs',
+            '033_accounts_hidden_carryover.cjs',
+            '034_user_budget_pool.cjs',
         ];
 
         for (const migration of migrations) {

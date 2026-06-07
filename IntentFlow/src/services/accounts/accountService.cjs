@@ -226,7 +226,7 @@ class AccountService {
                 'next_payment_date', 'nextPaymentDate',
                 'loan_type', 'paired_category_id',
                 'rewards_program', 'transfer_limit', 'linked_savings_account',
-                'sync_enabled', 'balance_locked'
+                'sync_enabled', 'balance_locked', 'is_hidden'
             ];
 
             const setClauses = [];
@@ -298,12 +298,30 @@ class AccountService {
      * we unlink the Plaid bridge locally and keep transactions. Non-cash Plaid accounts
      * must be removed via Linked Banks.
      */
-    async deleteAccount(id, userId) {
+    async deleteAccount(id, userId, opts = {}) {
         const db = await this.getDb();
         try {
             const existing = await this.getAccountById(id, userId);
             if (!existing) {
                 return false;
+            }
+
+            const { computeAccountBalances } = require('../../utils/accountBalanceEngine.cjs');
+            const txs = await db.all(
+                `SELECT * FROM transactions
+                 WHERE CAST(account_id AS TEXT) = CAST(? AS TEXT) AND user_id = ?
+                   AND (is_deleted IS NULL OR is_deleted = 0)`,
+                [id, userId]
+            );
+            const balances = computeAccountBalances(existing, txs);
+            const working = Number(balances.working_balance) || 0;
+            if (Math.abs(working) > 0.005 && !opts.force) {
+                const err = new Error(
+                    'Transfer or categorize funds to zero the account balance before removing it.'
+                );
+                err.code = 'NON_ZERO_BALANCE';
+                err.balance = working;
+                throw err;
             }
 
             const source = String(existing.source || 'manual').toLowerCase();
@@ -516,6 +534,7 @@ class AccountService {
                 external_mask: account.external_mask || null,
                 sync_enabled: account.sync_enabled !== 0,
                 balance_locked: account.balance_locked === 1,
+                is_hidden: account.is_hidden === 1,
                 plaid_linked: false,
             }));
 

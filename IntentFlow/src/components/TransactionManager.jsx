@@ -22,12 +22,19 @@ import useTransactionPayees, { invalidateTransactionPayeesCache } from '../hooks
 import { TransactionCategorySelectOptions } from './transactions/TransactionCategorySelectOptions.jsx';
 import {
   categorySelectValueForTransaction,
+  getTransactionEditAmountMagnitude,
+  getTransactionEditType,
   isReadyToAssignSentinel,
   normalizeCategoryIdForStorage,
   READY_TO_ASSIGN_CATEGORY_ID,
   READY_TO_ASSIGN_VALIDATION_MSG,
   validateReadyToAssignSelection,
 } from '../utils/readyToAssignCategory.jsx';
+import {
+  countSelectedInList,
+  normalizeTransactionId,
+  pruneTransactionSelection,
+} from '../utils/transactionSelectionUtils.jsx';
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 const VIRTUAL_ROW_HEIGHT = 52;
@@ -421,8 +428,8 @@ const TransactionManager = ({
       date: transaction.date,
       payee: transaction.payee || transaction.description || '',
       categoryId: categorySelectValueForTransaction(transaction),
-      amount: Math.abs(transaction.amount),
-      type: transaction.amount < 0 ? 'outflow' : 'inflow',
+      amount: getTransactionEditAmountMagnitude(transaction),
+      type: getTransactionEditType(transaction),
       memo: transaction.memo || '',
       cleared: transaction.is_cleared === 1 || transaction.cleared === 1,
       flagged: transaction.is_flagged === 1 || transaction.is_flagged === true,
@@ -436,7 +443,6 @@ const TransactionManager = ({
       alert('Please enter a valid amount');
       return;
     }
-    const signedAmount = editForm.type === 'outflow' ? -Math.abs(amountMag) : Math.abs(amountMag);
     const isIncome = editForm.type === 'inflow';
     const rtaCheck = validateReadyToAssignSelection(editForm.categoryId, {
       isIncome,
@@ -450,11 +456,12 @@ const TransactionManager = ({
     const apiCategoryId = isReadyToAssignSentinel(editForm.categoryId)
       ? READY_TO_ASSIGN_CATEGORY_ID
       : storedCategoryId;
+    const amountFields = { amount: Math.abs(amountMag), direction: editForm.type };
     const updateData = {
       date: editForm.date,
       payee: editForm.payee,
       description: editForm.payee,
-      amount: signedAmount,
+      ...amountFields,
       category_id: apiCategoryId,
       categoryId: apiCategoryId,
       memo: editForm.memo || null,
@@ -488,33 +495,62 @@ const TransactionManager = ({
   };
 
   const toggleSelect = (id) => {
+    const key = normalizeTransactionId(id);
+    if (!key) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const pruned = pruneTransactionSelection(prev, activeTransactions);
+      if (pruned.size === prev.size) {
+        let unchanged = true;
+        for (const entry of prev) {
+          if (!pruned.has(entry)) {
+            unchanged = false;
+            break;
+          }
+        }
+        if (unchanged) return prev;
+      }
+      return pruned;
+    });
+  }, [activeTransactions]);
+
   const filteredTransactionIds = useMemo(
-    () => sortedTransactions.map((t) => t.id).filter((id) => id != null),
-    [sortedTransactions]
+    () =>
+      sortedTransactions
+        .map((t) => normalizeTransactionId(t.id))
+        .filter(Boolean),
+    [sortedTransactions],
   );
 
   const allFilteredSelected =
     filteredTransactionIds.length > 0 &&
-    filteredTransactionIds.every((id) => selectedIds.has(id));
+    filteredTransactionIds.every((entry) => selectedIds.has(entry));
 
   const someFilteredSelected =
-    filteredTransactionIds.some((id) => selectedIds.has(id)) && !allFilteredSelected;
+    filteredTransactionIds.some((entry) => selectedIds.has(entry)) && !allFilteredSelected;
+
+  const effectiveSelectedCount = useMemo(
+    () => countSelectedInList(selectedIds, activeTransactions),
+    [selectedIds, activeTransactions],
+  );
 
   const toggleSelectAllFiltered = () => {
     setSelectedIds((prev) => {
-      const ids = sortedTransactions.map((t) => t.id).filter((id) => id != null);
-      const allOn = ids.length > 0 && ids.every((id) => prev.has(id));
+      const ids = sortedTransactions
+        .map((t) => normalizeTransactionId(t.id))
+        .filter(Boolean);
+      const allOn = ids.length > 0 && ids.every((entry) => prev.has(entry));
       const next = new Set(prev);
-      if (allOn) ids.forEach((id) => next.delete(id));
-      else ids.forEach((id) => next.add(id));
+      if (allOn) ids.forEach((entry) => next.delete(entry));
+      else ids.forEach((entry) => next.add(entry));
       return next;
     });
   };
@@ -693,36 +729,30 @@ const TransactionManager = ({
         </select>
       </td>
       <td style={editStyles.td}>
-        {editForm.type === 'outflow' ? (
-          <input
-            type="number"
-            value={editForm.amount || ''}
-            onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
-            style={editStyles.input}
-            step="0.01"
-            min="0"
-          />
-        ) : null}
+        <input
+          type="number"
+          value={editForm.type === 'outflow' ? editForm.amount || '' : ''}
+          onChange={(e) =>
+            setEditForm({ ...editForm, type: 'outflow', amount: e.target.value })
+          }
+          style={editStyles.input}
+          step="0.01"
+          min="0"
+          placeholder="0.00"
+        />
       </td>
       <td style={editStyles.td}>
-        {editForm.type === 'inflow' ? (
-          <input
-            type="number"
-            value={editForm.amount || ''}
-            onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
-            style={editStyles.input}
-            step="0.01"
-            min="0"
-          />
-        ) : null}
-        <select
-          value={editForm.type || 'outflow'}
-          onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
-          style={{ ...editStyles.select, marginTop: editForm.type === 'inflow' ? 0 : '0.35rem' }}
-        >
-          <option value="outflow">Outflow</option>
-          <option value="inflow">Inflow</option>
-        </select>
+        <input
+          type="number"
+          value={editForm.type === 'inflow' ? editForm.amount || '' : ''}
+          onChange={(e) =>
+            setEditForm({ ...editForm, type: 'inflow', amount: e.target.value })
+          }
+          style={editStyles.input}
+          step="0.01"
+          min="0"
+          placeholder="0.00"
+        />
       </td>
       <td style={editStyles.td}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem' }}>
@@ -863,10 +893,10 @@ const TransactionManager = ({
           }
         />
 
-        {enableBulkSelection && selectedIds.size > 0 && (
+        {enableBulkSelection && effectiveSelectedCount > 0 && (
           <div style={bulkBarStyles.bar}>
             <span style={{ color: '#93C5FD', fontWeight: 600 }}>
-              {selectedIds.size} selected{bulkBusy ? ' — saving…' : ''}
+              {effectiveSelectedCount} selected{bulkBusy ? ' — saving…' : ''}
             </span>
             <select
               value={bulkCategoryId}

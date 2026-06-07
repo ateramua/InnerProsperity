@@ -29,12 +29,33 @@ import RegisterTransactionActions from '../components/transactions/RegisterTrans
 import RegisterPayeeExtras from '../components/transactions/RegisterPayeeExtras.jsx';
 import TransactionSplitModal from '../components/transactions/TransactionSplitModal.jsx';
 import { enrichTransactionsWithCategoryNames } from '../utils/categoryDisplayUtils.jsx';
+import {
+  countSelectedInList,
+  isTransactionSelected,
+  normalizeTransactionId,
+  pruneTransactionSelection,
+} from '../utils/transactionSelectionUtils.jsx';
 import { computeAvailableCredit } from '../utils/creditCardBalanceUtils.jsx';
 import {
   buildIncomeCategoryOptions,
+  buildTransactionAmountUpdate,
+  buildTransferSignedAmount,
   categorySelectValueForTransaction,
+  getTransactionEditAmountMagnitude,
+  getTransactionEditType,
+  isIncomeTransaction,
   isReadyToAssignSentinel,
 } from '../utils/readyToAssignCategory.jsx';
+import AccountRoutingPayeeOptions from '../components/transactions/AccountRoutingPayeeOptions.jsx';
+import {
+  buildAccountPayeeOptions,
+  formatPaymentPayeeName,
+  formatTransferPayeeName,
+  getAllRoutingPayees,
+  mapPayeesFromFormApi,
+  parseAccountRoutingDestinationName,
+  EMPTY_PAYEES_FORM,
+} from '../utils/transferPayeeUtils.jsx';
 
 const TRANSACTIONS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_TRANSACTIONS_PER_PAGE = 25;
@@ -67,9 +88,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showScheduledSection, setShowScheduledSection] = useState(true);
+  const [approvingScheduledId, setApprovingScheduledId] = useState(null);
 
   // ===================== PAYEE DROPDOWN STATE =====================
-  const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+  const [payees, setPayees] = useState(EMPTY_PAYEES_FORM);
   const [loadingPayees, setLoadingPayees] = useState(false);
 
   // ===================== LOAN/CREDIT CARD PAYMENT STATE =====================
@@ -84,6 +106,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     date: '',
     payee: '',
     amount: '',
+    type: 'outflow',
     categoryId: '',
     memo: ''
   });
@@ -247,40 +270,47 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       if (userResult?.success && userResult?.data) {
         const userId = userResult.data.id;
 
-        // Get all accounts for transfer payees
-        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-        const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+        let nextPayees = EMPTY_PAYEES_FORM;
 
-        // Filter out current account for transfers
-        const transferPayees = allAccounts
-          .filter(acc => acc.id !== account?.id)
-          .map(acc => ({
-            id: `transfer_${acc.id}`,
-            name: `Transfer: ${acc.name}`,
-            isTransfer: true,
-            transferAccountId: acc.id,
-            accountType: acc.type
-          }));
-
-        // Get regular payees from payees table
-        let regularPayees = [];
-        try {
-          const payeesResult = await window.electronAPI.getPayees(userId);
-          if (payeesResult?.success) {
-            regularPayees = (payeesResult.data || [])
-              .filter(p => !p.is_transfer_payee)
-              .map(p => ({
-                id: p.id,
-                name: p.name,
-                isTransfer: false,
-                usageCount: p.usage_count
-              }));
+        if (window.electronAPI.getPayeesForForm) {
+          const formRes = await window.electronAPI.getPayeesForForm({
+            userId,
+            currentAccountId: account?.id,
+          });
+          if (formRes?.success && formRes.data) {
+            nextPayees = mapPayeesFromFormApi(formRes.data);
           }
-        } catch (err) {
-          console.log('Payees table not yet set up, using empty list');
         }
 
-        setPayees({ transferPayees, regularPayees });
+        if (!nextPayees.paymentPayees.length && !nextPayees.transferPayees.length) {
+          const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+          const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+          const built = buildAccountPayeeOptions(allAccounts, account?.id);
+          nextPayees = { ...nextPayees, ...built };
+        }
+
+        if (!nextPayees.regularPayees.length) {
+          try {
+            const payeesResult = await window.electronAPI.getPayees(userId);
+            if (payeesResult?.success) {
+              nextPayees = {
+                ...nextPayees,
+                regularPayees: (payeesResult.data || [])
+                  .filter((p) => !p.is_transfer_payee)
+                  .map((p) => ({
+                    id: p.id,
+                    name: p.name,
+                    isTransfer: false,
+                    usageCount: p.usage_count,
+                  })),
+              };
+            }
+          } catch (err) {
+            console.log('Payees table not yet set up, using empty list');
+          }
+        }
+
+        setPayees(nextPayees);
       }
     } catch (error) {
       console.error('Error fetching payees:', error);
@@ -379,16 +409,11 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       >
         <option value="">-- Select or enter payee --</option>
 
-        {/* Section 1: Payments & Transfers */}
-        {payees.transferPayees.length > 0 && (
-          <optgroup label="📤 PAYMENTS & TRANSFERS">
-            {payees.transferPayees.map(payee => (
-              <option key={payee.id} value={JSON.stringify(payee)}>
-                {payee.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
+        <AccountRoutingPayeeOptions
+          paymentPayees={payees.paymentPayees}
+          transferPayees={payees.transferPayees}
+          serializeValue={(payee) => JSON.stringify(payee)}
+        />
 
         {/* Section 2: Recent Payees */}
         {payees.regularPayees.length > 0 && (
@@ -490,11 +515,13 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       return false;
     }
 
-    // Check for "Payment: [Account Name]" or "Transfer: [Account Name]" pattern
-    const paymentPattern = /^(payment|transfer):\s*(.+)$/i;
+    // Check for "Payment: to …" / "Transfer: to …" (legacy labels without "to" still work)
+    const paymentPattern = /^(payment|transfer):\s*(?:to\s+)?(.+)$/i;
     const match = payeeValue.match(paymentPattern);
 
-    let accountName = match ? match[2].trim() : payeeValue.trim();
+    let accountName = match ? match[3].trim() : payeeValue.trim();
+    const parsed = parseAccountRoutingDestinationName(payeeValue);
+    if (parsed) accountName = parsed;
 
     // Find matching account - EXCLUDE the current account (can't pay yourself)
     const matchedAccount = loanAccounts.find(acc =>
@@ -585,7 +612,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     setEditFormData({
       date: formatDateForInput(transaction.date),
       payee: transaction.payee || '',
-      amount: Math.abs(transaction.amount).toString(),
+      amount: getTransactionEditAmountMagnitude(transaction),
+      type: getTransactionEditType(transaction),
       categoryId: categorySelectValueForTransaction(transaction),
       memo: transaction.memo || ''
     });
@@ -598,6 +626,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       date: '',
       payee: '',
       amount: '',
+      type: 'outflow',
       categoryId: '',
       memo: ''
     });
@@ -647,15 +676,11 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       if (originalTransaction.is_transfer === 1) {
         console.log('🔄 Updating linked transfer transaction');
         
-        // Determine the new amount sign based on the original transaction type
-        // If original amount was negative (outflow), keep negative; if positive (inflow), keep positive
-        const isOriginalOutflow = originalTransaction.amount < 0;
-        let newTransferAmount = amountValue;
-        if (isOriginalOutflow) {
-          newTransferAmount = -Math.abs(amountValue);
-        } else {
-          newTransferAmount = Math.abs(amountValue);
-        }
+        const newTransferAmount = buildTransferSignedAmount(
+          originalTransaction,
+          amountValue,
+          editFormData.type
+        );
         
         // Use the linked transfer update API
         const updateResult = await window.electronAPI.updateLinkedTransfer(transactionId, {
@@ -684,14 +709,17 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
 
       // ==================== REGULAR TRANSACTION UPDATE ====================
-      const isOriginalOutflow = originalTransaction.amount < 0;
-      const newAmount = isOriginalOutflow ? -Math.abs(amountValue) : Math.abs(amountValue);
+      const amountUpdate = buildTransactionAmountUpdate(
+        originalTransaction,
+        amountValue,
+        editFormData.type
+      );
 
       const updateData = {
         date: editFormData.date,
         payee: editFormData.payee,
         description: editFormData.payee,
-        amount: newAmount,
+        ...amountUpdate,
         category_id:
           isReadyToAssignSentinel(editFormData.categoryId)
             ? null
@@ -765,13 +793,20 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
   };
 
   // Load scheduled transactions for this account
+  const normalizeScheduledTransaction = (row) => ({
+    ...row,
+    transactionType: row.transactionType ?? row.transaction_type ?? 'outflow',
+    categoryId: row.categoryId ?? row.category_id ?? null,
+  });
+
   const loadScheduledTransactions = async () => {
     try {
       if (window.electronAPI.getScheduledTransactions && account?.id) {
         const result = await window.electronAPI.getScheduledTransactions(account.id);
         if (result?.success) {
-          setScheduledTransactions(result.data || []);
-          console.log('📅 Scheduled transactions loaded:', result.data?.length);
+          const rows = (result.data || []).map(normalizeScheduledTransaction);
+          setScheduledTransactions(rows);
+          console.log('📅 Scheduled transactions loaded:', rows.length);
         }
       }
     } catch (error) {
@@ -781,6 +816,10 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
   // Approve a scheduled transaction
   const handleApproveScheduled = async (scheduledTx) => {
+    const scheduledId = scheduledTx.id;
+    if (!scheduledId || approvingScheduledId) return;
+
+    setApprovingScheduledId(scheduledId);
     try {
       const userResult = await window.electronAPI.getCurrentUser();
       if (!userResult?.success || !userResult?.data) {
@@ -789,13 +828,14 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
 
       const userId = userResult.data.id;
-      const isExpense = scheduledTx.transactionType === 'outflow';
+      const txType = scheduledTx.transactionType ?? scheduledTx.transaction_type ?? 'outflow';
+      const categoryId = scheduledTx.categoryId ?? scheduledTx.category_id ?? null;
+      const isExpense = txType === 'outflow';
       const amountValue = Math.abs(parseFloat(scheduledTx.amount));
 
       let transactionAmount = isExpense ? -amountValue : amountValue;
 
-      const isReadyToAssign = scheduledTx.transactionType === 'inflow' &&
-        isReadyToAssignSentinel(scheduledTx.categoryId);
+      const isReadyToAssign = txType === 'inflow' && isReadyToAssignSentinel(categoryId);
 
       const transactionData = {
         accountId: account.id,
@@ -803,7 +843,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         payee: scheduledTx.payee,
         description: scheduledTx.payee,
         amount: transactionAmount,
-        categoryId: isReadyToAssign ? null : scheduledTx.categoryId,
+        categoryId: isReadyToAssign ? null : categoryId,
         memo: scheduledTx.memo,
         cleared: 1,
         frequency: scheduledTx.frequency || null
@@ -816,12 +856,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       }
 
       if (window.electronAPI.deleteScheduledTransaction) {
-        await window.electronAPI.deleteScheduledTransaction(scheduledTx.id);
+        await window.electronAPI.deleteScheduledTransaction(scheduledId);
       }
 
-      await loadTransactions(account.id);
-      await loadScheduledTransactions();
-      const newBalance = await syncAccountDisplayAfterMutation(account.id, userId);
+      setScheduledTransactions((prev) => prev.filter((tx) => tx.id !== scheduledId));
+
+      const [, newBalance] = await Promise.all([
+        loadScheduledTransactions(),
+        syncAccountDisplayAfterMutation(account.id, userId),
+      ]);
 
       window.dispatchEvent(new CustomEvent('accounts-updated'));
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
@@ -830,6 +873,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     } catch (error) {
       console.error('Error approving scheduled transaction:', error);
       alert('Error approving transaction: ' + error.message);
+      await loadScheduledTransactions();
+    } finally {
+      setApprovingScheduledId(null);
     }
   };
 
@@ -927,78 +973,6 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     if (acct) setAccount(acct);
     return acct?.balance ?? null;
   }, [account, loadTransactions]);
-
-  // Handle transaction selection
-  const handleSelectTransaction = (transactionId) => {
-    const newSelected = new Set(selectedTransactions);
-    if (newSelected.has(transactionId)) {
-      newSelected.delete(transactionId);
-    } else {
-      newSelected.add(transactionId);
-    }
-    setSelectedTransactions(newSelected);
-  };
-
-  // Handle select all
-  const handleSelectAll = () => {
-    if (selectedTransactions.size === transactions.length && transactions.length > 0) {
-      setSelectedTransactions(new Set());
-    } else {
-      const allIds = transactions.map(t => t.id);
-      setSelectedTransactions(new Set(allIds));
-    }
-  };
-
-  // Handle delete selected transactions
-  const handleDeleteSelected = () => {
-    if (selectedTransactions.size === 0) {
-      alert('Please select at least one transaction to delete.');
-      return;
-    }
-    setShowDeleteModal(true);
-  };
-
-  // Confirm deletion
-  const confirmDelete = async () => {
-    setIsDeleting(true);
-    try {
-      const userResult = await window.electronAPI.getCurrentUser();
-      if (!userResult?.success || !userResult?.data) {
-        alert('Please log in to delete transactions');
-        return;
-      }
-
-      const userId = userResult.data.id;
-      const selectedIds = [...selectedTransactions];
-      const selectedCount = selectedIds.length;
-
-      if (!window.electronAPI?.bulkDeleteTransactions) {
-        throw new Error('Bulk delete is not available. Restart the app and try again.');
-      }
-
-      const deleteResult = await window.electronAPI.bulkDeleteTransactions(selectedIds);
-      if (!deleteResult?.success) {
-        throw new Error(deleteResult?.error || 'Bulk delete failed');
-      }
-
-      const newBalance = await syncAccountDisplayAfterMutation(account.id, userId);
-
-      setSelectedTransactions(new Set());
-      setShowDeleteModal(false);
-
-      window.dispatchEvent(new CustomEvent('accounts-updated'));
-      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
-
-      alert(
-        `✅ Successfully deleted ${deleteResult.data?.deleted ?? selectedCount} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`
-      );
-    } catch (error) {
-      console.error('Error deleting transactions:', error);
-      alert('Error deleting transactions: ' + error.message);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
 
   // Categories are required for the register table (inline category dropdown / labels).
   useEffect(() => {
@@ -1247,9 +1221,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       accountId: account.id,
       userId: userId,
       date: newTransaction.date,
-      description: `Transfer: ${selectedLoanAccount.name}`,
+      description: formatPaymentPayeeName(selectedLoanAccount.name),
       amount: -amountValue,
-      payee: `Transfer: ${selectedLoanAccount.name}`,
+      payee: formatPaymentPayeeName(selectedLoanAccount.name),
       memo: newTransaction.memo || `Loan payment to ${selectedLoanAccount.name}`,
       cleared: newTransaction.cleared ? 1 : 0,
       isTransfer: 1,
@@ -1272,9 +1246,9 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       accountId: selectedLoanAccount.id,
       userId: userId,
       date: newTransaction.date,
-      description: `Transfer: ${account.name}`,
+      description: formatTransferPayeeName(account.name),
       amount: breakdown.principalPortion,
-      payee: `Transfer: ${account.name}`,
+      payee: formatTransferPayeeName(account.name),
       memo: newTransaction.memo || `Payment from ${account.name}`,
       cleared: newTransaction.cleared ? 1 : 0,
       isTransfer: 1,
@@ -1531,6 +1505,127 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
     }
   }, [transactionsPage, totalTransactionPages]);
 
+  const registerTransactionsForSelection = useMemo(
+    () => (allTransactions.length ? allTransactions : transactions),
+    [allTransactions, transactions],
+  );
+
+  useEffect(() => {
+    setSelectedTransactions(new Set());
+  }, [account?.id]);
+
+  useEffect(() => {
+    setSelectedTransactions((prev) => {
+      const pruned = pruneTransactionSelection(prev, registerTransactionsForSelection);
+      if (pruned.size === prev.size) {
+        let unchanged = true;
+        for (const id of prev) {
+          if (!pruned.has(id)) {
+            unchanged = false;
+            break;
+          }
+        }
+        if (unchanged) return prev;
+      }
+      return pruned;
+    });
+  }, [registerTransactionsForSelection]);
+
+  const handleSelectTransaction = useCallback((transactionId) => {
+    const key = normalizeTransactionId(transactionId);
+    if (!key) return;
+    setSelectedTransactions((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAll = useCallback(() => {
+    const scopeIds = sortedTransactions
+      .map((t) => normalizeTransactionId(t.id))
+      .filter(Boolean);
+    if (!scopeIds.length) return;
+    setSelectedTransactions((prev) => {
+      const next = new Set(prev);
+      const allScopeSelected = scopeIds.every((id) => next.has(id));
+      if (allScopeSelected) {
+        scopeIds.forEach((id) => next.delete(id));
+      } else {
+        scopeIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }, [sortedTransactions]);
+
+  const effectiveSelectedCount = useMemo(
+    () => countSelectedInList(selectedTransactions, registerTransactionsForSelection),
+    [selectedTransactions, registerTransactionsForSelection],
+  );
+
+  const selectedTransactionsListForDelete = useMemo(
+    () =>
+      registerTransactionsForSelection.filter((t) =>
+        isTransactionSelected(selectedTransactions, t.id),
+      ),
+    [registerTransactionsForSelection, selectedTransactions],
+  );
+
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedTransactionsListForDelete.length === 0) {
+      alert('Please select at least one transaction to delete.');
+      return;
+    }
+    setShowDeleteModal(true);
+  }, [selectedTransactionsListForDelete.length]);
+
+  const confirmDelete = useCallback(async () => {
+    setIsDeleting(true);
+    try {
+      const userResult = await window.electronAPI.getCurrentUser();
+      if (!userResult?.success || !userResult?.data) {
+        alert('Please log in to delete transactions');
+        return;
+      }
+
+      const userId = userResult.data.id;
+      const selectedIds = selectedTransactionsListForDelete.map((t) => t.id);
+      const selectedCount = selectedIds.length;
+
+      if (!selectedIds.length) {
+        alert('Please select at least one transaction to delete.');
+        return;
+      }
+
+      if (!window.electronAPI?.bulkDeleteTransactions) {
+        throw new Error('Bulk delete is not available. Restart the app and try again.');
+      }
+
+      const deleteResult = await window.electronAPI.bulkDeleteTransactions(selectedIds);
+      if (!deleteResult?.success) {
+        throw new Error(deleteResult?.error || 'Bulk delete failed');
+      }
+
+      const newBalance = await syncAccountDisplayAfterMutation(account.id, userId);
+
+      setSelectedTransactions(new Set());
+      setShowDeleteModal(false);
+
+      window.dispatchEvent(new CustomEvent('accounts-updated'));
+      window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
+
+      alert(
+        `✅ Successfully deleted ${deleteResult.data?.deleted ?? selectedCount} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`,
+      );
+    } catch (error) {
+      console.error('Error deleting transactions:', error);
+      alert('Error deleting transactions: ' + error.message);
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [account?.id, selectedTransactionsListForDelete, syncAccountDisplayAfterMutation]);
+
   const transactionRangeStart = totalTransactionCount === 0
     ? 0
     : (safeTransactionsPage - 1) * transactionsPerPage + 1;
@@ -1602,7 +1697,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               if (isCreditCard && onMakePayment) {
                 onMakePayment(account.id);
               } else if (isLoanAccount) {
-                alert(`💡 How to make a payment to "${account.name}":\n\n1. Go to your CHECKING or SAVINGS account page\n2. Click "Add Transaction"\n3. Set Payee to "Transfer: ${account.name}"\n4. Enter the payment amount\n5. The system will automatically calculate:\n   • Interest portion (first payment of month)\n   • Principal reduction\n   • Update both account balances\n\nThis ensures accurate interest calculations and proper tracking.`);
+                alert(`💡 How to make a payment to "${account.name}":\n\n1. Go to your CHECKING or SAVINGS account page\n2. Click "Add Transaction"\n3. Set Payee to "${formatPaymentPayeeName(account.name)}"\n4. Enter the payment amount\n5. The system will automatically calculate:\n   • Interest portion (first payment of month)\n   • Principal reduction\n   • Update both account balances\n\nThis ensures accurate interest calculations and proper tracking.`);
               }
             }}
             style={styles.paymentButton}
@@ -1669,7 +1764,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           <div style={styles.infoBannerContent}>
             <strong>📋 Making Loan Payments:</strong><br />
             To pay down this loan, go to your <strong>checking or savings account</strong> and create a transaction with payee:<br />
-            <code style={styles.codeExample}>Transfer: {account.name}</code><br />
+            <code style={styles.codeExample}>{formatPaymentPayeeName(account.name)}</code><br />
             The system will automatically calculate interest (first payment of month) and apply the rest to principal.
           </div>
         </div>
@@ -1719,15 +1814,20 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                     <div style={styles.scheduledActions}>
                       <button
                         onClick={() => handleApproveScheduled(tx)}
-                        style={styles.approveButton}
+                        style={{
+                          ...styles.approveButton,
+                          ...(approvingScheduledId === tx.id ? styles.approveButtonBusy : {}),
+                        }}
                         title="Approve and move to transactions"
+                        disabled={!!approvingScheduledId}
                       >
-                        ✅ Approve
+                        {approvingScheduledId === tx.id ? '⏳ Approving…' : '✅ Approve'}
                       </button>
                       <button
                         onClick={() => handleRejectScheduled(tx)}
                         style={styles.rejectButton}
                         title="Delete scheduled transaction"
+                        disabled={!!approvingScheduledId}
                       >
                         ❌ Reject
                       </button>
@@ -1751,12 +1851,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           </p>
         </div>
         <div style={styles.headerButtons}>
-          {selectedTransactions.size > 0 && (
+          {effectiveSelectedCount > 0 && (
             <button
               onClick={handleDeleteSelected}
               style={styles.deleteSelectedButton}
             >
-              🗑️ Delete Selected ({selectedTransactions.size})
+              🗑️ Delete Selected ({effectiveSelectedCount})
             </button>
           )}
           <button
@@ -1857,11 +1957,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               selectedIds={selectedTransactions}
               onToggleSelect={(txId) => handleSelectTransaction(txId)}
               onSelectAll={handleSelectAll}
-              allSelected={
-                selectedTransactions.size === paginatedTransactions.length &&
-                paginatedTransactions.length > 0 &&
-                paginatedTransactions.every((t) => selectedTransactions.has(t.id))
-              }
+                            allSelected={
+                                paginatedTransactions.length > 0 &&
+                                paginatedTransactions.every((t) =>
+                                  isTransactionSelected(selectedTransactions, t.id),
+                                )
+                            }
               editingId={editingTransactionId}
               renderPayeeExtra={(tx) => {
                 const isInflowToLoan =
@@ -1894,9 +1995,8 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               }}
               renderEditRow={(tx) => {
                 const isTransfer = tx.is_transfer === 1;
-                const isOutflow = tx.amount < 0;
                 const editCategories = [
-                  ...(tx.amount > 0
+                  ...(isIncomeTransaction(tx)
                     ? buildIncomeCategoryOptions(editableCategories)
                     : []),
                   ...getAllCategories(),
@@ -1941,28 +2041,38 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                       </select>
                     </td>
                     <td style={styles.tableEditCell}>
-                      {isOutflow ? (
-                        <input
-                          type="number"
-                          value={editFormData.amount}
-                          onChange={(e) => handleEditChange('amount', e.target.value)}
-                          style={styles.editInput}
-                          step="0.01"
-                          min="0"
-                        />
-                      ) : null}
+                      <input
+                        type="number"
+                        value={editFormData.type === 'outflow' ? editFormData.amount : ''}
+                        onChange={(e) =>
+                          setEditFormData((prev) => ({
+                            ...prev,
+                            type: 'outflow',
+                            amount: e.target.value,
+                          }))
+                        }
+                        style={styles.editInput}
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                      />
                     </td>
                     <td style={styles.tableEditCell}>
-                      {!isOutflow ? (
-                        <input
-                          type="number"
-                          value={editFormData.amount}
-                          onChange={(e) => handleEditChange('amount', e.target.value)}
-                          style={styles.editInput}
-                          step="0.01"
-                          min="0"
-                        />
-                      ) : null}
+                      <input
+                        type="number"
+                        value={editFormData.type === 'inflow' ? editFormData.amount : ''}
+                        onChange={(e) =>
+                          setEditFormData((prev) => ({
+                            ...prev,
+                            type: 'inflow',
+                            amount: e.target.value,
+                          }))
+                        }
+                        style={styles.editInput}
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                      />
                     </td>
                     <td style={styles.tableEditCell}>
                       <button
@@ -2079,7 +2189,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
               </div>
 
               {/* Manual Payee Input (shown when "Other" is selected or payee needs manual entry) */}
-              {(newTransaction.payee === '' || (newTransaction.payee && !payees.transferPayees.some(p => p.name === newTransaction.payee) &&
+              {(newTransaction.payee === '' || (newTransaction.payee && !getAllRoutingPayees(payees).some(p => p.name === newTransaction.payee) &&
                 !payees.regularPayees.some(p => p.name === newTransaction.payee))) && (
                 <div style={styles.formGroup}>
                   <label style={styles.label}>Enter Payee Name</label>
@@ -2306,7 +2416,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
 
             <div style={styles.modalBody}>
               <p style={styles.confirmText}>
-                Are you sure you want to delete <strong>{selectedTransactions.size}</strong> transaction(s)?
+                Are you sure you want to delete <strong>{effectiveSelectedCount}</strong> transaction(s)?
               </p>
               <div style={styles.confirmDetails}>
                 <div style={styles.confirmDetailItem}>
@@ -2314,7 +2424,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                   <strong>{formatCurrency(Math.abs(displayBalance))}{displayBalance < 0 ? ' (owed)' : ''}</strong>
                 </div>
                 {(() => {
-                  const selectedTransactionsList = transactions.filter(t => selectedTransactions.has(t.id));
+                  const selectedTransactionsList = selectedTransactionsListForDelete;
                   const totalImpact = selectedTransactionsList.reduce((sum, t) => sum + calculateBalanceChangeForTransaction(t), 0);
                   return (
                     <div style={styles.confirmDetailItem}>
@@ -2328,7 +2438,15 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 <div style={styles.confirmDetailItem}>
                   <span>New Balance:</span>
                   <strong style={{ color: '#4ADE80' }}>
-                    {formatCurrency(Math.abs(displayBalance + transactions.filter(t => selectedTransactions.has(t.id)).reduce((sum, t) => sum + calculateBalanceChangeForTransaction(t), 0)))}
+                    {formatCurrency(
+                      Math.abs(
+                        displayBalance +
+                          selectedTransactionsListForDelete.reduce(
+                            (sum, t) => sum + calculateBalanceChangeForTransaction(t),
+                            0,
+                          ),
+                      ),
+                    )}
                   </strong>
                 </div>
               </div>
@@ -2350,7 +2468,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
                 onClick={confirmDelete}
                 disabled={isDeleting}
               >
-                {isDeleting ? 'Deleting...' : `Delete ${selectedTransactions.size} Transaction(s)`}
+                {isDeleting ? 'Deleting...' : `Delete ${effectiveSelectedCount} Transaction(s)`}
               </button>
             </div>
           </div>
@@ -2590,6 +2708,10 @@ const styles = {
     borderRadius: '0.375rem',
     fontSize: '0.7rem',
     cursor: 'pointer',
+  },
+  approveButtonBusy: {
+    opacity: 0.85,
+    cursor: 'wait',
   },
   rejectButton: {
     padding: '0.25rem 0.75rem',

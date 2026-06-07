@@ -16,7 +16,7 @@ import {
 } from '../../utils/readyToAssignCategory.jsx';
 import { TransactionCategorySelectOptions } from './TransactionCategorySelectOptions.jsx';
 import {
-  isTransferPayeeLabel,
+  isAccountRoutingPayeeLabel,
   isTransferTransaction,
 } from '../../utils/transferPayeeUtils.jsx';
 
@@ -51,7 +51,7 @@ export function InlinePayeeField({
       description: description ?? payee,
       picked,
     };
-    if (picked?.isTransfer || isTransferPayeeLabel(payee)) {
+    if (picked?.isTransfer || isAccountRoutingPayeeLabel(payee)) {
       payload.category_id = null;
       payload.categoryId = null;
     }

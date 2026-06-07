@@ -10,20 +10,31 @@ const {
     isSystemTransaction,
     signedStartingBalanceAmount,
 } = require('../../utils/accountBalanceEngine.cjs');
+const { applySqlitePragmas } = require('../../db/sqlitePragmas.cjs');
 
 class TransactionService {
-    constructor(dbPath = null) {
-        // If no path is provided, use a default (fallback)
-        this.dbPath = dbPath || path.join(__dirname, '..', '..', 'db', 'data', 'app.db');
+    constructor(dbPathOrProvider = null) {
+        if (typeof dbPathOrProvider === 'function') {
+            this.dbProvider = dbPathOrProvider;
+            this.dbPath = null;
+            this.db = null;
+            return;
+        }
+        this.dbProvider = null;
+        this.dbPath = dbPathOrProvider || path.join(__dirname, '..', '..', 'db', 'data', 'app.db');
         this.db = null;
     }
 
     async getDb() {
+        if (this.dbProvider) {
+            return await this.dbProvider();
+        }
         if (this.db) return this.db;
         this.db = await open({
             filename: this.dbPath,
             driver: sqlite3.Database
         });
+        await applySqlitePragmas(this.db);
         return this.db;
     }
 

@@ -6,6 +6,13 @@ import {
   buildIncomeCategoryOptions,
   isReadyToAssignSentinel,
 } from '../utils/readyToAssignCategory.jsx';
+import AccountRoutingPayeeOptions from '../components/transactions/AccountRoutingPayeeOptions.jsx';
+import {
+  buildAccountPayeeOptions,
+  getAllRoutingPayees,
+  mapPayeesFromFormApi,
+  EMPTY_PAYEES_FORM,
+} from '../utils/transferPayeeUtils.jsx';
 
 const SummaryView = ({
   totalAvailable = 0,
@@ -51,7 +58,7 @@ const SummaryView = ({
   const [transactionError, setTransactionError] = useState('');
 
   // ===================== PAYEE DROPDOWN STATE =====================
-  const [payees, setPayees] = useState({ transferPayees: [], regularPayees: [] });
+  const [payees, setPayees] = useState(EMPTY_PAYEES_FORM);
   const [loadingPayees, setLoadingPayees] = useState(false);
 
   // Add safety for categories
@@ -77,38 +84,44 @@ const SummaryView = ({
       if (userResult?.success && userResult?.data) {
         const userId = userResult.data.id;
 
-        // Get all accounts for transfer payees
-        const accountsResult = await window.electronAPI.getAccountsSummary(userId);
-        const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+        let nextPayees = EMPTY_PAYEES_FORM;
 
-        // Generate transfer payees from all accounts
-        const transferPayees = allAccounts.map(acc => ({
-          id: `transfer_${acc.id}`,
-          name: `Transfer: ${acc.name}`,
-          isTransfer: true,
-          transferAccountId: acc.id,
-          accountType: acc.type
-        }));
-
-        // Get regular payees from payees table
-        let regularPayees = [];
-        try {
-          const payeesResult = await window.electronAPI.getPayees(userId);
-          if (payeesResult?.success) {
-            regularPayees = (payeesResult.data || [])
-              .filter(p => !p.is_transfer_payee)
-              .map(p => ({
-                id: p.id,
-                name: p.name,
-                isTransfer: false,
-                usageCount: p.usage_count
-              }));
+        if (window.electronAPI.getPayeesForForm) {
+          const formRes = await window.electronAPI.getPayeesForForm({ userId });
+          if (formRes?.success && formRes.data) {
+            nextPayees = mapPayeesFromFormApi(formRes.data);
           }
-        } catch (err) {
-          console.log('Payees table not yet set up, using empty list');
         }
 
-        setPayees({ transferPayees, regularPayees });
+        if (!nextPayees.paymentPayees.length && !nextPayees.transferPayees.length) {
+          const accountsResult = await window.electronAPI.getAccountsSummary(userId);
+          const allAccounts = accountsResult?.success ? (accountsResult.data || []) : [];
+          const built = buildAccountPayeeOptions(allAccounts, transactionForm.accountId || null);
+          nextPayees = { ...nextPayees, ...built };
+        }
+
+        if (!nextPayees.regularPayees.length) {
+          try {
+            const payeesResult = await window.electronAPI.getPayees(userId);
+            if (payeesResult?.success) {
+              nextPayees = {
+                ...nextPayees,
+                regularPayees: (payeesResult.data || [])
+                  .filter((p) => !p.is_transfer_payee)
+                  .map((p) => ({
+                    id: p.id,
+                    name: p.name,
+                    isTransfer: false,
+                    usageCount: p.usage_count,
+                  })),
+              };
+            }
+          } catch (err) {
+            console.log('Payees table not yet set up, using empty list');
+          }
+        }
+
+        setPayees(nextPayees);
       }
     } catch (error) {
       console.error('Error fetching payees:', error);
@@ -185,16 +198,11 @@ const SummaryView = ({
       >
         <option value="">-- Select or enter payee --</option>
 
-        {/* Section 1: Payments & Transfers */}
-        {payees.transferPayees.length > 0 && (
-          <optgroup label="📤 PAYMENTS & TRANSFERS">
-            {payees.transferPayees.map(payee => (
-              <option key={payee.id} value={JSON.stringify(payee)}>
-                {payee.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
+        <AccountRoutingPayeeOptions
+          paymentPayees={payees.paymentPayees}
+          transferPayees={payees.transferPayees}
+          serializeValue={(payee) => JSON.stringify(payee)}
+        />
 
         {/* Section 2: Recent Payees */}
         {payees.regularPayees.length > 0 && (
@@ -1611,16 +1619,11 @@ const SummaryView = ({
                   >
                     <option value="">-- Select or enter payee --</option>
 
-                    {/* Section 1: Payments & Transfers */}
-                    {payees.transferPayees.length > 0 && (
-                      <optgroup label="📤 PAYMENTS & TRANSFERS">
-                        {payees.transferPayees.map(payee => (
-                          <option key={payee.id} value={JSON.stringify(payee)}>
-                            {payee.name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
+                    <AccountRoutingPayeeOptions
+                      paymentPayees={payees.paymentPayees}
+                      transferPayees={payees.transferPayees}
+                      serializeValue={(payee) => JSON.stringify(payee)}
+                    />
 
                     {/* Section 2: Recent Payees */}
                     {payees.regularPayees.length > 0 && (
@@ -1644,7 +1647,7 @@ const SummaryView = ({
               </div>
 
               {/* Manual Payee Input (shown when "Other" is selected or payee needs manual entry) */}
-              {(transactionForm.payee === '' || (transactionForm.payee && !payees.transferPayees.some(p => p.name === transactionForm.payee) &&
+              {(transactionForm.payee === '' || (transactionForm.payee && !getAllRoutingPayees(payees).some(p => p.name === transactionForm.payee) &&
                 !payees.regularPayees.some(p => p.name === transactionForm.payee))) && (
                   <div style={styles.formGroup}>
                     <label style={styles.label}>Enter Payee Name</label>
@@ -1693,7 +1696,7 @@ const SummaryView = ({
               </div>
 
               {/* Manual Payee Input (shown when "Other" is selected) */}
-              {transactionForm.payee && !payees.transferPayees.some(p => p.name === transactionForm.payee) &&
+              {transactionForm.payee && !getAllRoutingPayees(payees).some(p => p.name === transactionForm.payee) &&
                 !payees.regularPayees.some(p => p.name === transactionForm.payee) && (
                   <div style={styles.formGroup}>
                     <label style={styles.label}>Enter Payee Name</label>

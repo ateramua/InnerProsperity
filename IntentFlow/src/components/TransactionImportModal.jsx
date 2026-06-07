@@ -206,7 +206,7 @@ export default function TransactionImportModal({
   title = 'Import transactions',
 }) {
   const [accountId, setAccountId] = useState(fixedAccountId || '');
-  const [fileContent, setFileContent] = useState('');
+  const [importFilePath, setImportFilePath] = useState('');
   const [fileName, setFileName] = useState('');
   const [headers, setHeaders] = useState([]);
   const [columnMap, setColumnMap] = useState({});
@@ -233,7 +233,7 @@ export default function TransactionImportModal({
   useEffect(() => {
     if (isOpen) {
       setAccountId(fixedAccountId || '');
-      setFileContent('');
+      setImportFilePath('');
       setFileName('');
       setHeaders([]);
       setColumnMap({});
@@ -285,14 +285,14 @@ export default function TransactionImportModal({
   }, []);
 
   const runPreview = useCallback(
-    async (content, acctId, map, mappings, mergeMappings = true) => {
+    async (filePath, acctId, map, mappings, mergeMappings = true) => {
       if (!window.electronAPI?.previewTransactionImport) {
         setError('Import API not available');
         return;
       }
       const res = await window.electronAPI.previewTransactionImport({
         accountId: acctId,
-        content,
+        filePath,
         columnMap: map,
         categoryMappings: mappings,
         fileName,
@@ -311,16 +311,16 @@ export default function TransactionImportModal({
     (nextMappings) => {
       if (categoryRefreshTimer.current) clearTimeout(categoryRefreshTimer.current);
       categoryRefreshTimer.current = setTimeout(async () => {
-        if (!accountId || !fileContent || !columnMap.category) return;
+        if (!accountId || !importFilePath || !columnMap.category) return;
         setBusy(true);
         try {
-          await runPreview(fileContent, accountId, columnMap, nextMappings, false);
+          await runPreview(importFilePath, accountId, columnMap, nextMappings, false);
         } finally {
           setBusy(false);
         }
       }, 350);
     },
-    [accountId, fileContent, columnMap, runPreview]
+    [accountId, importFilePath, columnMap, runPreview]
   );
 
   useEffect(() => {
@@ -339,12 +339,12 @@ export default function TransactionImportModal({
         setError(pick?.error || 'Could not open file');
         return;
       }
-      setFileContent(pick.content || '');
+      setImportFilePath(pick.filePath || '');
       setFileName(pick.fileName || 'file.csv');
       setColumnMap({});
       const acct = fixedAccountId || accountId;
       if (acct) {
-        await runPreview(pick.content, acct, columnMap, categoryMappings);
+        await runPreview(pick.filePath, acct, columnMap, categoryMappings);
       } else {
         setStep('account');
       }
@@ -360,23 +360,23 @@ export default function TransactionImportModal({
       setError('Select an account');
       return;
     }
-    if (!fileContent) {
+    if (!importFilePath) {
       setError('Choose a file first');
       return;
     }
     setBusy(true);
     try {
-      await runPreview(fileContent, accountId, columnMap, categoryMappings);
+      await runPreview(importFilePath, accountId, columnMap, categoryMappings);
     } finally {
       setBusy(false);
     }
   };
 
   const handleMappingRefresh = async () => {
-    if (!accountId || !fileContent) return;
+    if (!accountId || !importFilePath) return;
     setBusy(true);
     try {
-      await runPreview(fileContent, accountId, columnMap, categoryMappings);
+      await runPreview(importFilePath, accountId, columnMap, categoryMappings);
     } finally {
       setBusy(false);
     }
@@ -385,10 +385,10 @@ export default function TransactionImportModal({
   const handleColumnMapChange = async (field, headerName) => {
     const nextMap = { ...columnMap, [field]: headerName };
     setColumnMap(nextMap);
-    if (field === 'category' && accountId && fileContent) {
+    if (field === 'category' && accountId && importFilePath) {
       setBusy(true);
       try {
-        await runPreview(fileContent, accountId, nextMap, categoryMappings);
+        await runPreview(importFilePath, accountId, nextMap, categoryMappings);
       } finally {
         setBusy(false);
       }
@@ -408,10 +408,10 @@ export default function TransactionImportModal({
   const canOfferCategoryStep = showCategoryMappingTable;
 
   const goToReview = async () => {
-    if (!accountId || !fileContent) return;
+    if (!accountId || !importFilePath) return;
     setBusy(true);
     try {
-      await runPreview(fileContent, accountId, columnMap, categoryMappings, false);
+      await runPreview(importFilePath, accountId, columnMap, categoryMappings, false);
       setStep('review');
     } finally {
       setBusy(false);
@@ -431,7 +431,7 @@ export default function TransactionImportModal({
   };
 
   const handleImport = async () => {
-    if (!accountId || !fileContent) {
+    if (!accountId || !importFilePath) {
       setError('Account and file are required');
       return;
     }
@@ -440,7 +440,7 @@ export default function TransactionImportModal({
     try {
       const res = await window.electronAPI.executeTransactionImport({
         accountId,
-        content: fileContent,
+        filePath: importFilePath,
         columnMap,
         categoryMappings,
         saveCategoryMappings,
@@ -654,7 +654,7 @@ export default function TransactionImportModal({
                 {busy ? 'Loading…' : 'Choose CSV file…'}
               </button>
             )}
-            {showAccountPicker && fileContent && (
+            {showAccountPicker && importFilePath && (
               <button
                 type="button"
                 style={styles.primary}
@@ -736,8 +736,8 @@ export default function TransactionImportModal({
         onClose={() => setShowMappingsManager(false)}
         budgetCategories={budgetCategories}
         onMappingsChanged={async () => {
-          if (accountId && fileContent) {
-            await runPreview(fileContent, accountId, columnMap, categoryMappings, true);
+          if (accountId && importFilePath) {
+            await runPreview(importFilePath, accountId, columnMap, categoryMappings, true);
           }
         }}
       />

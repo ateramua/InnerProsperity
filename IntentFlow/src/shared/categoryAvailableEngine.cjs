@@ -4,6 +4,15 @@
  * Available is a calculated output (cached on monthly_budgets / categories).
  */
 
+const {
+  SQL_BUDGET_ACTIVITY_WHERE,
+  SQL_TX_CLEARED_FOR_BUDGET,
+  SQL_TX_SPENDING_MAGNITUDE,
+  SQL_TX_INFLOW_MAGNITUDE,
+  SQL_SPLIT_SPENDING_MAGNITUDE,
+  SQL_SPLIT_INFLOW_MAGNITUDE,
+} = require('./categoryActivitySql.cjs');
+
 function roundMoney(x) {
   const n = Number(x);
   if (!Number.isFinite(n)) return 0;
@@ -96,30 +105,24 @@ async function getCategoryTransactionTotals(db, userId, categoryId, monthYm, opt
       COALESCE(SUM(inflows), 0) AS inflows
     FROM (
       SELECT
-        CASE
-          WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0
-          WHEN t.amount < 0 THEN -t.amount
-          ELSE 0
-        END AS spending,
-        CASE
-          WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0
-          WHEN t.amount > 0 THEN t.amount
-          ELSE 0
-        END AS inflows
+        ${SQL_TX_SPENDING_MAGNITUDE} AS spending,
+        ${SQL_TX_INFLOW_MAGNITUDE} AS inflows
       FROM transactions t
       WHERE t.user_id = ?
         AND CAST(t.category_id AS TEXT) = CAST(? AS TEXT)
         AND strftime('%Y-%m', t.date) = ?
+        AND ${SQL_BUDGET_ACTIVITY_WHERE}
       UNION ALL
       SELECT
-        CASE WHEN t.amount < 0 THEN ts.amount ELSE 0 END AS spending,
-        CASE WHEN t.amount > 0 THEN ts.amount ELSE 0 END AS inflows
+        ${SQL_SPLIT_SPENDING_MAGNITUDE} AS spending,
+        ${SQL_SPLIT_INFLOW_MAGNITUDE} AS inflows
       FROM transaction_splits ts
       INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
       WHERE ts.user_id = ?
         AND CAST(ts.category_id AS TEXT) = CAST(? AS TEXT)
         AND strftime('%Y-%m', t.date) = ?
         AND IFNULL(t.is_transfer, 0) = 0
+        AND ${SQL_BUDGET_ACTIVITY_WHERE}
     )
   `,
     [userId, categoryId, ym, userId, categoryId, ym],
@@ -134,13 +137,17 @@ async function getCategoryTransactionTotals(db, userId, categoryId, monthYm, opt
       INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE t.user_id = ?
         AND CAST(a.id AS TEXT) = CAST(? AS TEXT)
-        AND a.type = 'credit'
+        AND lower(IFNULL(a.type, '')) IN ('credit', 'credit card', 'charge card')
         AND strftime('%Y-%m', t.date) = ?
+        AND IFNULL(t.is_deleted, 0) = 0
+        AND t.amount > 0
         AND (
           IFNULL(t.is_transfer, 0) = 1
-          OR CAST(t.category_id AS TEXT) = CAST(? AS TEXT)
+          OR (
+            CAST(t.category_id AS TEXT) = CAST(? AS TEXT)
+            AND ${SQL_TX_CLEARED_FOR_BUDGET}
+          )
         )
-        AND t.amount > 0
     `,
       [userId, options.linkedAccountId, ym, categoryId],
     );
@@ -176,6 +183,7 @@ async function getCreditOverspendingFlag(db, userId, categoryId, monthYm) {
       AND t.amount < 0
       AND IFNULL(t.is_transfer, 0) = 0
       AND strftime('%Y-%m', t.date) = ?
+      AND ${SQL_BUDGET_ACTIVITY_WHERE}
   `,
     [userId, categoryId, ym],
   );

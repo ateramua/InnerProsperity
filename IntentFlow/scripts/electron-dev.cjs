@@ -67,6 +67,11 @@ async function main() {
 
   const electronPkg = require.resolve('electron/package.json');
   const electronCli = path.join(path.dirname(electronPkg), 'cli.js');
+  const debugPort =
+    process.env.INTENTFLOW_REMOTE_DEBUGGING_PORT ||
+    process.env.ELECTRON_REMOTE_DEBUGGING_PORT ||
+    '9222';
+  console.log(`🔌 Electron remote debugging → http://127.0.0.1:${debugPort}\n`);
   const electron = spawn(process.execPath, [electronCli, '.'], {
     cwd: appRoot,
     env,

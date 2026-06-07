@@ -10,7 +10,10 @@ const {
 } = require('./payeeNormalization.cjs');
 const { CategoryRuleService } = require('./categoryRuleService.cjs');
 const { categoryMlService } = require('./categoryMlService.cjs');
-const { computeReserveDelta, getCategoryMonthEnvelope } = require('./creditCardReserveUtils.cjs');
+const {
+  computeCreditCardReserveState,
+  getCategoryMonthEnvelope,
+} = require('./creditCardReserveUtils.cjs');
 const {
   isReadyToAssignSentinel,
   isIncomeTransaction,
@@ -198,7 +201,7 @@ class TransactionCategorizationService {
 
     let { categoryId, suggestedCategoryId, mappingStatus, changeSource } = resolved;
     const { suggestedSource, suggestedConfidence } = resolved;
-    const auditSource = changeSource;
+    let auditSource = changeSource;
 
     if (!changeSource) {
       changeSource = CHANGE_SOURCES.IMPORT;
@@ -295,27 +298,20 @@ class TransactionCategorizationService {
 
     if (applyCreditReserve && tx.account_type === 'credit') {
       const prevReserved = Number(tx.cc_payment_reserved) || 0;
-      if (newCategoryId && Number(tx.amount) < 0) {
-        const spend = Math.abs(Number(tx.amount));
+      let envelopeAvailable = 0;
+      if (newCategoryId) {
         const env = await getCategoryMonthEnvelope(db, userId, newCategoryId, tx.date);
-        nextReserved = Math.min(spend, Math.max(0, env.available));
-      } else if (newCategoryId && Number(tx.amount) > 0) {
-        nextReserved = 0;
-        creditReserveDelta = computeReserveDelta({
-          accountType: tx.account_type,
-          amount: Number(tx.amount),
-          categoryId: newCategoryId,
-          envelopeAvailable: 0,
-          previousReserved: prevReserved,
-        });
+        envelopeAvailable = env.available;
       }
-      if (Number(tx.amount) < 0 || !newCategoryId) {
-        creditReserveDelta = nextReserved - prevReserved;
-        if (!newCategoryId) {
-          nextReserved = 0;
-          creditReserveDelta = -prevReserved;
-        }
-      }
+      const reserveState = computeCreditCardReserveState({
+        accountType: tx.account_type,
+        amount: Number(tx.amount),
+        categoryId: newCategoryId,
+        envelopeAvailable,
+        previousReserved: prevReserved,
+      });
+      nextReserved = reserveState.nextReserved;
+      creditReserveDelta = reserveState.creditReserveDelta;
     }
 
     const mappingStatus = newCategoryId ? 'categorized' : 'uncategorized';

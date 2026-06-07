@@ -4,8 +4,9 @@ const { getDatabase } = require('../db/database.cjs');
 const { getDatabasePath } = require('../db/database.config.js');
 const TransactionService = require('./transactions/transactionService.cjs');
 const {
-  isTransferPayeeLabel,
+  isAccountRoutingPayeeLabel,
   formatTransferPayeeName,
+  buildAccountPayeeOptions,
 } = require('../shared/transferPayeeUtils.cjs');
 
 class PayeeService {
@@ -13,27 +14,19 @@ class PayeeService {
    * Get all payees for the transaction form dropdown
    * @param {string} userId - Current user ID
    * @param {string} currentAccountId - Current account ID (to exclude from transfers)
-   * @returns {Object} { transferPayees, regularPayees }
+   * @returns {Object} { paymentPayees, transferPayees, regularPayees }
    */
   async getPayeesForForm(userId, currentAccountId) {
     // Get all user accounts for transfer payees
     const accounts = await this.getUserAccounts(userId);
     
-    // Section 1: Transfer payees (dynamically from accounts)
-    const transferPayees = accounts
-      .filter(account => account.id !== currentAccountId)
-      .map(account => ({
-        id: `transfer_${account.id}`,
-        name: `Transfer: ${account.name}`,
-        is_transfer_payee: true,
-        transfer_account_id: account.id,
-        account_type: account.type
-      }));
-    
+    const { paymentPayees, transferPayees } = buildAccountPayeeOptions(accounts, currentAccountId);
+
     // Section 2: Regular payees (from payees table)
     const regularPayees = await this.getRegularPayees(userId);
     
     return {
+      paymentPayees,
       transferPayees,
       regularPayees
     };
@@ -119,7 +112,7 @@ class PayeeService {
     if (account) {
       return {
         id: `transfer_${account.id}`,
-        name: `Transfer: ${account.name}`,
+        name: formatTransferPayeeName(account.name),
         is_transfer_payee: true,
         transfer_account_id: account.id
       };
@@ -269,7 +262,7 @@ class PayeeService {
     }
 
     const payee = updates.payee ?? updates.description;
-    if (updates.convertToRegular || (payee && !isTransferPayeeLabel(payee))) {
+    if (updates.convertToRegular || (payee && !isAccountRoutingPayeeLabel(payee))) {
       return this.unlinkTransferToRegular(transactionId, userId, updates);
     }
 

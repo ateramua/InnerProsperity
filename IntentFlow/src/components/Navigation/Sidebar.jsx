@@ -313,15 +313,9 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
         },
         {
             id: 'cashflow',
-            label: 'Cash Flow',
+            label: 'Cash Forecast',
             icon: '💰',
-            description: 'Complete cash flow picture'
-        },
-        {
-            id: 'cashflow-forecast',
-            label: 'Cash Flow Forecast',
-            icon: '📈',
-            description: 'Project your future cash position'
+            description: 'Personal cash forecast and scenario planning'
         },
         {
             id: 'investments',
@@ -525,11 +519,16 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
 
     return (
         <>
-            <div style={{ ...styles.sidebar, width: isCollapsed ? '72px' : '280px' }}>
+            <div
+                data-testid="app-sidebar"
+                data-collapsed={isCollapsed ? 'true' : 'false'}
+                style={{ ...styles.sidebar, width: isCollapsed ? '72px' : '280px' }}
+            >
                 {/* Header */}
                 <div style={sidebarHeaderStyle(isCollapsed)}>
                     <button
                         type="button"
+                        data-testid="sidebar-collapse-toggle"
                         onClick={onToggleCollapse}
                         style={styles.collapseToggle}
                         aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}

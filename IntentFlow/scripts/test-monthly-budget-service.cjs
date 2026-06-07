@@ -14,6 +14,7 @@ const {
   getCategoryActivityTransactionIds,
   applyMonthBudgetedAmount,
   getGlobalBudgetSummary,
+  refreshBudgetMonthsForward,
 } = require('../src/services/budget/monthlyBudgetService.cjs');
 
 function test(name, fn) {
@@ -302,7 +303,9 @@ async function testConsolidateAvailableIntoAssignments() {
   `);
 
   const { consolidateAvailableIntoMonthAssignments } = require('../src/services/budget/monthlyBudgetService.cjs');
-  const result = await consolidateAvailableIntoMonthAssignments(db, 1, '2026-05-01');
+  const result = await consolidateAvailableIntoMonthAssignments(db, 1, '2026-05-01', {
+    userIntentAssignment: true,
+  });
   assert.strictEqual(result.conversions.length, 1);
   assert.strictEqual(result.conversions[0].assigned, 150);
 
@@ -412,7 +415,7 @@ async function testReducingAssignedReturnsFundsToRtaPool() {
   console.log('  ok reducing Assigned lowers Available by the same amount (funds return to RTA pool)');
 }
 
-async function testGlobalSummaryHealsPhantomAssignments() {
+async function testGlobalSummaryDoesNotAutoClearAssigned() {
   const db = await open({ filename: ':memory:', driver: sqlite3.Database });
   await db.exec(`
     CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -490,23 +493,229 @@ async function testGlobalSummaryHealsPhantomAssignments() {
       VALUES ('mb2', 'c2', '2026-06-01', 3000, 0, 3000);
   `);
 
-  const { getGlobalBudgetSummary } = require('../src/services/budget/monthlyBudgetService.cjs');
+  const { getGlobalBudgetSummary, releasePhantomImplicitAssignments } = require('../src/services/budget/monthlyBudgetService.cjs');
   const cash = 5000;
   const summary = await getGlobalBudgetSummary(db, 1, cash, { autoHealPhantomAssignments: true });
-  assert.strictEqual(summary.totalAssigned, 0);
-  assert.strictEqual(summary.readyToAssign, cash);
+  assert.strictEqual(summary.totalAssigned, 7000);
+  assert.strictEqual(summary.readyToAssign, -2000);
+
+  const heal = await releasePhantomImplicitAssignments(db, 1);
+  assert.strictEqual(heal.released, 0);
+  assert.ok(heal.skipped);
 
   const rows = await db.all(
     'SELECT budgeted_amount FROM monthly_budgets WHERE category_id IN (?, ?)',
     ['c1', 'c2']
   );
   for (const row of rows) {
-    assert.strictEqual(Number(row.budgeted_amount), 0);
+    assert.ok(Number(row.budgeted_amount) > 0);
   }
 
   await db.close();
-  console.log('  ok global summary heals phantom budgeted rows and restores RTA');
+  console.log('  ok global summary never auto-clears Assigned (phantom heal disabled)');
 }
+
+async function testAssignedPreservedAfterActivityRefresh() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    INSERT INTO category_groups (id, user_id, name) VALUES ('g1', 1, 'Essentials');
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      group_id TEXT,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      average_spending REAL DEFAULT 0,
+      target_amount REAL DEFAULT 0,
+      target_type TEXT,
+      target_frequency TEXT,
+      target_date TEXT
+    );
+    INSERT INTO categories (id, user_id, name, group_id) VALUES ('c1', 1, 'Groceries', 'g1');
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      is_transfer INTEGER DEFAULT 0,
+      direction TEXT
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    INSERT INTO accounts (id, user_id, type) VALUES ('a1', 1, 'checking');
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await applyMonthBudgetedAmount(db, 1, 'c1', monthKey, 250, { auditSource: 'assign' });
+  const txDate = `${monthKey.slice(0, 8)}15`;
+  await db.run(
+    `INSERT INTO transactions (account_id, user_id, category_id, amount, date)
+     VALUES ('a1', 1, 'c1', -50, ?)`,
+    [txDate]
+  );
+  await refreshBudgetMonthsForward(db, 1, monthKey, 1);
+
+  const mb = await db.get(
+    'SELECT budgeted_amount, activity_amount, available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c1', monthKey]
+  );
+  assert.strictEqual(Number(mb.budgeted_amount), 250);
+  assert.strictEqual(Number(mb.activity_amount), 50);
+  assert.strictEqual(Number(mb.available_amount), 200);
+
+  const summary = await getGlobalBudgetSummary(db, 1, 10000);
+  assert.strictEqual(summary.totalAssigned, 250);
+  assert.strictEqual(summary.readyToAssign, 9750);
+
+  await db.close();
+  console.log('  ok Assigned preserved after transaction activity refresh');
+}
+
+async function testAutomatedAssignmentChangeRejected() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      group_id TEXT,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO categories (id, user_id, name) VALUES ('c1', 1, 'Groceries');
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO monthly_budgets (id, category_id, month, budgeted_amount, activity_amount, available_amount)
+      VALUES ('mb1', 'c1', '${monthKey}', 500, 0, 500);
+  `);
+
+  let rejected = false;
+  try {
+    await applyMonthBudgetedAmount(db, 1, 'c1', monthKey, 0, {
+      auditSource: 'heal_phantom_assign',
+    });
+  } catch (err) {
+    rejected = err.code === 'ASSIGNMENT_CHANGE_NOT_USER_INTENT';
+  }
+  assert.ok(rejected, 'phantom heal source must not clear Assigned');
+
+  const mb = await db.get(
+    'SELECT budgeted_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c1', monthKey]
+  );
+  assert.strictEqual(Number(mb.budgeted_amount), 500);
+
+  await db.close();
+  console.log('  ok automated assignment mutations are rejected');
+}
+
 
 async function testBulkAssignInsideOpenTransaction() {
   const db = await open({ filename: ':memory:', driver: sqlite3.Database });
@@ -1219,7 +1428,9 @@ async function testReadyToAssignToOverspentCategory() {
     await testRepairImplicitAssignments();
     await testConsolidateAvailableIntoAssignments();
     await testReducingAssignedReturnsFundsToRtaPool();
-    await testGlobalSummaryHealsPhantomAssignments();
+    await testGlobalSummaryDoesNotAutoClearAssigned();
+    await testAssignedPreservedAfterActivityRefresh();
+    await testAutomatedAssignmentChangeRejected();
     await testBulkAssignInsideOpenTransaction();
     await testFundUnderfundedNotClearedByGlobalSummary();
     await testConcurrentBulkAssignNoSavepointError();

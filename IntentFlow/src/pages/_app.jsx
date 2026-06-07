@@ -132,7 +132,7 @@ function useInitializeElectronAPI() {
         getAccountTransactions: async (accountId) => ({ success: true, data: [] }),
         getPayees: async (userId) => ({ success: true, data: [] }),
         createOrUpdatePayee: async (data) => ({ success: true, data: { id: Date.now() } }),
-        getPayeesForForm: async (data) => ({ success: true, data: { transferPayees: [], regularPayees: [] } }),
+        getPayeesForForm: async (data) => ({ success: true, data: { paymentPayees: [], transferPayees: [], regularPayees: [] } }),
         createLinkedTransfer: async (transferData) => ({ success: true, data: {} }),
         updateLinkedTransfer: async (id, updates) => ({ success: true }),
         deleteLinkedTransfer: async (id) => ({ success: true }),

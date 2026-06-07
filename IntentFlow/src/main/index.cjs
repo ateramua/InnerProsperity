@@ -74,6 +74,15 @@ function resolvePreloadPath() {
 // NODE_ENV was left as "development" when launching the .app from a terminal.
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 
+if (!app.isPackaged) {
+    const debugPort =
+        process.env.INTENTFLOW_REMOTE_DEBUGGING_PORT ||
+        process.env.ELECTRON_REMOTE_DEBUGGING_PORT ||
+        '9222';
+    app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
+    app.commandLine.appendSwitch('remote-allow-origins', '*');
+}
+
 // ==================== HELPER FUNCTIONS FOR PACKAGED APP ====================
 function getAppPath() {
     if (app.isPackaged) {
@@ -272,6 +281,15 @@ const ForecastService = requireModule('../services/forecast/forecastService.cjs'
     async getWeeklyForecast(userId, weeks) { return {}; }
     async getYearlyForecast(userId, years) { return {}; }
     async getRecommendations(userId) { return []; }
+};
+
+const CashForecastService = requireModule('../services/forecast/cashForecastService.cjs') || class CashForecastService {
+    constructor(dbProvider) { this.dbProvider = dbProvider; }
+    async createShare() { return null; }
+    async getShare() { return null; }
+    async getRecurringPrefs() { return []; }
+    async setRecurringPref() { return {}; }
+    async getScheduledTransactionsForUser() { return []; }
 };
 
 const MoneyMap = requireModule('../services/forecast/moneyMap.cjs') || class MoneyMap {
@@ -585,29 +603,17 @@ async function getCategoryMonthEnvelope(db, userId, categoryId, monthKey) {
     };
 }
 
-async function applyCreditCardPaymentReserveDelta(db, { userId, accountId, date, delta }) {
-    const nDelta = Number(delta) || 0;
-    if (!userId || !accountId || !Number.isFinite(nDelta) || nDelta === 0) return;
+const {
+    applyCreditCardPaymentReserveDelta: applyCreditCardPaymentReserveDeltaUtil,
+    refreshCreditCardPaymentCategoryEnvelope,
+    releaseReserveForDeletedTransaction,
+} = require('../services/transactions/creditCardReserveUtils.cjs');
 
-    const account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-    if (!account || account.type !== 'credit') return;
-    const paymentCategory = await ensureCreditCardPaymentCategoryForAccount(db, account);
-    if (!paymentCategory) return;
-
-    const { monthKey, assigned } = await getCategoryMonthEnvelope(
-        db,
-        userId,
-        paymentCategory.id,
-        date || new Date()
-    );
-    const nextAssigned = Math.max(0, assigned + nDelta);
-    await monthlyBudgetService.applyMonthBudgetedAmount(
-        db,
-        userId,
-        paymentCategory.id,
-        monthKey,
-        nextAssigned
-    );
+async function applyCreditCardPaymentReserveDelta(db, opts) {
+    return applyCreditCardPaymentReserveDeltaUtil(db, {
+        ...opts,
+        userIntentAssignment: opts?.userIntentAssignment !== false,
+    });
 }
 
 const settingsService = requireModule('../services/settingsService.cjs') || {
@@ -709,11 +715,18 @@ const TransactionService = requireModule('../services/transactions/transactionSe
 const transactionLifecycle = requireModule('../services/transactions/transactionLifecycle.cjs') || {
     runPostTransactionEffects: async () => {}
 };
-const transactionCategorizationService =
+const transactionCategorizationModule =
     requireModule('../services/transactions/transactionCategorizationService.cjs') ||
     require(path.join(__dirname, '../services/transactions/transactionCategorizationService.cjs'));
+const transactionCategorizationService =
+    transactionCategorizationModule?.transactionCategorizationService ||
+    transactionCategorizationModule;
 const transactionImportService = requireModule('../services/transactions/transactionImportService.cjs');
 const importCategoryMapping = requireModule('../services/transactions/importCategoryMapping.cjs');
+const accountAdjustmentService =
+    requireModule('../services/accounts/accountAdjustmentService.cjs') || {};
+const scheduledTransactionService =
+    requireModule('../services/accounts/scheduledTransactionService.cjs') || {};
 
 console.log('   - transactionImportService loaded:', !!transactionImportService, transactionImportService?.readImportFile ? '(readImportFile ok)' : '(MISSING — check main log above)');
 
@@ -1042,6 +1055,11 @@ async function getDatabase() {
     if (db) {
         try {
             await db.get('SELECT 1');
+            if (!db.__intentflowPragmasApplied) {
+                const { applySqlitePragmas } = require(path.join(__dirname, '../db/sqlitePragmas.cjs'));
+                await applySqlitePragmas(db);
+                db.__intentflowPragmasApplied = true;
+            }
             console.log('✅ Existing connection is valid');
             return db;
         } catch (e) {
@@ -1060,7 +1078,8 @@ async function getDatabase() {
         const { open } = require('sqlite');
 
         db = await open({ filename: dbPath, driver: sqlite3.Database });
-        await db.exec('PRAGMA foreign_keys = ON');
+        const { applySqlitePragmas } = require(path.join(__dirname, '../db/sqlitePragmas.cjs'));
+        await applySqlitePragmas(db);
         await db.run('CREATE TABLE IF NOT EXISTS _test (id INTEGER)');
         await db.run('DROP TABLE _test');
         console.log('✅ Write test PASSED');
@@ -1738,6 +1757,33 @@ function buildAccountInsertFromPayload(accountData, accountId, userId) {
     };
 }
 
+function getDialogParentWindow() {
+    if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && !focused.isDestroyed()) return focused;
+    return null;
+}
+
+function resolveTransactionImportContent(payload = {}) {
+    const { content, filePath, fileName } = payload;
+    if (content) {
+        return { ok: true, content: String(content), fileName: fileName || '' };
+    }
+    if (!filePath) {
+        return { ok: false, error: 'Import file path or content is required' };
+    }
+    if (!transactionImportService?.readImportFile) {
+        return { ok: false, error: 'Transaction import service unavailable' };
+    }
+    const read = transactionImportService.readImportFile(filePath);
+    if (!read.ok) return read;
+    return {
+        ok: true,
+        content: read.content,
+        fileName: fileName || read.fileName || path.basename(filePath),
+    };
+}
+
 // ==================== IPC HANDLERS ====================
 function setupIpcHandlers() {
     if (ipcHandlersRegistered) {
@@ -1769,7 +1815,10 @@ function setupIpcHandlers() {
         'debug-category-schema', 'deleteCategory', 'debug-account-creation',
         'category:archive', 'category:restore', 'category:getArchived', 'category:toggleHide',
         'debug:test-database-write', 'debug:get-database-info', 'debug:test-group-delete',
-        'debug:check-permissions'
+        'debug:check-permissions',
+        'transactions:pickImportFile', 'transactions:previewImport', 'transactions:executeImport',
+        'import-get-category-mappings', 'import-list-category-mappings',
+        'import-delete-category-mapping', 'import-save-category-mappings'
     ];
 
     handlersToRemove.forEach(handler => {
@@ -1780,6 +1829,24 @@ function setupIpcHandlers() {
     ipcMain.handle('ping', () => {
         console.log('🔍 ping received');
         return { success: true, message: 'pong' };
+    });
+
+    ipcMain.handle('window:maximize', () => {
+        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        if (win && !win.isMaximized()) {
+            win.maximize();
+        }
+        return { success: true, maximized: win ? win.isMaximized() : false };
+    });
+
+    ipcMain.handle('window:is-maximized', () => {
+        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        return { success: true, maximized: win ? win.isMaximized() : false };
+    });
+
+    ipcMain.handle('app:quit', () => {
+        app.quit();
+        return { success: true };
     });
 
     // ==================== DEBUG HANDLERS ====================
@@ -1867,6 +1934,32 @@ function setupIpcHandlers() {
         const accountService = new AccountService(() => getDatabase());
         await accountService.deleteScheduledTransaction(id, user.id);
         return { success: true };
+    });
+
+    ipcMain.handle('scheduled-transactions:post', async (event, scheduledId) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            if (!scheduledTransactionService?.postScheduledTransaction) {
+                return { success: false, error: 'Scheduled post service unavailable' };
+            }
+            const db = await getDatabase();
+            const dbPath = getDatabasePath();
+            const data = await scheduledTransactionService.postScheduledTransaction(
+                db,
+                dbPath,
+                currentUser.id,
+                scheduledId
+            );
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'scheduled:posted',
+            });
+            notifyAccountsUpdated('scheduled-post');
+            return { success: true, data };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
     });
 
     // Delete a scheduled transaction
@@ -2203,13 +2296,13 @@ function setupIpcHandlers() {
             const currentUser = userService.getCurrentUser();
             const effectiveUserId = userId || currentUser?.id;
             if (!effectiveUserId) {
-                return { success: false, error: 'No user ID provided', data: { transferPayees: [], regularPayees: [] } };
+                return { success: false, error: 'No user ID provided', data: { paymentPayees: [], transferPayees: [], regularPayees: [] } };
             }
             const result = await payeeService.getPayeesForForm(effectiveUserId, currentAccountId);
             return { success: true, data: result };
         } catch (error) {
             console.error('Error in get-payees-for-form:', error);
-            return { success: false, error: error.message, data: { transferPayees: [], regularPayees: [] } };
+            return { success: false, error: error.message, data: { paymentPayees: [], transferPayees: [], regularPayees: [] } };
         }
     });
 
@@ -2233,26 +2326,32 @@ function setupIpcHandlers() {
                     await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                         accountIds: [transferData.sourceAccountId, transferData.destinationAccountId],
                         dates: [txDate],
-                        skipLedgerSync: true
+                        skipLedgerSync: true,
+                        db,
+                        poolTransferPair: {
+                            sourceAccountId: transferData.sourceAccountId,
+                            destinationAccountId: transferData.destinationAccountId,
+                            amount: transferData.amount,
+                        },
                     });
                 } catch (e) {
                     console.warn('post-transaction budget refresh (create-linked-transfer):', e?.message || e);
                 }
             }
-            const sourceAccount = await db.get(
-                'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
-                [transferData.sourceAccountId, currentUser.id]
-            );
             const destinationAccount = await db.get(
                 'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
                 [transferData.destinationAccountId, currentUser.id]
             );
+            const sourceAccount = await db.get(
+                'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
+                [transferData.sourceAccountId, currentUser.id]
+            );
             if (destinationAccount?.type === 'credit' && sourceAccount?.type !== 'credit') {
-                await applyCreditCardPaymentReserveDelta(db, {
+                await refreshCreditCardPaymentCategoryEnvelope(db, {
                     userId: currentUser.id,
                     accountId: destinationAccount.id,
                     date: transferData.date || new Date().toISOString().split('T')[0],
-                    delta: -Math.abs(Number(transferData.amount) || 0)
+                    userIntentAssignment: true,
                 });
             }
             notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:added' });
@@ -2332,7 +2431,7 @@ function setupIpcHandlers() {
 
             const database = await getDatabase();
             const pre = await database.get(
-                `SELECT account_id, date, linked_transaction_id
+                `SELECT account_id, date, linked_transaction_id, amount, counterparty_account_id, is_transfer
                  FROM transactions WHERE id = ? AND user_id = ?`,
                 [transactionId, currentUser.id]
             );
@@ -2347,6 +2446,11 @@ function setupIpcHandlers() {
                 if (peer) peerAccountId = peer.account_id;
             }
 
+            const readyToAssignPoolService =
+                require(path.join(__dirname, '../services/budget/readyToAssignPoolService.cjs'));
+            const poolReverseTransferPair =
+                readyToAssignPoolService.buildTransferPairFromTransaction(pre);
+
             const result = await payeeService.deleteLinkedTransfer(transactionId, currentUser.id);
 
             if (transactionLifecycle?.runPostTransactionEffects) {
@@ -2354,10 +2458,34 @@ function setupIpcHandlers() {
                     await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                         accountIds: [pre.account_id, peerAccountId].filter(Boolean),
                         dates: [pre.date],
-                        skipLedgerSync: true
+                        skipLedgerSync: true,
+                        db: database,
+                        poolReverseTransferPair,
                     });
                 } catch (e) {
                     console.warn('post-transaction budget refresh (delete-linked-transfer):', e?.message || e);
+                }
+            }
+            if (result?.success) {
+                const creditAccountId = Number(pre.amount) > 0 ? pre.account_id : peerAccountId;
+                const otherAccountId = Number(pre.amount) > 0 ? peerAccountId : pre.account_id;
+                if (creditAccountId && otherAccountId) {
+                    const destinationAccount = await database.get(
+                        'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
+                        [creditAccountId, currentUser.id]
+                    );
+                    const sourceAccount = await database.get(
+                        'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
+                        [otherAccountId, currentUser.id]
+                    );
+                    if (destinationAccount?.type === 'credit' && sourceAccount?.type !== 'credit') {
+                        await refreshCreditCardPaymentCategoryEnvelope(database, {
+                            userId: currentUser.id,
+                            accountId: destinationAccount.id,
+                            date: pre.date,
+                            userIntentAssignment: true,
+                        });
+                    }
                 }
             }
             notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:deleted' });
@@ -2443,7 +2571,8 @@ function setupIpcHandlers() {
                         ownerId,
                         canonicalCategoryId,
                         mKey,
-                        patch.assigned
+                        patch.assigned,
+                        { auditSource: 'assign', userIntentAssignment: true }
                     );
                     delete patch.assigned;
                     didMonthMutation = true;
@@ -2663,6 +2792,67 @@ function setupIpcHandlers() {
             const service = new ForecastService();
             const result = await service.getRecommendations(userId);
             return { success: true, data: result };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('cash-forecast:share:create', async (event, payload) => {
+        try {
+            const user = await getUserFromSession(event);
+            if (!user) return { success: false, error: 'Not authenticated' };
+            const service = new CashForecastService(getDatabase);
+            await service.deleteExpiredShares();
+            const id = await service.createShare(user.id, payload);
+            return { success: true, data: { id } };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('cash-forecast:share:get', async (event, shareId) => {
+        try {
+            const service = new CashForecastService(getDatabase);
+            const data = await service.getShare(shareId);
+            if (!data) return { success: false, error: 'Share not found or expired' };
+            return { success: true, data };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('cash-forecast:recurring-prefs:get', async (event) => {
+        try {
+            const user = await getUserFromSession(event);
+            if (!user) return { success: false, error: 'Not authenticated' };
+            const service = new CashForecastService(getDatabase);
+            const data = await service.getRecurringPrefs(user.id);
+            return { success: true, data };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('cash-forecast:recurring-prefs:set', async (event, recurringId, status, override) => {
+        try {
+            const user = await getUserFromSession(event);
+            if (!user) return { success: false, error: 'Not authenticated' };
+            const service = new CashForecastService(getDatabase);
+            const data = await service.setRecurringPref(user.id, recurringId, status, override);
+            return { success: true, data };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('cash-forecast:scheduled:list', async (event) => {
+        try {
+            const user = await getUserFromSession(event);
+            if (!user) return { success: false, error: 'Not authenticated' };
+            const service = new CashForecastService(getDatabase);
+            const today = new Date().toISOString().slice(0, 10);
+            const data = await service.getScheduledTransactionsForUser(user.id, { fromDate: today });
+            return { success: true, data };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -3039,7 +3229,7 @@ function setupIpcHandlers() {
         }
     });
 
-    ipcMain.handle('accounts:delete', async (event, id, userId) => {
+    ipcMain.handle('accounts:delete', async (event, id, userId, opts = {}) => {
         try {
             if (!id) return { success: false, error: 'ID and userId required' };
             const ownerId = resolveBudgetOwnerId(null, userId);
@@ -3092,7 +3282,7 @@ function setupIpcHandlers() {
                 });
             }
 
-            const deleted = await accountService.deleteAccount(id, ownerId);
+            const deleted = await accountService.deleteAccount(id, ownerId, opts);
             if (deleted) {
                 notifyAccountsUpdated('manual');
                 return { success: true };
@@ -3100,6 +3290,33 @@ function setupIpcHandlers() {
             return { success: false, error: 'Account not found or already deleted' };
         } catch (error) {
             return { success: false, error: error.message, code: error.code };
+        }
+    });
+
+    ipcMain.handle('accounts:applyManualAdjustment', async (event, payload) => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            if (!accountAdjustmentService?.applyManualBalanceAdjustment) {
+                return { success: false, error: 'Manual adjustment service unavailable' };
+            }
+            const { accountId, delta, memo } = payload || {};
+            const db = await getDatabase();
+            const dbPath = getDatabasePath();
+            const data = await accountAdjustmentService.applyManualBalanceAdjustment(db, dbPath, {
+                accountId,
+                userId: currentUser.id,
+                delta,
+                memo,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'account:manual-adjustment',
+            });
+            notifyAccountsUpdated('manual-adjustment');
+            return { success: true, data };
+        } catch (error) {
+            return { success: false, error: error.message };
         }
     });
 
@@ -3816,16 +4033,23 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
+            const db = await getDatabase();
             const amount = parseFloat(transaction.amount);
             if (isNaN(amount)) return { success: false, error: 'Invalid amount' };
 
+            let categoryId = transaction.categoryId;
+            if (categoryId === 'inflow_ready_to_assign' || categoryId === '') {
+                categoryId = null;
+            }
+
+            const txDate = transaction.date || new Date().toISOString().split('T')[0];
             const transactionData = {
                 accountId: transaction.accountId,
                 userId: currentUser.id,
-                date: transaction.date || new Date().toISOString().split('T')[0],
+                date: txDate,
                 description: transaction.description || transaction.payee || 'Transaction',
                 amount,
-                categoryId: transaction.categoryId || null,
+                categoryId: null,
                 payee: transaction.payee || null,
                 memo: transaction.memo || null,
                 isCleared: transaction.cleared ? 1 : 0,
@@ -3839,7 +4063,28 @@ function setupIpcHandlers() {
             const service = new TransactionService(dbPath);
             const result = await service.createTransaction(transactionData);
 
-            if (transaction.payee && !transaction.isTransfer) {
+            let creditReserveDelta = 0;
+            const insertedRow = await db.get(
+                `SELECT id FROM transactions
+                 WHERE account_id = ? AND user_id = ? AND date = ? AND amount = ?
+                 ORDER BY created_at DESC LIMIT 1`,
+                [transaction.accountId, currentUser.id, txDate, amount]
+            );
+            if (insertedRow?.id && transactionCategorizationService?.processImportedTransaction) {
+                const processed = await transactionCategorizationService.processImportedTransaction(
+                    db,
+                    currentUser.id,
+                    insertedRow.id,
+                    {
+                        merchantName: transaction.payee || transaction.description,
+                        description: transactionData.description,
+                        importSource: 'manual',
+                        plaidCategoryId: categoryId,
+                        isTransfer: Boolean(transaction.isTransfer),
+                    }
+                );
+                creditReserveDelta = processed.creditReserveDelta || 0;
+            } else if (transaction.payee && !transaction.isTransfer) {
                 try {
                     await payeeService.createOrUpdatePayee(transaction.payee, currentUser.id);
                 } catch (payeeError) {
@@ -3847,6 +4092,34 @@ function setupIpcHandlers() {
                 }
             }
 
+            const poolTx = insertedRow?.id
+                ? await db.get(
+                    'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+                    [insertedRow.id, currentUser.id]
+                )
+                : null;
+            if (transactionLifecycle?.runPostTransactionEffects) {
+                try {
+                    await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                        accountIds: [transaction.accountId],
+                        dates: [txDate],
+                        skipLedgerSync: true,
+                        db,
+                        poolTransaction: poolTx,
+                    });
+                } catch (e) {
+                    console.warn('post-transaction budget refresh (createTransaction):', e?.message || e);
+                }
+            }
+            if (creditReserveDelta !== 0) {
+                await applyCreditCardPaymentReserveDelta(db, {
+                    userId: currentUser.id,
+                    accountId: transaction.accountId,
+                    date: txDate,
+                    delta: creditReserveDelta
+                });
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:added' });
             if (updateService) updateService.publish('transaction:added', result);
             return { success: true, data: result };
         } catch (error) {
@@ -3891,7 +4164,8 @@ function setupIpcHandlers() {
             if (!transactionImportService?.readImportFile) {
                 return { success: false, error: 'Transaction import service unavailable' };
             }
-            const openResult = await dialog.showOpenDialog({
+            const parentWindow = getDialogParentWindow();
+            const openResult = await dialog.showOpenDialog(parentWindow, {
                 title: 'Import transactions',
                 filters: [
                     { name: 'CSV', extensions: ['csv', 'txt'] },
@@ -3910,7 +4184,6 @@ function setupIpcHandlers() {
                 filePath,
                 fileName: read.fileName,
                 format: read.format,
-                content: read.content,
             };
         } catch (error) {
             console.error('transactions:pickImportFile error:', error);
@@ -3925,10 +4198,12 @@ function setupIpcHandlers() {
             if (!transactionImportService?.previewImport) {
                 return { success: false, error: 'Transaction import service unavailable' };
             }
-            const { accountId, content, columnMap, categoryMappings, fileName } = payload || {};
-            if (!accountId || !content) {
-                return { success: false, error: 'Account and file content are required' };
+            const { accountId, content, filePath, columnMap, categoryMappings, fileName } = payload || {};
+            if (!accountId) {
+                return { success: false, error: 'Account is required' };
             }
+            const resolved = resolveTransactionImportContent({ content, filePath, fileName });
+            if (!resolved.ok) return { success: false, error: resolved.error };
             const db = await getDatabase();
             const account = await db.get(
                 'SELECT id, type, name, institution FROM accounts WHERE id = ? AND user_id = ?',
@@ -3941,12 +4216,12 @@ function setupIpcHandlers() {
             );
             const categoriesByName = transactionImportService.buildCategoryNameMap(categories);
             const preview = transactionImportService.previewImport(
-                content,
+                resolved.content,
                 account,
                 categories,
                 columnMap || null,
                 categoryMappings || null,
-                fileName || ''
+                resolved.fileName || fileName || ''
             );
             const institutionKey = importCategoryMapping?.resolveInstitutionKey
                 ? importCategoryMapping.resolveInstitutionKey({
@@ -4002,15 +4277,18 @@ function setupIpcHandlers() {
             const {
                 accountId,
                 content,
+                filePath,
                 columnMap,
                 categoryMappings,
                 saveCategoryMappings,
                 institutionKey,
                 fileName,
             } = payload || {};
-            if (!accountId || !content) {
-                return { success: false, error: 'Account and file content are required' };
+            if (!accountId) {
+                return { success: false, error: 'Account is required' };
             }
+            const resolved = resolveTransactionImportContent({ content, filePath, fileName });
+            if (!resolved.ok) return { success: false, error: resolved.error };
             const db = await getDatabase();
             const account = await db.get(
                 'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
@@ -4022,12 +4300,12 @@ function setupIpcHandlers() {
                 [currentUser.id]
             );
             const built = transactionImportService.previewImport(
-                content,
+                resolved.content,
                 account,
                 categories,
                 columnMap || null,
                 categoryMappings || null,
-                fileName || ''
+                resolved.fileName || fileName || ''
             );
             if (saveCategoryMappings && categoryMappings && importCategoryMapping?.saveImportCategoryMappings) {
                 const accountRow = await db.get(
@@ -4219,26 +4497,32 @@ function setupIpcHandlers() {
                         await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                             accountIds: [transaction.accountId, transaction.transferAccountId],
                             dates: [txDate],
-                            skipLedgerSync: true
+                            skipLedgerSync: true,
+                            db,
+                            poolTransferPair: {
+                                sourceAccountId: transaction.accountId,
+                                destinationAccountId: transaction.transferAccountId,
+                                amount: Math.abs(amount),
+                            },
                         });
                     } catch (e) {
                         console.warn('post-transaction budget refresh (transfer):', e?.message || e);
                     }
                 }
-                const sourceAccount = await db.get(
-                    'SELECT id, user_id, type FROM accounts WHERE id = ? AND user_id = ?',
-                    [transaction.accountId, currentUser.id]
-                );
                 const destinationAccount = await db.get(
-                    'SELECT id, user_id, type FROM accounts WHERE id = ? AND user_id = ?',
+                    'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
                     [transaction.transferAccountId, currentUser.id]
                 );
+                const sourceAccount = await db.get(
+                    'SELECT id, type FROM accounts WHERE id = ? AND user_id = ?',
+                    [transaction.accountId, currentUser.id]
+                );
                 if (destinationAccount?.type === 'credit' && sourceAccount?.type !== 'credit') {
-                    await applyCreditCardPaymentReserveDelta(db, {
+                    await refreshCreditCardPaymentCategoryEnvelope(db, {
                         userId: currentUser.id,
                         accountId: destinationAccount.id,
                         date: txDate,
-                        delta: -Math.abs(amount)
+                        userIntentAssignment: true,
                     });
                 }
                 notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:added' });
@@ -4258,23 +4542,24 @@ function setupIpcHandlers() {
                 date: transaction.date || new Date().toISOString().split('T')[0],
                 description: transaction.description || transaction.payee || 'Transaction',
                 amount,
-                categoryId: null,
+                categoryId: categoryId || null,
                 payee: transaction.payee || null,
                 memo: transaction.memo || null,
                 isCleared: transaction.cleared ? 1 : 0
             };
 
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const result = await service.createTransaction(transactionData);
 
             let creditReserveDelta = 0;
-            const insertedRow = await db.get(
-                `SELECT id FROM transactions
-                 WHERE account_id = ? AND user_id = ? AND date = ? AND amount = ?
-                 ORDER BY created_at DESC LIMIT 1`,
-                [transaction.accountId, currentUser.id, transactionData.date, amount]
-            );
+            const insertedRow = result?.id
+                ? { id: result.id }
+                : await db.get(
+                    `SELECT id FROM transactions
+                     WHERE account_id = ? AND user_id = ? AND date = ? AND amount = ?
+                     ORDER BY created_at DESC LIMIT 1`,
+                    [transaction.accountId, currentUser.id, transactionData.date, amount]
+                );
             if (insertedRow?.id && transactionCategorizationService?.processImportedTransaction) {
                 const processed = await transactionCategorizationService.processImportedTransaction(
                     db,
@@ -4297,12 +4582,20 @@ function setupIpcHandlers() {
                 }
             }
 
+            const poolTx = insertedRow?.id
+                ? await db.get(
+                    'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+                    [insertedRow.id, currentUser.id]
+                )
+                : null;
             if (transactionLifecycle?.runPostTransactionEffects) {
                 try {
                     await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                         accountIds: [transaction.accountId],
                         dates: [transactionData.date],
-                        skipLedgerSync: true
+                        skipLedgerSync: true,
+                        db,
+                        poolTransaction: poolTx,
                     });
                 } catch (e) {
                     console.warn('post-transaction budget refresh:', e?.message || e);
@@ -4332,7 +4625,7 @@ function setupIpcHandlers() {
 
             const database = await getDatabase();
             const pre = await database.get(
-                `SELECT id, account_id, date, is_transfer, linked_transaction_id
+                `SELECT id, account_id, date, is_transfer, linked_transaction_id, category_id, amount, direction, payee, description
                  FROM transactions WHERE id = ? AND user_id = ?`,
                 [id, currentUser.id]
             );
@@ -4410,13 +4703,14 @@ function setupIpcHandlers() {
                     : { success: false, error: result?.error || 'Update failed' };
             }
 
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const normalizedUpdates = normalizeTransactionUpdatePayload(updates);
 
             let creditReserveDelta = 0;
             const categoryChanging =
                 Object.prototype.hasOwnProperty.call(normalizedUpdates, 'category_id');
+            const amountChanging =
+                Object.prototype.hasOwnProperty.call(normalizedUpdates, 'amount');
 
             if (
                 categoryChanging &&
@@ -4440,7 +4734,8 @@ function setupIpcHandlers() {
             }
 
             const post = await database.get(
-                'SELECT account_id, date FROM transactions WHERE id = ? AND user_id = ?',
+                `SELECT id, account_id, date, category_id, amount, direction, is_transfer, payee, description
+                 FROM transactions WHERE id = ? AND user_id = ?`,
                 [id, currentUser.id]
             );
             const dates = [pre.date];
@@ -4451,10 +4746,37 @@ function setupIpcHandlers() {
                     await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                         accountIds: [pre.account_id],
                         dates,
-                        skipLedgerSync: true
+                        skipLedgerSync: true,
+                        db: database,
+                        poolReverseTransaction: pre,
+                        poolTransaction: post,
                     });
                 } catch (e) {
                     console.warn('post-transaction budget refresh (update):', e?.message || e);
+                }
+            }
+            if (
+                (amountChanging || categoryChanging) &&
+                monthlyBudgetService?.refreshCategoryEnvelopesForward
+            ) {
+                const categoryIds = [
+                    ...new Set(
+                        [pre.category_id, post?.category_id]
+                            .filter((cid) => cid != null && String(cid).trim() !== '')
+                            .map((cid) => String(cid))
+                    ),
+                ];
+                if (categoryIds.length) {
+                    try {
+                        await monthlyBudgetService.refreshCategoryEnvelopesForward(
+                            database,
+                            currentUser.id,
+                            pre.date,
+                            categoryIds
+                        );
+                    } catch (e) {
+                        console.warn('category envelope refresh (update):', e?.message || e);
+                    }
                 }
             }
             if (creditReserveDelta !== 0) {
@@ -4492,8 +4814,12 @@ function setupIpcHandlers() {
 
             const database = await getDatabase();
             const pre = await database.get(
-                `SELECT is_transfer, account_id, date, linked_transaction_id
-                 FROM transactions WHERE id = ? AND user_id = ?`,
+                `SELECT t.id, t.is_transfer, t.account_id, t.date, t.linked_transaction_id, t.category_id,
+                        t.amount, t.direction, t.payee, t.description, t.cc_payment_reserved,
+                        a.type AS account_type
+                 FROM transactions t
+                 JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
+                 WHERE t.id = ? AND t.user_id = ?`,
                 [id, currentUser.id]
             );
             if (!pre) return { success: false, error: 'Transaction not found' };
@@ -4507,13 +4833,19 @@ function setupIpcHandlers() {
                     );
                     if (peer) peerAccountId = peer.account_id;
                 }
+                const readyToAssignPoolService =
+                    require(path.join(__dirname, '../services/budget/readyToAssignPoolService.cjs'));
+                const poolReverseTransferPair =
+                    readyToAssignPoolService.buildTransferPairFromTransaction(pre);
                 const result = await payeeService.deleteLinkedTransfer(id, currentUser.id);
                 if (transactionLifecycle?.runPostTransactionEffects) {
                     try {
                         await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                             accountIds: [pre.account_id, peerAccountId].filter(Boolean),
                             dates: [pre.date],
-                            skipLedgerSync: true
+                            skipLedgerSync: true,
+                            db: database,
+                            poolReverseTransferPair,
                         });
                     } catch (e) {
                         console.warn('post-transaction budget refresh (transfer delete):', e?.message || e);
@@ -4524,6 +4856,11 @@ function setupIpcHandlers() {
                 return result;
             }
 
+            await releaseReserveForDeletedTransaction(database, {
+                userId: currentUser.id,
+                transactionRow: pre,
+            });
+
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.deleteTransaction(id, currentUser.id);
@@ -4533,7 +4870,9 @@ function setupIpcHandlers() {
                     await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
                         accountIds: [pre.account_id],
                         dates: [pre.date],
-                        skipLedgerSync: true
+                        skipLedgerSync: true,
+                        db: database,
+                        poolReverseTransaction: pre,
                     });
                 } catch (e) {
                     console.warn('post-transaction budget refresh (delete):', e?.message || e);
@@ -4875,9 +5214,30 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
+            const db = await getDatabase();
             const dbPath = getDatabasePath();
             const service = new TransactionService(dbPath);
             const result = await service.reconcileAccount(accountId, currentUser.id, statementBalance, transactionsToClear);
+            if (result?.adjustment_transaction_id && transactionLifecycle?.runPostTransactionEffects) {
+                const poolTx = await db.get(
+                    'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+                    [result.adjustment_transaction_id, currentUser.id]
+                );
+                if (poolTx) {
+                    try {
+                        await transactionLifecycle.runPostTransactionEffects(currentUser.id, {
+                            accountIds: [accountId],
+                            dates: [poolTx.date],
+                            skipLedgerSync: true,
+                            db,
+                            poolTransaction: poolTx,
+                        });
+                    } catch (e) {
+                        console.warn('post-transaction budget refresh (reconcile):', e?.message || e);
+                    }
+                }
+            }
+            notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'account:reconciled' });
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };
@@ -5322,6 +5682,7 @@ function setupIpcHandlers() {
                     totalCash,
                     auditSource: opts?.auditSource || 'bulk_assign',
                     auditMetadata: opts?.auditMetadata || null,
+                    skipPoolAdjustment: opts?.skipPoolAdjustment === true,
                 }
             );
             notifyBudgetStateChanged('budget:bulkAssigned', {
@@ -5388,7 +5749,7 @@ function setupIpcHandlers() {
                 dbConnection,
                 targetUserId,
                 monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
-                opts
+                { ...opts, userIntentAssignment: true, auditSource: 'consolidate_assignments' }
             );
             notifyBudgetStateChanged('budget:consolidated', {
                 userId: targetUserId,
@@ -5451,7 +5812,8 @@ function setupIpcHandlers() {
             const result = await monthlyBudgetService.resetEnvelopesFromMonth(
                 dbConnection,
                 targetUserId,
-                monthKey || monthlyBudgetService.toLocalMonthKey(new Date())
+                monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
+                { userIntentAssignment: true }
             );
             notifyBudgetStateChanged('budget:resetEnvelopes', {
                 userId: targetUserId,
@@ -5460,6 +5822,114 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('budget:resetEnvelopes error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:setReadyToAssignPool', async (event, userId, targetBalance) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const balance = await monthlyBudgetService.setReadyToAssignPoolBalance(
+                dbConnection,
+                targetUserId,
+                Number(targetBalance) || 0
+            );
+            await dbConnection.run(
+                `UPDATE user_budget_pool
+                 SET pool_backfilled = 1, updated_at = datetime('now')
+                 WHERE user_id = ?`,
+                [targetUserId]
+            );
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:pool_set',
+            });
+            return { success: true, data: { readyToAssign: balance } };
+        } catch (error) {
+            console.error('budget:setReadyToAssignPool error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:reconcilePoolEnvelope', async (event, userId) => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const totalCash = await resolveBudgetCashTotal(targetUserId);
+            const result = await monthlyBudgetService.reconcileBudgetPoolEnvelope(
+                dbConnection,
+                targetUserId,
+                totalCash
+            );
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:pool_reconciled',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:reconcilePoolEnvelope error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:getIntegrityState', async (event, userId, monthKey) => {
+        try {
+            const budgetIntegrityService =
+                require(path.join(__dirname, '../services/budget/budgetIntegrityService.cjs'));
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const state = await budgetIntegrityService.evaluateBudgetIdentity(
+                dbConnection,
+                targetUserId,
+                { monthKey }
+            );
+            return { success: true, data: state };
+        } catch (error) {
+            console.error('budget:getIntegrityState error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:scopeActiveAccounts', async (event, userId, keepAccountNames) => {
+        try {
+            const budgetIntegrityService =
+                require(path.join(__dirname, '../services/budget/budgetIntegrityService.cjs'));
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const result = await budgetIntegrityService.scopeActiveAccountsExcept(
+                dbConnection,
+                targetUserId,
+                keepAccountNames || []
+            );
+            notifyBudgetStateChanged('accounts-updated', { userId: targetUserId });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:scopeActiveAccounts error:', error);
             return { success: false, error: error.message };
         }
     });

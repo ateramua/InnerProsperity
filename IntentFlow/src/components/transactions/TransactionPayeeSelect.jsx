@@ -5,6 +5,7 @@ import useTransactionPayees, {
   findPayeeOptionByName,
   filterTransferPayeesForAccount,
 } from '../../hooks/useTransactionPayees.jsx';
+import AccountRoutingPayeeOptions from './AccountRoutingPayeeOptions.jsx';
 
 const styles = {
   select: {
@@ -35,7 +36,6 @@ const styles = {
 };
 
 const PLACEHOLDER = '-- Select or enter payee --';
-const TRANSFERS_GROUP = 'PAYMENTS & TRANSFERS';
 const RECENT_GROUP = 'RECENT PAYEES';
 
 /**
@@ -57,10 +57,7 @@ export default function TransactionPayeeSelect({
   const source = payeesProp || internal.payees;
 
   const payees = useMemo(
-    () => ({
-      transferPayees: filterTransferPayeesForAccount(source, excludeAccountId),
-      regularPayees: source?.regularPayees || [],
-    }),
+    () => filterTransferPayeesForAccount(source, excludeAccountId),
     [source, excludeAccountId]
   );
 
@@ -80,6 +77,9 @@ export default function TransactionPayeeSelect({
     if (payeeName?.trim()) return `__current__:${payeeName}`;
     return '';
   }, [matchedOption, payeeName]);
+
+  const routingCount =
+    (payees.paymentPayees?.length || 0) + (payees.transferPayees?.length || 0);
 
   useEffect(() => {
     if (alwaysOpen) return;
@@ -142,7 +142,7 @@ export default function TransactionPayeeSelect({
     });
   };
 
-  if (loading && !payees.transferPayees.length && !payees.regularPayees.length) {
+  if (loading && routingCount === 0 && !(payees.regularPayees?.length || 0)) {
     return <div style={styles.loading}>Loading payees…</div>;
   }
 
@@ -193,16 +193,12 @@ export default function TransactionPayeeSelect({
         {showCurrentOption && (
           <option value={`__current__:${payeeName}`}>{payeeName}</option>
         )}
-        {payees.transferPayees.length > 0 && (
-          <optgroup label={TRANSFERS_GROUP}>
-            {payees.transferPayees.map((payee) => (
-              <option key={payee.id} value={serializePayeeOption(payee)}>
-                {payee.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {payees.regularPayees.length > 0 && (
+        <AccountRoutingPayeeOptions
+          paymentPayees={payees.paymentPayees}
+          transferPayees={payees.transferPayees}
+          serializeValue={serializePayeeOption}
+        />
+        {(payees.regularPayees?.length || 0) > 0 && (
           <optgroup label={RECENT_GROUP}>
             {payees.regularPayees.map((payee) => (
               <option key={payee.id} value={serializePayeeOption(payee)}>

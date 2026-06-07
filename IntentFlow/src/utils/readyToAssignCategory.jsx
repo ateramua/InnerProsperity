@@ -40,6 +40,47 @@ export function isOutflowTransaction(tx) {
   return Number.isFinite(amount) && amount < 0;
 }
 
+/** Outflow vs inflow for register edit UI (includes transfers). */
+export function resolveTransactionDirection(tx) {
+  if (!tx) return 'outflow';
+  if (tx.direction === 'inflow' || tx.direction === 'outflow') {
+    return tx.direction;
+  }
+  const amount = Number(tx.amount);
+  if (Number.isFinite(amount) && amount !== 0) {
+    return amount < 0 ? 'outflow' : 'inflow';
+  }
+  return 'outflow';
+}
+
+export function getTransactionEditType(tx) {
+  return resolveTransactionDirection(tx);
+}
+
+export function getTransactionEditAmountMagnitude(tx) {
+  return String(Math.abs(Number(tx?.amount) || 0));
+}
+
+/** Preserve direction+positive amount rows; legacy rows keep signed amount. */
+export function buildTransactionAmountUpdate(originalTx, amountValue, editType = null) {
+  const mag = Math.abs(Number(amountValue) || 0);
+  if (editType === 'inflow' || editType === 'outflow') {
+    return { amount: mag, direction: editType };
+  }
+  if (originalTx?.direction === 'inflow' || originalTx?.direction === 'outflow') {
+    return { amount: mag, direction: originalTx.direction };
+  }
+  const isOutflow = resolveTransactionDirection(originalTx) === 'outflow';
+  return { amount: isOutflow ? -mag : mag };
+}
+
+/** Signed amount for linked transfer updates (always legacy signed convention). */
+export function buildTransferSignedAmount(originalTx, amountValue, editType = null) {
+  const mag = Math.abs(Number(amountValue) || 0);
+  const isOutflow = (editType || resolveTransactionDirection(originalTx)) === 'outflow';
+  return isOutflow ? -mag : mag;
+}
+
 export function normalizeCategoryIdForStorage(categoryId, { isIncome } = {}) {
   if (!isReadyToAssignSentinel(categoryId)) {
     if (categoryId === '' || categoryId == null) return null;

@@ -1,5 +1,7 @@
 /**
  * Global Ready to Assign — shared pool across all budget months.
+ * When readyToAssignBalance is supplied, RTA is the persisted unallocated pool
+ * (unchanged by spending). Otherwise falls back to cash − totalAssigned (legacy).
  */
 
 function roundMoney(n) {
@@ -20,7 +22,11 @@ function normalizeMonthKey(monthKey) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
 }
 
-function computeGlobalBudgetSummary(rows, currentMonthKey, totalCash) {
+/**
+ * @param {object} [opts]
+ * @param {number|null} [opts.readyToAssignBalance] Persisted unallocated pool (YNAB-style).
+ */
+function computeGlobalBudgetSummary(rows, currentMonthKey, totalCash, opts = {}) {
   const anchor = normalizeMonthKey(currentMonthKey);
   let totalAssigned = 0;
   let futureAssigned = 0;
@@ -51,7 +57,10 @@ function computeGlobalBudgetSummary(rows, currentMonthKey, totalCash) {
   totalAssigned = roundMoney(totalAssigned);
   futureAssigned = roundMoney(futureAssigned);
   const cash = roundMoney(totalCash);
-  const readyToAssign = roundMoney(cash - totalAssigned);
+  const readyToAssign =
+    opts.readyToAssignBalance != null && Number.isFinite(Number(opts.readyToAssignBalance))
+      ? roundMoney(opts.readyToAssignBalance)
+      : roundMoney(cash - totalAssigned);
 
   futureBreakdown.sort((a, b) => {
     if (a.monthKey !== b.monthKey) return a.monthKey.localeCompare(b.monthKey);

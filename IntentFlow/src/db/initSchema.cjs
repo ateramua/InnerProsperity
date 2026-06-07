@@ -164,6 +164,25 @@ async function ensureSchema(db) {
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS forecast_shares (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS forecast_recurring_prefs (
+      user_id INTEGER NOT NULL,
+      recurring_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      override_json TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, recurring_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS migrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -321,7 +340,7 @@ async function injectTemporaryRecoveryUser(db) {
     return false;
   }
 
-  const { salt, hash } = hashPassword('test1234');
+  const { salt, hash } = hashPassword('test');
 
   await db.run(
     `INSERT INTO users (username, email, password_hash, password_salt, full_name, avatar_color, is_active)
@@ -329,7 +348,7 @@ async function injectTemporaryRecoveryUser(db) {
     ['teramua', 'teramua@example.com', hash, salt, 'Recovery User', '#8B5CF6']
   );
 
-  console.log('✅ Temporary recovery user injected: teramua / test1234');
+  console.log('✅ Temporary recovery user injected: teramua / test');
   return true;
 }
 
