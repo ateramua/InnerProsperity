@@ -51,6 +51,7 @@ import {
     parsePaymentDestinationName,
     EMPTY_PAYEES_FORM,
 } from '../../utils/transferPayeeUtils.jsx';
+import { showIntentFlowDialog } from '../../utils/showIntentFlowDialog.jsx';
 
 const AccountDetailPage = () => {
     const router = useRouter();
@@ -1042,12 +1043,13 @@ const AccountDetailPage = () => {
     useEffect(() => {
         const onAccountsUpdated = () => {
             if (account?.id) {
+                loadTransactions(account.id, account);
                 loadScheduledTransactions(account.id);
             }
         };
         window.addEventListener('accounts-updated', onAccountsUpdated);
         return () => window.removeEventListener('accounts-updated', onAccountsUpdated);
-    }, [account?.id]);
+    }, [account]);
 
     useEffect(() => {
         if (!categories?.length) return;
@@ -1366,7 +1368,12 @@ const AccountDetailPage = () => {
                         loanMessage += `\n\n💡 Since you've already made a payment this month, the entire payment goes to principal (no additional interest).`;
                     }
                 }
-                alert(`✅ Transaction added successfully!${frequencyMessage}${loanMessage}\n\nNew balance: ${formatCurrency(newBalance)}`);
+                await showIntentFlowDialog({
+                    id: 'transaction-added',
+                    type: 'success',
+                    title: 'Transaction added',
+                    message: `✅ Transaction added successfully!${frequencyMessage}${loanMessage}\n\nNew balance: ${formatCurrency(newBalance)}`,
+                });
             }
 
             window.dispatchEvent(new CustomEvent('accounts-updated'));

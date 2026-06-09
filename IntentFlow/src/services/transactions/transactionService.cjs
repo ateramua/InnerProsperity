@@ -11,11 +11,29 @@ const {
     signedStartingBalanceAmount,
 } = require('../../utils/accountBalanceEngine.cjs');
 const { applySqlitePragmas } = require('../../db/sqlitePragmas.cjs');
+const { getDatabase } = require('../../db/database.cjs');
+
+const _warnedPathCtor = new Set();
 
 class TransactionService {
     constructor(dbPathOrProvider = null) {
         if (typeof dbPathOrProvider === 'function') {
             this.dbProvider = dbPathOrProvider;
+            this.dbPath = null;
+            this.db = null;
+            return;
+        }
+        if (process.versions?.electron) {
+            if (dbPathOrProvider && process.env.INTENTFLOW_DB_STRICT !== '0') {
+                const key = String(dbPathOrProvider);
+                if (!_warnedPathCtor.has(key)) {
+                    _warnedPathCtor.add(key);
+                    console.warn(
+                        '[TransactionService] dbPath constructor ignored in Electron — using shared connection'
+                    );
+                }
+            }
+            this.dbProvider = () => getDatabase();
             this.dbPath = null;
             this.db = null;
             return;
@@ -28,6 +46,9 @@ class TransactionService {
     async getDb() {
         if (this.dbProvider) {
             return await this.dbProvider();
+        }
+        if (process.versions?.electron) {
+            return getDatabase();
         }
         if (this.db) return this.db;
         this.db = await open({

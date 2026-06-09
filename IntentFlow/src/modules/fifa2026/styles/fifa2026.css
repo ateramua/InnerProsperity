@@ -1,0 +1,625 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
+
+.fifa2026-root {
+  --fifa-bg-deep: #0a0e1a;
+  --fifa-bg-panel: rgba(15, 23, 42, 0.72);
+  --fifa-accent-gold: #f5c518;
+  --fifa-accent-cyan: #00e5ff;
+  --fifa-accent-magenta: #ff2d6f;
+  --fifa-accent-green: #00ff88;
+  --fifa-text: #f1f5f9;
+  --fifa-text-muted: #94a3b8;
+  --fifa-border: rgba(148, 163, 184, 0.18);
+  --fifa-glow: 0 0 40px rgba(0, 229, 255, 0.15);
+
+  font-family: 'Outfit', system-ui, sans-serif;
+  color: var(--fifa-text);
+  min-height: 100%;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 229, 255, 0.12), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(255, 45, 111, 0.08), transparent),
+    radial-gradient(ellipse 50% 30% at 0% 80%, rgba(245, 197, 24, 0.06), transparent),
+    linear-gradient(180deg, #0a0e1a 0%, #0f172a 50%, #0a0e1a 100%);
+  animation: fifa-bg-shift 20s ease-in-out infinite alternate;
+}
+
+@keyframes fifa-bg-shift {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(8deg); }
+}
+
+.fifa2026-hero {
+  position: relative;
+  padding: 2rem 2rem 1.5rem;
+  border-bottom: 1px solid var(--fifa-border);
+  overflow: hidden;
+}
+
+.fifa2026-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(245, 197, 24, 0.08), transparent 40%, rgba(0, 229, 255, 0.06));
+  pointer-events: none;
+}
+
+.fifa2026-hero-title {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #fff 0%, var(--fifa-accent-gold) 50%, var(--fifa-accent-cyan) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.fifa2026-hero-sub {
+  color: var(--fifa-text-muted);
+  font-size: 0.95rem;
+  margin-top: 0.35rem;
+}
+
+.fifa2026-progress {
+  margin-top: 1rem;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.fifa2026-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--fifa-accent-cyan), var(--fifa-accent-green));
+  border-radius: 999px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 12px rgba(0, 255, 136, 0.5);
+}
+
+.fifa2026-tabs {
+  display: flex;
+  gap: 0.5rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--fifa-border);
+  flex-wrap: wrap;
+}
+
+.fifa2026-tab {
+  padding: 0.6rem 1.25rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fifa-text-muted);
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.fifa2026-tab:hover {
+  color: var(--fifa-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.fifa2026-tab.active {
+  color: var(--fifa-bg-deep);
+  background: linear-gradient(135deg, var(--fifa-accent-gold), #ffe066);
+  border-color: var(--fifa-accent-gold);
+  box-shadow: 0 4px 20px rgba(245, 197, 24, 0.35);
+}
+
+.fifa2026-content {
+  padding: 1.5rem 2rem 3rem;
+  animation: fifa-fade-in 0.4s ease;
+}
+
+@keyframes fifa-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fifa2026-glass {
+  background: var(--fifa-bg-panel);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--fifa-border);
+  border-radius: 16px;
+  box-shadow: var(--fifa-glow);
+}
+
+.fifa2026-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.25rem;
+}
+
+.fifa2026-group-card {
+  padding: 1rem;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.fifa2026-group-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(0, 229, 255, 0.12);
+}
+
+.fifa2026-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--fifa-border);
+}
+
+.fifa2026-group-letter {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--fifa-accent-gold);
+}
+
+.fifa2026-group-teams {
+  margin-top: 0.35rem;
+  max-width: 220px;
+  line-height: 1.35;
+}
+
+.fifa2026-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.fifa2026-table th {
+  text-align: left;
+  color: var(--fifa-text-muted);
+  font-weight: 600;
+  padding: 0.35rem 0.25rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fifa2026-table td {
+  padding: 0.45rem 0.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.fifa2026-table tr.qualified td {
+  background: rgba(0, 255, 136, 0.06);
+}
+
+.fifa2026-team-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+
+.fifa2026-flag {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.fifa2026-form {
+  display: flex;
+  gap: 2px;
+}
+
+.fifa2026-form-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fifa2026-form-badge.W { background: #00ff88; color: #0a0e1a; }
+.fifa2026-form-badge.D { background: #64748b; color: #fff; }
+.fifa2026-form-badge.L { background: #ff2d6f; color: #fff; }
+
+.fifa2026-fixture-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.fifa2026-fixture-card {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  transition: border-color 0.25s ease;
+}
+
+.fifa2026-fixture-card:hover {
+  border-color: rgba(0, 229, 255, 0.3);
+}
+
+.fifa2026-fixture-card.completed {
+  border-left: 3px solid var(--fifa-accent-green);
+}
+
+.fifa2026-fixture-team {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.fifa2026-fixture-team.away {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+
+.fifa2026-score-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fifa2026-score-input input {
+  width: 48px;
+  padding: 0.4rem;
+  text-align: center;
+  border-radius: 8px;
+  border: 1px solid var(--fifa-border);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--fifa-text);
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.fifa2026-score-input input:focus {
+  outline: none;
+  border-color: var(--fifa-accent-cyan);
+  box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.2);
+}
+
+.fifa2026-btn {
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
+  border: none;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fifa2026-btn-primary {
+  background: linear-gradient(135deg, var(--fifa-accent-cyan), #0099cc);
+  color: #0a0e1a;
+}
+
+.fifa2026-btn-primary:hover {
+  transform: scale(1.03);
+  box-shadow: 0 4px 16px rgba(0, 229, 255, 0.4);
+}
+
+.fifa2026-btn-ghost {
+  background: transparent;
+  color: var(--fifa-text-muted);
+  border: 1px solid var(--fifa-border);
+}
+
+.fifa2026-rank-row {
+  display: grid;
+  grid-template-columns: 48px 1fr 80px 60px 60px 60px;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  transition: background 0.2s ease;
+}
+
+.fifa2026-rank-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.fifa2026-rank-pos {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--fifa-accent-gold);
+}
+
+.fifa2026-rank-pos.top3 {
+  background: linear-gradient(135deg, var(--fifa-accent-gold), #fff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.fifa2026-bracket {
+  display: flex;
+  gap: 2rem;
+  overflow-x: auto;
+  padding-bottom: 1rem;
+}
+
+.fifa2026-bracket-round {
+  min-width: 200px;
+  flex-shrink: 0;
+}
+
+.fifa2026-bracket-round-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fifa-accent-cyan);
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.fifa2026-bracket-match {
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.fifa2026-bracket-team {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+}
+
+.fifa2026-bracket-team.winner {
+  color: var(--fifa-accent-green);
+  font-weight: 700;
+}
+
+.fifa2026-meta {
+  font-size: 0.7rem;
+  color: var(--fifa-text-muted);
+  margin-top: 0.25rem;
+}
+
+.fifa2026-filter-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.fifa2026-chip {
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--fifa-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--fifa-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fifa2026-chip.active {
+  border-color: var(--fifa-accent-magenta);
+  color: var(--fifa-accent-magenta);
+  background: rgba(255, 45, 111, 0.1);
+}
+
+.fifa2026-hero-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fifa-accent-cyan);
+  background: rgba(0, 229, 255, 0.1);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  margin-bottom: 0.5rem;
+}
+
+.fifa2026-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.85rem;
+  margin: 1.25rem 0;
+}
+
+.fifa2026-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.fifa2026-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 28px rgba(0, 229, 255, 0.12);
+}
+
+.fifa2026-stat-icon {
+  font-size: 1.5rem;
+  filter: drop-shadow(0 0 8px var(--stat-accent, var(--fifa-accent-cyan)));
+}
+
+.fifa2026-stat-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fifa-text-muted);
+}
+
+.fifa2026-stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-top: 0.15rem;
+}
+
+.fifa2026-stat-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.fifa2026-progress-wrap {
+  margin-top: 0.5rem;
+}
+
+.fifa2026-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--fifa-text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.fifa2026-tab-icon {
+  margin-right: 0.35rem;
+}
+
+.fifa2026-champion-banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0 0.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: 16px;
+  border: 1px solid rgba(245, 197, 24, 0.4);
+  background: linear-gradient(135deg, rgba(245, 197, 24, 0.15), rgba(0, 229, 255, 0.08));
+  overflow: hidden;
+  animation: fifa-champion-pulse 3s ease-in-out infinite;
+}
+
+.fifa2026-champion-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 20% 50%, rgba(245, 197, 24, 0.2), transparent 60%);
+  pointer-events: none;
+}
+
+@keyframes fifa-champion-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(245, 197, 24, 0.2); }
+  50% { box-shadow: 0 0 40px rgba(245, 197, 24, 0.45); }
+}
+
+.fifa2026-champion-trophy {
+  font-size: 2.5rem;
+  animation: fifa-trophy-bounce 2s ease-in-out infinite;
+}
+
+@keyframes fifa-trophy-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.fifa2026-champion-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--fifa-accent-gold);
+  font-weight: 700;
+}
+
+.fifa2026-champion-name {
+  font-size: 1.35rem;
+  font-weight: 800;
+  margin-top: 0.2rem;
+}
+
+.fifa2026-search {
+  flex: 1;
+  min-width: 200px;
+  padding: 0.5rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--fifa-border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--fifa-text);
+  font-size: 0.85rem;
+}
+
+.fifa2026-search:focus {
+  outline: none;
+  border-color: var(--fifa-accent-cyan);
+}
+
+.fifa2026-rank-header {
+  font-weight: 700;
+  color: var(--fifa-text-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.fifa2026-fixture-round-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--fifa-accent-cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.25rem;
+  padding-left: 0.25rem;
+}
+
+.fifa2026-bracket-match.final {
+  border-color: rgba(245, 197, 24, 0.45);
+  box-shadow: 0 0 24px rgba(245, 197, 24, 0.15);
+}
+
+.fifa2026-bracket-match.completed {
+  border-left: 3px solid var(--fifa-accent-green);
+}
+
+.fifa2026-bracket-match-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--fifa-text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.fifa2026-bracket-score {
+  margin-left: auto;
+  font-weight: 800;
+  font-size: 1rem;
+}
+
+.fifa2026-bracket-round.final-round .fifa2026-bracket-round-title {
+  color: var(--fifa-accent-gold);
+  font-size: 0.85rem;
+}
+
+.fifa2026-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fifa-fade-in 0.2s ease;
+}
+
+.fifa2026-dialog {
+  width: min(420px, 92vw);
+  padding: 1.5rem;
+}
+
+.fifa2026-dialog-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.fifa2026-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.fifa2026-btn-danger {
+  background: linear-gradient(135deg, var(--fifa-accent-magenta), #cc1a52);
+  color: #fff;
+}
+
+.fifa2026-btn-danger:hover {
+  box-shadow: 0 4px 16px rgba(255, 45, 111, 0.4);
+}

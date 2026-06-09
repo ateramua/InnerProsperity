@@ -7,6 +7,7 @@ import {
     confirmNoDuplicateAccount,
     maskFromAccountNumber,
 } from '../../utils/plaidDuplicateCheck';
+import { fifa2026SidebarNavItem } from '../../modules/fifa2026/integration/sidebarNavItem';
 
 function sidebarHeaderStyle(isCollapsed) {
     return {
@@ -323,6 +324,7 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
             icon: '📈',
             description: 'Track and manage your investment portfolio'
         },
+        ...(fifa2026SidebarNavItem ? [fifa2026SidebarNavItem] : []),
         {
             // Per-card rows are intentionally omitted — all cards live in Credit Card Manager only.
             id: 'creditCards',
@@ -399,6 +401,8 @@ const Sidebar = ({ onNavigate, currentView, collapsed = false, onToggleCollapse 
     const handleNavigation = (itemId, itemType = 'view') => {
         if (itemId === 'forecast') {
             router.push('/forecast');
+        } else if (itemId === 'fifa-2026') {
+            router.push('/fifa-2026');
         } else if (onNavigate) {
             if (itemType === 'account') {
                 onNavigate(`account-${itemId}`);

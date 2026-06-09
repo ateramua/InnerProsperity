@@ -1,156 +1,89 @@
-
-const sqlite3 = require('sqlite3').verbose();
-const { getDatabasePath } = require('../db/database.config.js');
+const { getDatabase } = require('../db/database.cjs');
 const crypto = require('crypto');
 
 class UserService {
   constructor() {
-    this.db = null;
     this.currentUser = null;
-    this.init();
   }
 
-  init() {
-    const dbPath = getDatabasePath();
-    this.db = new sqlite3.Database(dbPath);
-    this.db.serialize(() => {
-      this.db.run('PRAGMA journal_mode = WAL');
-      this.db.run('PRAGMA busy_timeout = 10000');
-    });
-  }
-
-  // Hash password with salt
   hashPassword(password) {
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
     return { salt, hash };
   }
 
-  // Verify password
   verifyPassword(password, salt, hash) {
     const verifyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
     return verifyHash === hash;
   }
 
-  // Create new user
   async createUser(username, password, fullName = null, email = null) {
-    return new Promise((resolve, reject) => {
-      // Check if user exists
-      this.db.get('SELECT id FROM users WHERE username = ?', [username], (err, row) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        
-        if (row) {
-          reject(new Error('Username already exists'));
-          return;
-        }
+    const db = await getDatabase();
+    const existing = await db.get('SELECT id FROM users WHERE username = ?', [username]);
+    if (existing) {
+      throw new Error('Username already exists');
+    }
 
-        // Hash password
-        const { salt, hash } = this.hashPassword(password);
+    const { salt, hash } = this.hashPassword(password);
+    const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+    const avatarColor = colors[Math.floor(Math.random() * colors.length)];
 
-        // Random avatar color
-        const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
-        const avatarColor = colors[Math.floor(Math.random() * colors.length)];
+    const result = await db.run(
+      `INSERT INTO users (username, password_hash, password_salt, full_name, email, avatar_color)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [username, hash, salt, fullName || username, email, avatarColor]
+    );
 
-        // Insert new user
-        this.db.run(
-          `INSERT INTO users (username, password_hash, password_salt, full_name, email, avatar_color)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [username, hash, salt, fullName || username, email, avatarColor],
-          function(err) {
-            if (err) {
-              reject(err);
-            } else {
-              resolve({
-                id: this.lastID,
-                username,
-                fullName: fullName || username,
-                email,
-                avatarColor
-              });
-            }
-          }
-        );
-      });
-    });
+    return {
+      id: result.lastID,
+      username,
+      fullName: fullName || username,
+      email,
+      avatarColor,
+    };
   }
 
-  // Login user
   async login(username, password) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        'SELECT * FROM users WHERE username = ?',
-        [username],
-        (err, user) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+    const db = await getDatabase();
+    const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
+    if (!user) {
+      throw new Error('User not found');
+    }
 
-          if (!user) {
-            reject(new Error('User not found'));
-            return;
-          }
+    const isValid = this.verifyPassword(password, user.password_salt, user.password_hash);
+    if (!isValid) {
+      throw new Error('Invalid password');
+    }
 
-          // Verify password
-          const isValid = this.verifyPassword(password, user.password_salt, user.password_hash);
+    await db.run('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
 
-          if (!isValid) {
-            reject(new Error('Invalid password'));
-            return;
-          }
+    this.currentUser = {
+      id: user.id,
+      username: user.username,
+      fullName: user.full_name,
+      email: user.email,
+      avatarColor: user.avatar_color,
+      createdAt: user.created_at,
+      lastLogin: new Date().toISOString(),
+    };
 
-          // Update last login
-          this.db.run(
-            'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?',
-            [user.id]
-          );
-
-          // Set current user (remove sensitive data)
-          this.currentUser = {
-            id: user.id,
-            username: user.username,
-            fullName: user.full_name,
-            email: user.email,
-            avatarColor: user.avatar_color,
-            createdAt: user.created_at,
-            lastLogin: new Date().toISOString()
-          };
-
-          resolve(this.currentUser);
-        }
-      );
-    });
+    return this.currentUser;
   }
 
-  // Logout
   logout() {
     this.currentUser = null;
     return true;
   }
 
-  // Get current user
   getCurrentUser() {
     return this.currentUser;
   }
 
-  // List all users
   async listUsers() {
-    return new Promise((resolve, reject) => {
-      this.db.all(
-        'SELECT id, username, full_name, email, avatar_color, last_login FROM users ORDER BY username',
-        [],
-        (err, users) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(users);
-          }
-        }
-      );
-    });
+    const db = await getDatabase();
+    return db.all(
+      'SELECT id, username, full_name, email, avatar_color, last_login FROM users ORDER BY username'
+    );
   }
 }
 

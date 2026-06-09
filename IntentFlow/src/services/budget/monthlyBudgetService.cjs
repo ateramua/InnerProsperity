@@ -15,6 +15,7 @@ const {
   computeReadyToAssign,
 } = require('../../shared/readyToAssignEngine.cjs');
 const readyToAssignPoolService = require('./readyToAssignPoolService.cjs');
+const { runBudgetTransaction, withBudgetTransaction } = require('../../db/transactionRunner.cjs');
 const { recordBudgetAssignmentAudit } = require('./budgetAssignmentAuditService.cjs');
 const {
   assertAssignedMutationAllowed,
@@ -34,101 +35,6 @@ function previousAvailableForCategory(category, prevRow) {
 
 function pad2(n) {
   return String(n).padStart(2, '0');
-}
-
-function isNestedTransactionError(err) {
-  const msg = String(err?.message || err || '').toLowerCase();
-  return msg.includes('transaction') && (msg.includes('within') || msg.includes('nested'));
-}
-
-function isNoSuchSavepointError(err) {
-  const msg = String(err?.message || err || '').toLowerCase();
-  return msg.includes('no such savepoint');
-}
-
-/** @param {import('sqlite').Database} db */
-async function isDbInTransaction(db) {
-  try {
-    const row = await db.get('PRAGMA transaction_state');
-    if (row && row.transaction_state != null) {
-      return Number(row.transaction_state) === 1;
-    }
-  } catch (_) {
-    /* PRAGMA unavailable on older SQLite builds */
-  }
-  return false;
-}
-
-/**
- * @param {import('sqlite').Database} db
- * @param {() => Promise<T>} fn
- * @template T
- */
-async function withBudgetSavepoint(db, fn) {
-  const sp = `budget_sp_${crypto.randomUUID().replace(/-/g, '_')}`;
-  await db.exec(`SAVEPOINT ${sp}`);
-  try {
-    const result = await fn();
-    try {
-      await db.exec(`RELEASE SAVEPOINT ${sp}`);
-    } catch (releaseErr) {
-      if (!isNoSuchSavepointError(releaseErr)) {
-        throw releaseErr;
-      }
-    }
-    return result;
-  } catch (e) {
-    try {
-      await db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
-    } catch (rollbackErr) {
-      if (!isNoSuchSavepointError(rollbackErr)) {
-        throw rollbackErr;
-      }
-    }
-    throw e;
-  }
-}
-
-/**
- * BEGIN/COMMIT (or SAVEPOINT when nested). Caller must hold budget DB lock via withBudgetTransaction.
- * @param {import('sqlite').Database} db
- * @param {() => Promise<T>} fn
- * @template T
- */
-async function runBudgetTransaction(db, fn) {
-  if (await isDbInTransaction(db)) {
-    return withBudgetSavepoint(db, fn);
-  }
-  try {
-    await db.exec('BEGIN');
-  } catch (e) {
-    if (isNestedTransactionError(e)) {
-      return withBudgetSavepoint(db, fn);
-    }
-    throw e;
-  }
-  try {
-    const result = await fn();
-    await db.exec('COMMIT');
-    return result;
-  } catch (e) {
-    try {
-      await db.exec('ROLLBACK');
-    } catch (_) {
-      /* connection may already be idle */
-    }
-    throw e;
-  }
-}
-
-/**
- * Serialized transaction wrapper for budget persistence.
- * @param {import('sqlite').Database} db
- * @param {() => Promise<T>} fn
- * @template T
- */
-async function withBudgetTransaction(db, fn) {
-  return runBudgetTransaction(db, fn);
 }
 
 /**
@@ -1082,8 +988,7 @@ async function repairImplicitAssignmentsForMonth(db, userId, monthKey) {
 
   const repairs = [];
 
-  await db.exec('BEGIN');
-  try {
+  await runBudgetTransaction(db, async () => {
     for (const cat of categories) {
       const mb = await db.get(
         `SELECT budgeted_amount, available_amount, activity_amount
@@ -1143,11 +1048,7 @@ async function repairImplicitAssignmentsForMonth(db, userId, monthKey) {
         });
       }
     }
-    await db.exec('COMMIT');
-  } catch (e) {
-    await db.exec('ROLLBACK');
-    throw e;
-  }
+  });
 
   return { monthKey: normalizedMonth, repairs };
 }
@@ -1186,8 +1087,7 @@ async function consolidateAvailableIntoMonthAssignments(db, userId, monthKey, op
 
   const conversions = [];
 
-  await db.exec('BEGIN');
-  try {
+  await runBudgetTransaction(db, async () => {
     for (const cat of categories) {
       const mb = await db.get(
         `SELECT budgeted_amount, available_amount, activity_amount
@@ -1241,11 +1141,7 @@ async function consolidateAvailableIntoMonthAssignments(db, userId, monthKey, op
         activity: row.activity,
       });
     }
-    await db.exec('COMMIT');
-  } catch (e) {
-    await db.exec('ROLLBACK');
-    throw e;
-  }
+  });
 
   await refreshBudgetMonthsForward(db, userId, normalizedMonth, 12);
   if (isCurrentCalendarMonth) {
@@ -1273,8 +1169,7 @@ async function unassignAllForMonth(db, userId, monthKey, opts = {}) {
   let totalReleased = 0;
   const breakdown = [];
 
-  await db.exec('BEGIN');
-  try {
+  await runBudgetTransaction(db, async () => {
     for (const cat of categories) {
       const previousAssigned = await readMonthBudgeted(db, userId, cat.id, normalizedMonth);
       if (previousAssigned <= 0.005) {
@@ -1293,11 +1188,7 @@ async function unassignAllForMonth(db, userId, monthKey, opts = {}) {
         released: roundMoney(previousAssigned),
       });
     }
-    await db.exec('COMMIT');
-  } catch (e) {
-    await db.exec('ROLLBACK');
-    throw e;
-  }
+  });
 
   await refreshBudgetMonthsForward(db, userId, normalizedMonth, 12);
   await getBudgetMonthSnapshot(db, userId, normalizedMonth);
@@ -1327,8 +1218,7 @@ async function resetEnvelopesFromMonth(db, userId, monthKey, opts = {}) {
     [userId]
   );
 
-  await db.exec('BEGIN');
-  try {
+  await runBudgetTransaction(db, async () => {
     for (const cat of categories) {
       await db.run(
         `UPDATE monthly_budgets
@@ -1347,11 +1237,7 @@ async function resetEnvelopesFromMonth(db, userId, monthKey, opts = {}) {
         [userId]
       );
     }
-    await db.exec('COMMIT');
-  } catch (e) {
-    await db.exec('ROLLBACK');
-    throw e;
-  }
+  });
 
   await getBudgetMonthSnapshot(db, userId, normalizedMonth);
   return { monthKey: normalizedMonth, categoriesReset: categories.length };

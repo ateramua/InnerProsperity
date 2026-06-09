@@ -34,8 +34,7 @@ async function runPostTransactionEffects(userId, opts = {}) {
   const forwardMonths = opts.forwardMonths;
 
   if (!opts.skipLedgerSync) {
-    const dbPath = getDatabasePath();
-    const txSvc = new TransactionService(dbPath);
+    const txSvc = new TransactionService(() => getDatabase());
     for (const aid of accountIds) {
       await txSvc.updateAccountBalances(aid);
     }

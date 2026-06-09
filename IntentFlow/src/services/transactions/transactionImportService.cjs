@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const TransactionService = require('./transactionService.cjs');
+const dbWriteQueue = require('../../db/dbWriteQueue.cjs');
 const { runPostTransactionEffects } = require('./transactionLifecycle.cjs');
 const readyToAssignPoolService = require('../budget/readyToAssignPoolService.cjs');
 const {
@@ -411,7 +412,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
   );
   const matchedPendingIds = new Set();
 
-  const txSvc = new TransactionService(dbPath);
+  const txSvc = new TransactionService(async () => db);
   let imported = 0;
   let matched = 0;
   let skipped = 0;
@@ -419,6 +420,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
   const dates = [];
   const failures = [];
 
+  const processRows = async (activeDb) => {
   for (const row of normalizedRows) {
     const key = dedupeKey(row.date, row.amount, row.payee);
     if (seen.has(key)) {
@@ -430,7 +432,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
     const pendingMatch = findUnclearedImportMatch(pendingCandidates, row);
     if (pendingMatch) {
       try {
-        await db.run(
+        await activeDb.run(
           `UPDATE transactions
            SET is_cleared = 1,
                payee = COALESCE(?, payee),
@@ -455,18 +457,22 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
     }
 
     try {
-      await txSvc.createTransaction({
-        accountId,
-        userId,
-        date: row.date,
-        description: row.description,
-        amount: row.amount,
-        categoryId: row.categoryId,
-        payee: row.payee,
-        memo: row.memo,
-        isCleared: row.cleared ? 1 : 0,
-      });
-      const inserted = await db.get(
+      await dbWriteQueue.runInWriteContext(
+        () =>
+          txSvc.createTransaction({
+            accountId,
+            userId,
+            date: row.date,
+            description: row.description,
+            amount: row.amount,
+            categoryId: row.categoryId,
+            payee: row.payee,
+            memo: row.memo,
+            isCleared: row.cleared ? 1 : 0,
+          }),
+        'import-create-tx'
+      );
+      const inserted = await activeDb.get(
         `SELECT id FROM transactions
          WHERE account_id = ? AND user_id = ? AND date = ? AND amount = ? AND payee = ?
          ORDER BY created_at DESC LIMIT 1`,
@@ -474,7 +480,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
       );
       if (inserted?.id) {
         const processed = await transactionCategorizationService.processImportedTransaction(
-          db,
+          activeDb,
           userId,
           inserted.id,
           {
@@ -486,7 +492,7 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
           }
         );
         if (processed.creditReserveDelta) {
-          await applyCreditCardPaymentReserveDelta(db, {
+          await applyCreditCardPaymentReserveDelta(activeDb, {
             userId,
             accountId,
             date: row.date,
@@ -494,12 +500,12 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
             userIntentAssignment: true,
           });
         }
-        const poolTx = await db.get(
+        const poolTx = await activeDb.get(
           'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
           [inserted.id, userId]
         );
         if (poolTx) {
-          await readyToAssignPoolService.syncPoolForTransaction(db, userId, poolTx, 'apply');
+          await readyToAssignPoolService.syncPoolForTransaction(activeDb, userId, poolTx, 'apply');
         }
       }
       seen.add(key);
@@ -513,6 +519,11 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
       });
     }
   }
+  };
+
+  await dbWriteQueue.runImmediateTransaction(db, async (activeDb) => {
+    await processRows(activeDb);
+  });
 
   if (imported > 0 || matched > 0) {
     try {
@@ -525,20 +536,26 @@ async function importTransactionsForAccount(db, dbPath, userId, accountId, norma
         accountIds: [accountId],
         dates,
         skipLedgerSync: options.skipLedgerSync !== false,
+        db,
       });
     } catch (e) {
       console.warn('import post-transaction effects:', e?.message || e);
     }
   }
 
+  const hardFailure = failed > 0 && imported === 0 && matched === 0;
+
   return {
-    success: true,
+    success: !hardFailure,
     imported,
     matched,
     skipped,
     failed,
     failures,
     accountId,
+    error: hardFailure
+      ? failures[0]?.message || 'Import failed — no transactions were created'
+      : undefined,
   };
 }
 

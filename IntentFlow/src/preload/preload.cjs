@@ -33,6 +33,13 @@ try {
     },
   });
 
+  contextBridge.exposeInMainWorld('intentflow', {
+    isHygieneRunning: async () => {
+      const state = await ipcRenderer.invoke('db:getWriteState');
+      return Boolean(state?.success && state?.data?.exclusiveWindow);
+    },
+  });
+
   contextBridge.exposeInMainWorld('electronAPI', {
 
     // ==================== PLAID ====================
@@ -270,6 +277,16 @@ try {
 
     scopeActiveAccountsExcept: (userId, keepAccountNames) =>
       ipcRenderer.invoke('budget:scopeActiveAccounts', userId, keepAccountNames),
+
+    getDbWriteState: () => ipcRenderer.invoke('db:getWriteState'),
+    waitForDbIdle: (opts) => ipcRenderer.invoke('db:waitForIdle', opts || {}),
+    beginExclusiveDbWriteWindow: (owner) =>
+      ipcRenderer.invoke('db:beginExclusiveWindow', owner || 'exclusive'),
+    endExclusiveDbWriteWindow: (owner) =>
+      ipcRenderer.invoke('db:endExclusiveWindow', owner || 'exclusive'),
+
+    softDeleteMonthTransactions: (payload) =>
+      ipcRenderer.invoke('harness:softDeleteMonthTransactions', payload || {}),
 
     unassignMonthBudget: (userId, monthKey) =>
       ipcRenderer.invoke('budget:unassignMonth', userId, monthKey),

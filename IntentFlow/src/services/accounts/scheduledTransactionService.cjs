@@ -20,7 +20,7 @@ async function postScheduledTransaction(db, dbPath, userId, scheduledId) {
   );
   if (!row) throw new Error('Scheduled transaction not found');
 
-  const txSvc = new TransactionService(dbPath);
+  const txSvc = new TransactionService(async () => db);
   const txType = String(row.transaction_type || 'outflow').trim().toLowerCase();
   const mag = Math.abs(Number(row.amount) || 0);
   const signedAmount = txType === 'inflow' ? mag : -mag;

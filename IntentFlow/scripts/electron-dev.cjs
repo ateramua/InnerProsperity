@@ -4,11 +4,19 @@
  * Avoids hardcoding 3000 when that port is busy (wait-on + Electron mismatch).
  */
 const { spawn } = require('child_process');
+const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
 
 const appRoot = path.join(__dirname, '..');
+
+const ELECTRON_RESTART_WATCH_DIRS = [
+  path.join(appRoot, 'src', 'main'),
+  path.join(appRoot, 'src', 'db'),
+  path.join(appRoot, 'src', 'preload'),
+];
+const ELECTRON_RESTART_DEBOUNCE_MS = 400;
 
 function listenOnAvailablePort(startPort) {
   return new Promise((resolve, reject) => {
@@ -72,13 +80,73 @@ async function main() {
     process.env.ELECTRON_REMOTE_DEBUGGING_PORT ||
     '9222';
   console.log(`🔌 Electron remote debugging → http://127.0.0.1:${debugPort}\n`);
-  const electron = spawn(process.execPath, [electronCli, '.'], {
+  let electron = spawn(process.execPath, [electronCli, '.'], {
     cwd: appRoot,
     env,
     stdio: 'inherit',
   });
 
+  let restartTimer = null;
+  let watchers = [];
+  let intentionalElectronRestart = false;
+
+  const attachElectronExitHandler = (proc) => {
+    proc.on('exit', (code) => {
+      if (intentionalElectronRestart) {
+        intentionalElectronRestart = false;
+        return;
+      }
+      shutdown(code ?? 0);
+    });
+  };
+
+  const scheduleElectronRestart = (reason) => {
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      if (!electron || electron.killed) return;
+      console.log(`\n♻️  Restarting Electron (${reason}) — main/preload/db changed\n`);
+      intentionalElectronRestart = true;
+      try {
+        electron.kill('SIGTERM');
+      } catch (_) {}
+      electron = spawn(process.execPath, [electronCli, '.'], {
+        cwd: appRoot,
+        env,
+        stdio: 'inherit',
+      });
+      attachElectronExitHandler(electron);
+    }, ELECTRON_RESTART_DEBOUNCE_MS);
+  };
+
+  const watchForMainChanges = () => {
+    for (const dir of ELECTRON_RESTART_WATCH_DIRS) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const watcher = fs.watch(dir, { recursive: true }, (_event, filename) => {
+          if (!filename) return;
+          if (!/\.(cjs|js|mjs|json)$/i.test(filename)) return;
+          scheduleElectronRestart(path.relative(appRoot, path.join(dir, filename)));
+        });
+        watchers.push(watcher);
+      } catch (err) {
+        console.warn(`[dev] Could not watch ${dir}:`, err?.message || err);
+      }
+    }
+    if (watchers.length) {
+      console.log('[dev] Watching main/db/preload — Electron restarts automatically on save\n');
+    }
+  };
+
+  watchForMainChanges();
+
   const shutdown = (code) => {
+    if (restartTimer) clearTimeout(restartTimer);
+    for (const watcher of watchers) {
+      try {
+        watcher.close();
+      } catch (_) {}
+    }
     try {
       next.kill('SIGTERM');
     } catch (_) {}
@@ -89,7 +157,7 @@ async function main() {
   };
 
   next.on('exit', (code) => shutdown(code ?? 0));
-  electron.on('exit', (code) => shutdown(code ?? 0));
+  attachElectronExitHandler(electron);
 }
 
 main().catch((err) => {

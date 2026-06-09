@@ -1,7 +1,9 @@
 /**
  * Bridge so services under src/services can use the same sqlite connection
- * as the Electron main process (opened in main/index.cjs).
+ * as the Electron main process (owned by intentflow-sqlite-owner.cjs).
  */
+const sqliteOwner = require('./intentflow-sqlite-owner.cjs');
+
 let getDatabaseFromMain = null;
 
 function setGetDatabaseProvider(fn) {
@@ -9,10 +11,19 @@ function setGetDatabaseProvider(fn) {
 }
 
 async function getDatabase() {
-  if (!getDatabaseFromMain) {
-    throw new Error('Database provider not initialized (call setGetDatabaseProvider from main)');
+  if (getDatabaseFromMain) {
+    return getDatabaseFromMain();
   }
-  return getDatabaseFromMain();
+  return sqliteOwner.getConnection();
 }
 
-module.exports = { getDatabase, setGetDatabaseProvider };
+async function getConnection() {
+  return getDatabase();
+}
+
+module.exports = {
+  getDatabase,
+  getConnection,
+  setGetDatabaseProvider,
+  sqliteOwner,
+};

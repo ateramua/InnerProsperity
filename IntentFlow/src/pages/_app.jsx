@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
 import '../styles/globals.css';
+/** FIFA 2026 plug-in — remove with module (src/modules/fifa2026/) */
+import '../modules/fifa2026/styles/fifa2026.css';
 import { AuthProvider } from '../contexts/AuthContext';
+import IntentFlowDialogHost from '../components/IntentFlowDialogHost';
 
 if (typeof window !== 'undefined') {
   window.__intentflowBootLog?.('_app module loaded');
@@ -168,6 +171,7 @@ export default function MyApp({ Component, pageProps }) {
   return (
     <AuthProvider>
       <Component {...pageProps} />
+      <IntentFlowDialogHost />
     </AuthProvider>
   );
 }

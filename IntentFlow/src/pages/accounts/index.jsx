@@ -175,13 +175,11 @@ const handleCreateAccount = async () => {
         institution: ''
       });
       
-      // Reload accounts
-      await loadAccounts();
-      
       // Dispatch event for other components
       window.dispatchEvent(new Event('accounts-changed'));
-      
+
       alert('✅ Account created successfully!');
+      void loadAccounts();
     } else {
       console.error('❌ Failed to create account:', result.error);
       alert(`Failed to create account: ${result.error}`);

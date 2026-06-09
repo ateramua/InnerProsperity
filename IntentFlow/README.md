@@ -18,14 +18,20 @@ On macOS, the typical path is:
 
 Stop the development server if it is running (Ctrl + C).
 
-Copy the database
+Copy the database:
 
-bash
+```bash
 cp ~/Library/Application\ Support/intentflow/money-manager.db src/db/data/app.db
-Start the dev server again
+```
 
-bash
-npm run dev
+Stop the dev server, then start again:
+
+```bash
+npm run dev:restart
+```
+
+Or `npm run dev` after a clean stop. See [docs/db-single-writer.md](docs/db-single-writer.md) — **main-process DB changes require a full Electron restart** (the dev script now auto-restarts Electron when `src/main`, `src/db`, or `src/preload` change). Run `npm run check:db-architecture` before release builds.
+
 The app will now use your real data.
 
 🧪 Option 2: Initialize a Fresh Database

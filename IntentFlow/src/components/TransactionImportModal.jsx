@@ -3,6 +3,7 @@ import ImportTransactionPreview from './transactions/ImportTransactionPreview.js
 import ImportCategoryMappingStep from './transactions/ImportCategoryMappingStep.jsx';
 import ImportCategoryMappingsManager from './transactions/ImportCategoryMappingsManager.jsx';
 import { notifyAccountsChanged } from '../utils/accountRefreshEvents.jsx';
+import { showIntentFlowDialog } from '../utils/showIntentFlowDialog.jsx';
 
 const FIELD_KEYS = ['date', 'payee', 'amount', 'direction', 'outflow', 'inflow', 'category', 'memo'];
 
@@ -435,9 +436,26 @@ export default function TransactionImportModal({
       setError('Account and file are required');
       return;
     }
+    if (window.intentflow?.isHygieneRunning) {
+      const hygieneActive = await window.intentflow.isHygieneRunning().catch(() => false);
+      if (hygieneActive) {
+        setError('Budget maintenance is in progress. Please wait and try again.');
+        return;
+      }
+    }
     setBusy(true);
     setError('');
     try {
+      if (window.electronAPI?.waitForDbIdle) {
+        const idle = await window.electronAPI.waitForDbIdle({
+          timeoutMs: 15000,
+          stableWindowMs: 800,
+        });
+        if (!idle?.success) {
+          setError(idle?.error || 'Database is busy. Please wait and try again.');
+          return;
+        }
+      }
       const res = await window.electronAPI.executeTransactionImport({
         accountId,
         filePath: importFilePath,
@@ -448,17 +466,60 @@ export default function TransactionImportModal({
         fileName,
       });
       if (!res?.success) {
-        setError(res?.error || 'Import failed');
+        const d = res.data || {};
+        const failureLines = (d.failures || [])
+          .map((f) => `Line ${f.lineNumber}: ${f.message}`)
+          .join('\n');
+        const detail = failureLines || res.error || 'Import failed';
+        setError(detail);
+        const dialogType = 'error';
+        const dialogTitle = 'Import failed';
+        const baseMessage = `Imported: ${d.imported ?? 0}\nSkipped (duplicates): ${d.skipped ?? 0}\nFailed: ${d.failed ?? 0}`;
+        await showIntentFlowDialog({
+          id: 'import-complete',
+          type: dialogType,
+          title: dialogTitle,
+          message: failureLines ? `${baseMessage}\n\n${failureLines}` : baseMessage,
+        });
         return;
       }
       const d = res.data || {};
+      const hardFailure =
+        (d.failed ?? 0) > 0 && (d.imported ?? 0) === 0 && (d.matched ?? 0) === 0;
+      if (hardFailure) {
+        const failureLines = (d.failures || [])
+          .map((f) => `Line ${f.lineNumber}: ${f.message}`)
+          .join('\n');
+        setError(failureLines || d.error || 'Import failed');
+        const baseMessage = `Imported: ${d.imported ?? 0}\nSkipped (duplicates): ${d.skipped ?? 0}\nFailed: ${d.failed ?? 0}`;
+        await showIntentFlowDialog({
+          id: 'import-complete',
+          type: 'error',
+          title: 'Import failed',
+          message: failureLines ? `${baseMessage}\n\n${failureLines}` : baseMessage,
+        });
+        return;
+      }
+      if (window.electronAPI?.waitForDbIdle) {
+        await window.electronAPI.waitForDbIdle({ timeoutMs: 10000, stableWindowMs: 400 }).catch(() => {});
+      }
       onComplete?.(d);
       notifyAccountsChanged({ reason: 'transaction-import' });
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
       onClose();
-      alert(
-        `Import complete\n\nImported: ${d.imported ?? 0}\nSkipped (duplicates): ${d.skipped ?? 0}\nFailed: ${d.failed ?? 0}`
-      );
+      const failureLines = (d.failures || [])
+        .map((f) => `Line ${f.lineNumber}: ${f.message}`)
+        .join('\n');
+      const partialErrors = (d.failed ?? 0) > 0;
+      const dialogType = partialErrors ? 'error' : 'success';
+      const dialogTitle = partialErrors ? 'Import finished with errors' : 'Import complete';
+      const baseMessage = `Imported: ${d.imported ?? 0}\nSkipped (duplicates): ${d.skipped ?? 0}\nFailed: ${d.failed ?? 0}`;
+      await showIntentFlowDialog({
+        id: 'import-complete',
+        type: dialogType,
+        title: dialogTitle,
+        message: failureLines ? `${baseMessage}\n\n${failureLines}` : baseMessage,
+      });
     } catch (e) {
       setError(e.message || 'Import failed');
     } finally {

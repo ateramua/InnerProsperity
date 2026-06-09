@@ -1,7 +1,6 @@
 // src/services/payeeService.cjs
 const { v4: uuidv4 } = require('uuid');
 const { getDatabase } = require('../db/database.cjs');
-const { getDatabasePath } = require('../db/database.config.js');
 const TransactionService = require('./transactions/transactionService.cjs');
 const {
   isAccountRoutingPayeeLabel,
@@ -213,7 +212,7 @@ class PayeeService {
 
       await database.run('COMMIT');
 
-      const txSvc = new TransactionService(getDatabasePath());
+      const txSvc = new TransactionService(() => getDatabase());
       await txSvc.updateAccountBalances(sourceAccountId);
       await txSvc.updateAccountBalances(destinationAccountId);
 
@@ -385,7 +384,7 @@ class PayeeService {
 
       await database.run('COMMIT');
 
-      const txSvc = new TransactionService(getDatabasePath());
+      const txSvc = new TransactionService(() => getDatabase());
       await txSvc.updateAccountBalances(transaction.account_id);
       await txSvc.updateAccountBalances(linkedTransaction.account_id);
 
@@ -468,7 +467,7 @@ class PayeeService {
 
       await database.run('COMMIT');
 
-      const txSvc = new TransactionService(getDatabasePath());
+      const txSvc = new TransactionService(() => getDatabase());
       await txSvc.updateAccountBalances(transaction.account_id);
       await txSvc.updateAccountBalances(oldDestAccountId);
       await txSvc.updateAccountBalances(newDestAccountId);
@@ -549,7 +548,7 @@ class PayeeService {
 
       await database.run('COMMIT');
 
-      const txSvc = new TransactionService(getDatabasePath());
+      const txSvc = new TransactionService(() => getDatabase());
       await txSvc.updateAccountBalances(transaction.account_id);
       if (peerAccountId) await txSvc.updateAccountBalances(peerAccountId);
 
@@ -700,7 +699,7 @@ class PayeeService {
 
       await database.run('COMMIT');
 
-      const txSvc = new TransactionService(getDatabasePath());
+      const txSvc = new TransactionService(() => getDatabase());
       await txSvc.updateAccountBalances(tx.account_id);
       await txSvc.updateAccountBalances(destinationAccountId);
 
@@ -757,7 +756,7 @@ class PayeeService {
       
       await database.run('COMMIT');
 
-      const txSvc = new TransactionService(getDatabasePath());
+      const txSvc = new TransactionService(() => getDatabase());
       await txSvc.updateAccountBalances(sourceAccountId);
       if (peerAccountId) await txSvc.updateAccountBalances(peerAccountId);
       

@@ -33,6 +33,10 @@ import {
   navigateToActivityDrilldown,
   consumeBudgetReturnMonth,
 } from '../utils/activityDrilldownUtils.jsx';
+import {
+  showIntentFlowDialog,
+  showIntentFlowConfirmDialog,
+} from '../utils/showIntentFlowDialog.jsx';
 
 const EMPTY_MOVE_MONEY_FORM = {
   amount: '',
@@ -354,19 +358,28 @@ const PropertyMapView = ({ onNavigate }) => {
     }
   };
 
-  const alertNoReadyToAssignForQuickAssign = (pool) => {
+  const alertNoReadyToAssignForQuickAssign = async (pool) => {
     const monthLabel = (selectedMonthRef.current || selectedMonth).toLocaleString('default', {
       month: 'long',
       year: 'numeric',
     });
     const futureReserved = roundMoney(Number(budgetSummary.futureAssigned) || 0);
     if (futureReserved > 0.005) {
-      alert(
-        `Ready to Assign is ${formatCurrency(pool)}. ${formatCurrency(futureReserved)} is already assigned in other budget months (for example, a month before ${monthLabel}). To fund ${monthLabel}, unassign from those months using "Unassign Month" or add new income.`,
-      );
+      await showIntentFlowDialog({
+        id: 'no-rta-for-assign',
+        type: 'info',
+        title: 'Ready to Assign',
+        message:
+          `Ready to Assign is ${formatCurrency(pool)}. ${formatCurrency(futureReserved)} is already assigned in other budget months (for example, a month before ${monthLabel}). To fund ${monthLabel}, unassign from those months using "Unassign Month" or add new income.`,
+      });
       return;
     }
-    alert('No funds available to assign from Ready to Assign.');
+    await showIntentFlowDialog({
+      id: 'no-rta-for-assign',
+      type: 'info',
+      title: 'Ready to Assign',
+      message: 'No funds available to assign from Ready to Assign.',
+    });
   };
 
   const formatMonthKeyLabel = (monthKey) => {
@@ -1287,7 +1300,12 @@ const PropertyMapView = ({ onNavigate }) => {
         commitBudgetSnapshot(withDerivedAvailable(nextCategories), categoryGroups, userId, monthKey);
       }
 
-      alert('✅ Category updated successfully!');
+      await showIntentFlowDialog({
+        id: 'category-update',
+        type: 'success',
+        title: 'Category Update',
+        message: '✅ Category updated successfully!',
+      });
     } catch (error) {
       console.error('❌ Error saving category:', error);
       alert('Error: ' + error.message);
@@ -1430,7 +1448,12 @@ const PropertyMapView = ({ onNavigate }) => {
         setCategoryGroups(prev => [...prev, result.data]);
         setShowAddGroupModal(false);
         setNewGroupName('');
-        alert('✅ Group created successfully!');
+        await showIntentFlowDialog({
+          id: 'group-created',
+          type: 'success',
+          title: 'Group created',
+          message: '✅ Group created successfully!',
+        });
         await loadCategoryGroups();
       } else {
         alert('❌ Failed to create group: ' + (result.error || 'Unknown error'));
@@ -1612,12 +1635,14 @@ const PropertyMapView = ({ onNavigate }) => {
       return;
     }
 
-    if (
-      !confirm(
+    const confirmed = await showIntentFlowConfirmDialog({
+      id: 'unassign-confirm',
+      title: 'Unassign Month',
+      message:
         `Unassign all ${formatCurrency(monthUnassignableTotal)} from ${monthLabel}?\n\n` +
-          `This clears Assigned for every category in this month and returns the same amount to Ready to Assign.`,
-      )
-    ) {
+        'This clears Assigned for every category in this month and returns the same amount to Ready to Assign.',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -1638,17 +1663,26 @@ const PropertyMapView = ({ onNavigate }) => {
         reloaded || lastGoodSnapshotRef.current.categories,
       );
 
-      alert(
-        `✅ Unassigned ${formatCurrency(released)} from ${monthLabel}` +
+      await showIntentFlowDialog({
+        id: 'unassign-complete',
+        type: 'success',
+        title: 'Unassign complete',
+        message:
+          `✅ Unassigned ${formatCurrency(released)} from ${monthLabel}` +
           (count > 0 ? ` (${count} categories).` : '.'),
-      );
+      });
     } catch (err) {
       console.error('Unassign month error:', err);
       await loadCategoriesFromDB(0, {
         monthDate: selectedMonthRef.current || selectedMonth,
       });
       calculateReadyToAssign();
-      alert(`❌ Error while unassigning: ${err.message}`);
+      await showIntentFlowDialog({
+        id: 'unassign-complete',
+        type: 'error',
+        title: 'Unassign failed',
+        message: `❌ Error while unassigning: ${err.message}`,
+      });
     } finally {
       setIsUnassigningMonth(false);
     }
@@ -1679,7 +1713,7 @@ const PropertyMapView = ({ onNavigate }) => {
     const pool = await resolveReadyToAssignPool();
 
     if (pool <= 0) {
-      alertNoReadyToAssignForQuickAssign(pool);
+      await alertNoReadyToAssignForQuickAssign(pool);
       return;
     }
 
@@ -1773,11 +1807,17 @@ const PropertyMapView = ({ onNavigate }) => {
             })()
           : '';
 
-      if (
-        !confirm(
+      const confirmId =
+        method === 'underfunded' ? 'fund-underfunded-confirm' : 'smart-assign-confirm';
+      const confirmTitle =
+        method === 'underfunded' ? 'Fund Underfunded' : 'Smart Assign';
+      const confirmed = await showIntentFlowConfirmDialog({
+        id: confirmId,
+        title: confirmTitle,
+        message:
           `Assign ${formatCurrency(totalAssign)} from Ready to Assign (${formatCurrency(pool)}) to ${allocations.length} categories:${fundingSummary}\n\n${previewMessage}\n\nProceed?`,
-        )
-      ) {
+      });
+      if (!confirmed) {
         return;
       }
 
@@ -1836,7 +1876,14 @@ const PropertyMapView = ({ onNavigate }) => {
         calculateReadyToAssign(
           reloadedCategories || lastGoodSnapshotRef.current.categories,
         );
-        alert(`✅ Assigned ${formatCurrency(totalAssign)} to ${deltaByCategoryId.size} categories`);
+        const completeId =
+          method === 'underfunded' ? 'fund-underfunded-complete' : 'smart-assign-complete';
+        await showIntentFlowDialog({
+          id: completeId,
+          type: 'success',
+          title: confirmTitle,
+          message: `✅ Assigned ${formatCurrency(totalAssign)} to ${deltaByCategoryId.size} categories`,
+        });
       } catch (err) {
         console.error('Quick assign error:', err);
         const reloadedCategories = await loadCategoriesFromDB(0, {
@@ -1848,10 +1895,22 @@ const PropertyMapView = ({ onNavigate }) => {
         calculateReadyToAssign(
           reloadedCategories || lastGoodSnapshotRef.current.categories,
         );
-        alert(`❌ Error while saving assignments: ${err.message}`);
+        const completeId =
+          method === 'underfunded' ? 'fund-underfunded-complete' : 'smart-assign-complete';
+        await showIntentFlowDialog({
+          id: completeId,
+          type: 'error',
+          title: confirmTitle,
+          message: `❌ Error while saving assignments: ${err.message}`,
+        });
       }
     } else {
-      alert('No categories need funding based on current criteria for this month.');
+      await showIntentFlowDialog({
+        id: method === 'underfunded' ? 'fund-underfunded-complete' : 'smart-assign-complete',
+        type: 'info',
+        title: method === 'underfunded' ? 'Fund Underfunded' : 'Smart Assign',
+        message: 'No categories need funding based on current criteria for this month.',
+      });
     }
     } finally {
       setIsQuickAssigning(false);

@@ -56,6 +56,7 @@ import {
   parseAccountRoutingDestinationName,
   EMPTY_PAYEES_FORM,
 } from '../utils/transferPayeeUtils.jsx';
+import { showIntentFlowDialog } from '../utils/showIntentFlowDialog.jsx';
 
 const TRANSACTIONS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_TRANSACTIONS_PER_PAGE = 25;
@@ -1408,7 +1409,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
           autoTransferMessage = `\n\n💳 Auto-transfer: $${amountValue.toFixed(2)} moved from "${categories.find(c => c.id === newTransaction.categoryId)?.name || 'spending category'}" to "${account.name} Payment" category.`;
         }
 
-        alert(`✅ Transaction added successfully!${frequencyMessage}${loanMessage}${autoTransferMessage}\n\nNew balance: ${formatCurrency(Math.abs(newBalance ?? 0))}`);
+        await showIntentFlowDialog({
+          id: 'transaction-added',
+          type: 'success',
+          title: 'Transaction added',
+          message: `✅ Transaction added successfully!${frequencyMessage}${loanMessage}${autoTransferMessage}\n\nNew balance: ${formatCurrency(Math.abs(newBalance ?? 0))}`,
+        });
       }
 
       window.dispatchEvent(new CustomEvent('accounts-updated'));

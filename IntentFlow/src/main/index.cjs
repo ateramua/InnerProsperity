@@ -7,7 +7,7 @@ const {
   findPlaidOAuthArgv,
 } = require('../services/plaid/plaidOAuth.cjs');
 const plaidRelayClient = require('../services/plaid/plaidRelayClient.cjs') || {};
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage, screen } = require('electron');
 const { getEditMenuTemplate, attachEditableContextMenu } = require('./textInputClipboard.cjs');
 const path = require('path');
 const fs = require('fs');
@@ -722,6 +722,12 @@ const transactionCategorizationService =
     transactionCategorizationModule?.transactionCategorizationService ||
     transactionCategorizationModule;
 const transactionImportService = requireModule('../services/transactions/transactionImportService.cjs');
+const dbWriteQueue =
+    requireModule('../db/dbWriteQueue.cjs') ||
+    require(path.join(__dirname, '../db/dbWriteQueue.cjs'));
+const sqliteOwner =
+    requireModule('../db/intentflow-sqlite-owner.cjs') ||
+    require(path.join(__dirname, '../db/intentflow-sqlite-owner.cjs'));
 const importCategoryMapping = requireModule('../services/transactions/importCategoryMapping.cjs');
 const accountAdjustmentService =
     requireModule('../services/accounts/accountAdjustmentService.cjs') || {};
@@ -913,9 +919,9 @@ async function restoreEncryptedBackup({ password, backupFilePath, mode = 'in-pla
             rollbackCreated = true;
         }
 
-        if (mode === 'in-place' && db && typeof db.close === 'function') {
+        if (mode === 'in-place' && db) {
             try {
-                await db.close();
+                await sqliteOwner.close();
             } catch (closeError) {
                 console.warn('⚠️ Failed closing DB before restore:', closeError.message);
             }
@@ -1049,56 +1055,12 @@ async function initializeProductionDatabase() {
 }
 
 async function getDatabase() {
-    console.log('\n🔍🔍🔍 getDatabase() CALLED 🔍🔍🔍');
-    console.log('Current db state:', db ? 'exists' : 'null');
-
-    if (db) {
-        try {
-            await db.get('SELECT 1');
-            if (!db.__intentflowPragmasApplied) {
-                const { applySqlitePragmas } = require(path.join(__dirname, '../db/sqlitePragmas.cjs'));
-                await applySqlitePragmas(db);
-                db.__intentflowPragmasApplied = true;
-            }
-            console.log('✅ Existing connection is valid');
-            return db;
-        } catch (e) {
-            console.log('⚠️ Database connection stale, reconnecting...');
-            db = null;
-        }
-    }
-
-    console.log('📦 Creating new database connection...');
-
-    const dbPath = ensureDatabaseDirectory();
-    console.log('📂 Final database path being used:', dbPath);
-
-    try {
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-
-        db = await open({ filename: dbPath, driver: sqlite3.Database });
-        const { applySqlitePragmas } = require(path.join(__dirname, '../db/sqlitePragmas.cjs'));
-        await applySqlitePragmas(db);
-        await db.run('CREATE TABLE IF NOT EXISTS _test (id INTEGER)');
-        await db.run('DROP TABLE _test');
-        console.log('✅ Write test PASSED');
-
-        const result = await db.get('SELECT 1 as test');
-        console.log('✅ Read test PASSED:', result);
-
-        console.log('✅ Database connection established successfully');
-        return db;
-    } catch (error) {
-        console.error('❌❌❌ DATABASE CONNECTION FAILED ❌❌❌');
-        console.error('Error message:', error.message);
-        console.error('Attempted path:', dbPath);
-        throw error;
-    }
+    return sqliteOwner.getConnection();
 }
 
 const { setGetDatabaseProvider } = require(path.join(__dirname, '../db/database.cjs'));
-setGetDatabaseProvider(() => getDatabase());
+setGetDatabaseProvider(() => sqliteOwner.getConnection());
+dbWriteQueue.setDatabaseProvider(() => sqliteOwner.getConnection());
 
 // ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
@@ -1122,6 +1084,9 @@ async function initDatabase() {
         const database = await initializeDatabase(dbPath, {
             injectRecoveryUser: false // Automatic startup should only create structure/schema
         });
+
+        await sqliteOwner.initialize(dbPath, { adoptConnection: database });
+        db = database;
 
         console.log('✅ Database initialized successfully with full schema');
         return database;
@@ -1166,14 +1131,42 @@ function notifyAccountsUpdated(source = 'plaid') {
     }
 }
 
-async function updateAccountBalances(accountId) {
-    const dbPath = getConfiguredDatabasePath();
-    const ts = new TransactionService(dbPath);
-    try {
-        await ts.updateAccountBalances(accountId);
-    } catch (error) {
-        console.error(`❌ Failed to update balance for account ${accountId}:`, error);
+function isWindowEffectivelyMaximized(win) {
+    if (!win) return false;
+    if (win.isMaximized()) return true;
+    if (process.platform !== 'darwin') return false;
+    const bounds = win.getBounds();
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const tolerance = 4;
+    return (
+        Math.abs(bounds.x - area.x) <= tolerance &&
+        Math.abs(bounds.y - area.y) <= tolerance &&
+        Math.abs(bounds.width - area.width) <= tolerance &&
+        Math.abs(bounds.height - area.height) <= tolerance
+    );
+}
+
+function maximizeAppWindow(win) {
+    if (!win) return false;
+    if (isWindowEffectivelyMaximized(win)) return true;
+    if (process.platform === 'darwin') {
+        const area = screen.getDisplayMatching(win.getBounds()).workArea;
+        win.setBounds(area);
+        return isWindowEffectivelyMaximized(win);
     }
+    if (!win.isMaximized()) win.maximize();
+    return win.isMaximized();
+}
+
+async function updateAccountBalances(accountId) {
+    return dbWriteQueue.runInWriteContext(async () => {
+        const ts = new TransactionService(() => getDatabase());
+        try {
+            await ts.updateAccountBalances(accountId);
+        } catch (error) {
+            console.error(`❌ Failed to update balance for account ${accountId}:`, error);
+        }
+    }, 'updateAccountBalances');
 }
 
 async function syncTransactionsForItem(itemId) {
@@ -1213,49 +1206,51 @@ async function runPlaidBackgroundSync(source = 'background') {
     const cfg = getPlaidConfig ? getPlaidConfig() : { configured: false };
     if (!cfg.configured) return;
 
-    console.log(`🔄 Running Plaid sync (${source})...`);
-    try {
-        await registerPlaidItemsWithRelayForUser(currentUser.id);
+    return dbWriteQueue.enqueueWrite(async () => {
+        console.log(`🔄 Running Plaid sync (${source})...`);
+        try {
+            await registerPlaidItemsWithRelayForUser(currentUser.id);
 
-        if (plaidSync.pollPlaidWebhookRelay && process.env.PLAID_WEBHOOK_RELAY_URL) {
-            const relayResult = await plaidSync.pollPlaidWebhookRelay(
-                currentUser.id,
-                async (itemId) => {
-                    await verifyPlaidItemOwnership(itemId);
-                    await syncPlaidAccounts(itemId);
-                    await syncTransactionsForItem(itemId);
-                },
-                {
-                    handlePendingExpiration: (itemId, uid) =>
-                        plaidSync.handlePendingExpiration(itemId, uid, getPlaidSyncDeps()),
+            if (plaidSync.pollPlaidWebhookRelay && process.env.PLAID_WEBHOOK_RELAY_URL) {
+                const relayResult = await plaidSync.pollPlaidWebhookRelay(
+                    currentUser.id,
+                    async (itemId) => {
+                        await verifyPlaidItemOwnership(itemId);
+                        await syncPlaidAccounts(itemId);
+                        await syncTransactionsForItem(itemId);
+                    },
+                    {
+                        handlePendingExpiration: (itemId, uid) =>
+                            plaidSync.handlePendingExpiration(itemId, uid, getPlaidSyncDeps()),
+                    }
+                );
+                if (relayResult?.synced?.length) {
+                    console.log(`📡 Webhook relay triggered sync for ${relayResult.synced.length} item(s)`);
                 }
-            );
-            if (relayResult?.synced?.length) {
-                console.log(`📡 Webhook relay triggered sync for ${relayResult.synced.length} item(s)`);
+                if (relayResult?.error) {
+                    logPlaidError(`webhook relay poll (${source})`, new Error(relayResult.error));
+                }
             }
-            if (relayResult?.error) {
-                logPlaidError(`webhook relay poll (${source})`, new Error(relayResult.error));
-            }
-        }
 
-        const items = await getLinkedItemsSafe();
-        for (const item of items) {
-            try {
-                await syncPlaidAccounts(item.id);
-                const result = await syncTransactionsForItem(item.id);
-                if (result.success && result.transactionsAdded > 0) {
-                    console.log(
-                        `✅ Plaid sync (${source}) ${item.institution_name || item.id}: ${result.transactionsAdded} new txns`
-                    );
+            const items = await getLinkedItemsSafe();
+            for (const item of items) {
+                try {
+                    await syncPlaidAccounts(item.id);
+                    const result = await syncTransactionsForItem(item.id);
+                    if (result.success && result.transactionsAdded > 0) {
+                        console.log(
+                            `✅ Plaid sync (${source}) ${item.institution_name || item.id}: ${result.transactionsAdded} new txns`
+                        );
+                    }
+                } catch (err) {
+                    logPlaidError(`sync item ${item.id} (${source})`, err);
                 }
-            } catch (err) {
-                logPlaidError(`sync item ${item.id} (${source})`, err);
             }
+            notifyAccountsUpdated(`plaid-${source}`);
+        } catch (error) {
+            logPlaidError(`sync (${source})`, error);
         }
-        notifyAccountsUpdated(`plaid-${source}`);
-    } catch (error) {
-        logPlaidError(`sync (${source})`, error);
-    }
+    }, `plaid-background-sync:${source}`);
 }
 
 function scheduleFocusPlaidSync() {
@@ -1675,8 +1670,7 @@ async function finalizeManualAccountWithStartingBalance(db, accountId, userId) {
     );
     if (existingSystem) return account;
 
-    const dbPath = getDatabasePath();
-    const txService = new TransactionService(dbPath);
+    const txService = new TransactionService(() => getDatabase());
     await txService.createStartingBalanceTransaction(db, account, userId);
     await txService.updateAccountBalances(accountId);
     return db.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
@@ -1786,6 +1780,10 @@ function resolveTransactionImportContent(payload = {}) {
 
 // ==================== IPC HANDLERS ====================
 function setupIpcHandlers() {
+    const enqueueWrite = (label, fn) => dbWriteQueue.enqueueWrite(fn, label);
+    const registerWriteHandler = (channel, handler) => {
+        ipcMain.handle(channel, async (...args) => enqueueWrite(channel, () => handler(...args)));
+    };
     if (ipcHandlersRegistered) {
         console.log('🔍 IPC handlers already registered, skipping...');
         return;
@@ -1833,15 +1831,13 @@ function setupIpcHandlers() {
 
     ipcMain.handle('window:maximize', () => {
         const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-        if (win && !win.isMaximized()) {
-            win.maximize();
-        }
-        return { success: true, maximized: win ? win.isMaximized() : false };
+        const maximized = maximizeAppWindow(win);
+        return { success: true, maximized };
     });
 
     ipcMain.handle('window:is-maximized', () => {
         const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-        return { success: true, maximized: win ? win.isMaximized() : false };
+        return { success: true, maximized: isWindowEffectivelyMaximized(win) };
     });
 
     ipcMain.handle('app:quit', () => {
@@ -1851,6 +1847,7 @@ function setupIpcHandlers() {
 
     // ==================== DEBUG HANDLERS ====================
     ipcMain.handle('debug:test-database-write', async () => {
+        return enqueueWrite('debug:test-database-write', async () => {
         console.log('🔍 DEBUG: Testing database write operation...');
         try {
             const db = await getDatabase();
@@ -1864,6 +1861,7 @@ function setupIpcHandlers() {
             console.error('❌ Database write test FAILED:', error);
             return { success: false, error: error.message };
         }
+        });
     });
     // Get scheduled transactions for an account
     ipcMain.handle('scheduled-transactions:get', async (event, accountId) => {
@@ -1884,6 +1882,7 @@ function setupIpcHandlers() {
 
     // Add a scheduled transaction
     ipcMain.handle('scheduled-transactions:add', async (event, data) => {
+        return enqueueWrite('scheduled-transactions:add', async () => {
         try {
             const db = await getDatabase();
             const id = require('uuid').v4();
@@ -1904,6 +1903,7 @@ function setupIpcHandlers() {
             console.error('Error adding scheduled transaction:', error);
             return { success: false, error: error.message };
         }
+        });
     });
     // In your main process where you set up IPC handlers for accounts
     ipcMain.handle('accounts:scheduled:get', async (event, accountId) => {
@@ -1916,6 +1916,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('accounts:scheduled:add', async (event, data) => {
+        return enqueueWrite('accounts:scheduled:add', async () => {
         const user = await getUserFromSession(event);
         if (!user) return { success: false, error: 'Not authenticated' };
 
@@ -1925,18 +1926,22 @@ function setupIpcHandlers() {
             userId: user.id
         });
         return { success: true, data: result };
+        });
     });
 
     ipcMain.handle('accounts:scheduled:delete', async (event, id) => {
+        return enqueueWrite('accounts:scheduled:delete', async () => {
         const user = await getUserFromSession(event);
         if (!user) return { success: false, error: 'Not authenticated' };
 
         const accountService = new AccountService(() => getDatabase());
         await accountService.deleteScheduledTransaction(id, user.id);
         return { success: true };
+        });
     });
 
     ipcMain.handle('scheduled-transactions:post', async (event, scheduledId) => {
+        return enqueueWrite('scheduled-transactions:post', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -1960,10 +1965,12 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     // Delete a scheduled transaction
     ipcMain.handle('scheduled-transactions:delete', async (event, id) => {
+        return enqueueWrite('scheduled-transactions:delete', async () => {
         try {
             const db = await getDatabase();
             await db.run(`DELETE FROM scheduled_transactions WHERE id = ?`, [id]);
@@ -1972,6 +1979,7 @@ function setupIpcHandlers() {
             console.error('Error deleting scheduled transaction:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('debug:get-database-info', async () => {
@@ -1993,22 +2001,24 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('debug:test-group-delete', async (event, groupId, userId) => {
-        console.log('🔍 DEBUG: Testing group delete for group:', groupId, 'user:', userId);
-        try {
-            const db = await getDatabase();
-            const group = await db.get('SELECT * FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
-            if (!group) return { success: false, error: 'Group not found' };
-            const categories = await db.all('SELECT * FROM categories WHERE group_id = ? AND archived = 0', [String(groupId)]);
-            console.log(`Found ${categories.length} categories in group`);
-            if (categories.length > 0) {
-                return { success: false, error: `Group has ${categories.length} categories: ${categories.map(c => c.name).join(', ')}` };
+        return enqueueWrite('debug:test-group-delete', async () => {
+            console.log('🔍 DEBUG: Testing group delete for group:', groupId, 'user:', userId);
+            try {
+                const db = await getDatabase();
+                const group = await db.get('SELECT * FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+                if (!group) return { success: false, error: 'Group not found' };
+                const categories = await db.all('SELECT * FROM categories WHERE group_id = ? AND archived = 0', [String(groupId)]);
+                console.log(`Found ${categories.length} categories in group`);
+                if (categories.length > 0) {
+                    return { success: false, error: `Group has ${categories.length} categories: ${categories.map(c => c.name).join(', ')}` };
+                }
+                const result = await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
+                return { success: result.changes > 0, changes: result.changes };
+            } catch (error) {
+                console.error('Debug delete error:', error);
+                return { success: false, error: error.message };
             }
-            const result = await db.run('DELETE FROM category_groups WHERE id = ? AND user_id = ?', [groupId, userId]);
-            return { success: result.changes > 0, changes: result.changes };
-        } catch (error) {
-            console.error('Debug delete error:', error);
-            return { success: false, error: error.message };
-        }
+        });
     });
 
     ipcMain.handle('debug:check-permissions', async () => {
@@ -2029,15 +2039,18 @@ function setupIpcHandlers() {
 
     // ==================== USER MANAGEMENT ====================
     ipcMain.handle('create-user', async (event, { username, password, fullName, email }) => {
+        return enqueueWrite('create-user', async () => {
         try {
             const user = await userService.createUser(username, password, fullName, email);
             return { success: true, data: user };
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('login-user', async (event, { username, password }) => {
+        return enqueueWrite('login-user', async () => {
         try {
             const user = await userService.login(username, password);
             if (user?.id) {
@@ -2050,6 +2063,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('logout-user', () => {
@@ -2226,6 +2240,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('budget:applyProsperityImport', async (event, { userId, monthKey, items, options }) => {
+        return enqueueWrite('budget:applyProsperityImport', async () => {
         try {
             if (!budgetTableImportExport) {
                 return { success: false, error: 'Budget table import service unavailable' };
@@ -2249,6 +2264,7 @@ function setupIpcHandlers() {
             console.error('budget:applyProsperityImport error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     // Add at the top of the file with other requires
@@ -2276,6 +2292,7 @@ function setupIpcHandlers() {
 
     // Create or update a payee
     ipcMain.handle('create-or-update-payee', async (event, { name, userId, isTransferPayee }) => {
+        return enqueueWrite('create-or-update-payee', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             const effectiveUserId = userId || currentUser?.id;
@@ -2288,6 +2305,7 @@ function setupIpcHandlers() {
             console.error('Error in create-or-update-payee:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     // Get payees for transaction form (includes transfer payees)
@@ -2308,6 +2326,7 @@ function setupIpcHandlers() {
 
     // Create a linked transfer transaction (two-sided)
     ipcMain.handle('create-linked-transfer', async (event, transferData) => {
+        return enqueueWrite('create-linked-transfer', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
@@ -2365,10 +2384,12 @@ function setupIpcHandlers() {
             console.error('Error in create-linked-transfer:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     // Update a linked transfer transaction
     ipcMain.handle('update-linked-transfer', async (event, transactionId, updates) => {
+        return enqueueWrite('update-linked-transfer', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
@@ -2419,10 +2440,12 @@ function setupIpcHandlers() {
             console.error('Error in update-linked-transfer:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     // Delete a linked transfer transaction (both sides)
     ipcMain.handle('delete-linked-transfer', async (event, transactionId) => {
+        return enqueueWrite('delete-linked-transfer', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) {
@@ -2499,6 +2522,7 @@ function setupIpcHandlers() {
             console.error('Error in delete-linked-transfer:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('list-users', async () => {
@@ -2512,6 +2536,7 @@ function setupIpcHandlers() {
 
     // ==================== CATEGORY UPDATE HANDLER ====================
     ipcMain.handle('updateCategory', async (event, categoryId, updates) => {
+        return enqueueWrite('updateCategory', async () => {
         console.log('📝 updateCategory IPC called:', { categoryId, updates });
         try {
             const db = await getDatabase();
@@ -2693,6 +2718,7 @@ function setupIpcHandlers() {
             console.error('❌ Error in updateCategory:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     // ==================== FORECAST HANDLERS ====================
@@ -2798,6 +2824,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('cash-forecast:share:create', async (event, payload) => {
+        return enqueueWrite('cash-forecast:share:create', async () => {
         try {
             const user = await getUserFromSession(event);
             if (!user) return { success: false, error: 'Not authenticated' };
@@ -2808,6 +2835,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('cash-forecast:share:get', async (event, shareId) => {
@@ -2834,6 +2862,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('cash-forecast:recurring-prefs:set', async (event, recurringId, status, override) => {
+        return enqueueWrite('cash-forecast:recurring-prefs:set', async () => {
         try {
             const user = await getUserFromSession(event);
             if (!user) return { success: false, error: 'Not authenticated' };
@@ -2843,6 +2872,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('cash-forecast:scheduled:list', async (event) => {
@@ -2892,6 +2922,7 @@ function setupIpcHandlers() {
 
     // ==================== VALIDATION HANDLERS ====================
     ipcMain.handle('validation:trackAccuracy', async (event, userId, forecastDate, forecastData, actualData) => {
+        return enqueueWrite('validation:trackAccuracy', async () => {
         try {
             const service = new ValidationService();
             const result = await service.trackForecastAccuracy(userId, forecastDate, forecastData, actualData);
@@ -2899,6 +2930,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('validation:getTrends', async (event, userId, months) => {
@@ -2999,6 +3031,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('categoryGroups:create', async (event, userId, name, sortOrder) => {
+        return enqueueWrite('categoryGroups:create', async () => {
         console.log('📞 IPC: categoryGroups:create called', { userId, name, sortOrder });
         try {
             const db = await getDatabase();
@@ -3017,9 +3050,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('categoryGroups:update', async (event, id, userId, updates) => {
+        return enqueueWrite('categoryGroups:update', async () => {
         console.log('📞 IPC: categoryGroups:update called', { id, userId, updates });
         try {
             const db = await getDatabase();
@@ -3040,9 +3075,11 @@ function setupIpcHandlers() {
             console.error('❌ Error in categoryGroups:update:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('categoryGroups:delete', async (event, groupId, userId) => {
+        return enqueueWrite('categoryGroups:delete', async () => {
         console.log('📞 categoryGroups:delete called with:', { groupId, userId });
         try {
             const db = await getDatabase();
@@ -3066,6 +3103,7 @@ function setupIpcHandlers() {
             console.error('❌ Error in categoryGroups:delete:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     // ==================== ACCOUNT SERVICE IPC HANDLERS ====================
@@ -3095,6 +3133,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('create-account', async (event, accountData) => {
+        return enqueueWrite('create-account', async () => {
         console.log('🔵🔵🔵 BACKEND RECEIVED:', JSON.stringify(accountData, null, 2));
         try {
             const db = await getDatabase();
@@ -3123,9 +3162,11 @@ function setupIpcHandlers() {
             console.error('❌ Error creating account:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('accounts:create', async (event, accountData) => {
+        return enqueueWrite('accounts:create', async () => {
         try {
             const db = await getDatabase();
             const currentUser = userService.getCurrentUser();
@@ -3179,10 +3220,12 @@ function setupIpcHandlers() {
             console.error('❌ Error in accounts:create:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
 
     ipcMain.handle('accounts:update', async (event, id, userId, updates) => {
+        return enqueueWrite('accounts:update', async () => {
         try {
             if (!id) return { success: false, error: 'Account ID is required' };
             const ownerId = resolveBudgetOwnerId(null, userId);
@@ -3212,9 +3255,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('accounts:ensureCreditCardPaymentCategories', async (event, userId) => {
+        return enqueueWrite('accounts:ensureCreditCardPaymentCategories', async () => {
         try {
             const ownerId = resolveBudgetOwnerId(null, userId);
             if (ownerId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
@@ -3227,9 +3272,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('accounts:delete', async (event, id, userId, opts = {}) => {
+        return enqueueWrite('accounts:delete', async () => {
         try {
             if (!id) return { success: false, error: 'ID and userId required' };
             const ownerId = resolveBudgetOwnerId(null, userId);
@@ -3291,9 +3338,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message, code: error.code };
         }
+        });
     });
 
     ipcMain.handle('accounts:applyManualAdjustment', async (event, payload) => {
+        return enqueueWrite('accounts:applyManualAdjustment', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -3318,9 +3367,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('accounts:permanentDeleteCredit', async (event, id, userId) => {
+        return enqueueWrite('accounts:permanentDeleteCredit', async () => {
         try {
             if (!id) return { success: false, error: 'Account id required' };
             const ownerId = resolveBudgetOwnerId(null, userId);
@@ -3345,9 +3396,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message, code: error.code };
         }
+        });
     });
 
     ipcMain.handle('accounts:permanentDeleteLoan', async (event, id, userId) => {
+        return enqueueWrite('accounts:permanentDeleteLoan', async () => {
         try {
             if (!id) return { success: false, error: 'Account id required' };
             const ownerId = resolveBudgetOwnerId(null, userId);
@@ -3372,6 +3425,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message, code: error.code };
         }
+        });
     });
 
     ipcMain.handle('accounts:getBalances', async (event, accountId, userId) => {
@@ -3380,7 +3434,7 @@ function setupIpcHandlers() {
             if (effectiveUserId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
             if (!effectiveUserId) return { success: false, error: 'No user logged in' };
             const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const result = await service.getAccountBalanceDetails(accountId, effectiveUserId);
             return { success: true, data: result };
         } catch (error) {
@@ -3510,6 +3564,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-exchange-public-token', async (event, publicToken) => {
+        return enqueueWrite('plaid-exchange-public-token', async () => {
         try {
             const plaidClient = createPlaidClient();
             const response = await plaidClient.itemPublicTokenExchange({ public_token: publicToken });
@@ -3566,6 +3621,7 @@ function setupIpcHandlers() {
             const message = logPlaidError('exchange public token', error);
             return { success: false, error: message };
         }
+        });
     });
 
     ipcMain.handle('plaid-get-linked-items', async () => {
@@ -3597,6 +3653,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-sync-item', async (event, itemId) => {
+        return enqueueWrite('plaid-sync-item', async () => {
         try {
             await verifyPlaidItemOwnership(itemId);
             const accountResult = await syncPlaidAccounts(itemId);
@@ -3624,9 +3681,11 @@ function setupIpcHandlers() {
             }
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-link-account-to-plaid', async (event, plaidAccountId, targetAccountId) => {
+        return enqueueWrite('plaid-link-account-to-plaid', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3651,9 +3710,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-merge-account', async (event, plaidAccountId, targetAccountId) => {
+        return enqueueWrite('plaid-merge-account', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3678,6 +3739,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-get-merge-preview', async (event, plaidAccountId, targetAccountId) => {
@@ -3697,6 +3759,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-execute-merge', async (event, plaidAccountId, targetAccountId) => {
+        return enqueueWrite('plaid-execute-merge', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3715,9 +3778,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-keep-account-separate', async (event, plaidAccountId) => {
+        return enqueueWrite('plaid-keep-account-separate', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3731,9 +3796,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-rollback-merge', async (event, sessionId) => {
+        return enqueueWrite('plaid-rollback-merge', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3747,6 +3814,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-check-duplicate-account', async (event, payload) => {
@@ -3769,6 +3837,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-sync-transactions', async (event, itemId) => {
+        return enqueueWrite('plaid-sync-transactions', async () => {
         try {
             await verifyPlaidItemOwnership(itemId);
             const result = await syncTransactionsForItem(itemId);
@@ -3785,6 +3854,7 @@ function setupIpcHandlers() {
             }
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-get-account-link-status', async (event, accountId) => {
@@ -3809,6 +3879,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-sync-account', async (event, accountId) => {
+        return enqueueWrite('plaid-sync-account', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3841,9 +3912,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-unlink-account', async (event, accountId) => {
+        return enqueueWrite('plaid-unlink-account', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3858,9 +3931,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-remove-item', async (event, itemId, options = {}) => {
+        return enqueueWrite('plaid-remove-item', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3879,6 +3954,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-get-sync-history', async (event, limit = 15) => {
@@ -3921,6 +3997,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('plaid-save-category-mapping', async (event, plaidCategory, categoryId) => {
+        return enqueueWrite('plaid-save-category-mapping', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3945,9 +4022,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('plaid-reapply-all-category-mappings', async () => {
+        return enqueueWrite('plaid-reapply-all-category-mappings', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -3960,15 +4039,18 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     // ==================== USER SETTINGS HANDLERS ====================
     ipcMain.handle('save-user-setting', async (event, key, value) => {
+        return enqueueWrite('save-user-setting', async () => {
         const currentUser = userService.getCurrentUser();
         if (!currentUser) return { success: false, error: 'Not logged in' };
         const db = await getDatabase();
         await db.run(`INSERT OR REPLACE INTO user_settings (user_id, key, value, updated_at) VALUES (?, ?, ?, datetime('now'))`, [currentUser.id, key, value]);
         return { success: true };
+        });
     });
 
     ipcMain.handle('get-user-setting', async (event, key, defaultValue) => {
@@ -3992,6 +4074,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('set-auto-sync-setting', async (event, enabled) => {
+        return enqueueWrite('set-auto-sync-setting', async () => {
         const currentUser = userService.getCurrentUser();
         if (!currentUser) return { success: false, error: 'Not logged in' };
         const db = await getDatabase();
@@ -4000,6 +4083,7 @@ function setupIpcHandlers() {
             [currentUser.id, 'autoSyncEnabled', enabled ? 'true' : 'false']
         );
         return { success: true, enabled: !!enabled };
+        });
     });
 
     // ==================== TRANSACTION HANDLERS ====================
@@ -4008,7 +4092,7 @@ function setupIpcHandlers() {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in', data: [] };
             const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const transactions = await service.getAccountTransactions(accountId, currentUser.id);
             return { success: true, data: transactions };
         } catch (error) {
@@ -4021,7 +4105,7 @@ function setupIpcHandlers() {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in', data: [] };
             const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const transactions = await service.getAllTransactions(currentUser.id, filters || {});
             return { success: true, data: transactions };
         } catch (error) {
@@ -4030,6 +4114,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('createTransaction', async (event, transaction) => {
+        return enqueueWrite('createTransaction', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4060,7 +4145,7 @@ function setupIpcHandlers() {
             };
 
             const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const result = await service.createTransaction(transactionData);
 
             let creditReserveDelta = 0;
@@ -4126,6 +4211,7 @@ function setupIpcHandlers() {
             console.error('Error in createTransaction:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('getCategoryHistory', async (event, categoryId, period) => {
@@ -4268,6 +4354,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('transactions:executeImport', async (event, payload) => {
+        return enqueueWrite('transactions:executeImport', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4336,6 +4423,18 @@ function setupIpcHandlers() {
                 built.normalized,
                 { skipLedgerSync: true }
             );
+            const hardFailure =
+                result?.success === false ||
+                ((result?.failed ?? 0) > 0 &&
+                    (result?.imported ?? 0) === 0 &&
+                    (result?.matched ?? 0) === 0);
+            if (hardFailure) {
+                const errMsg =
+                    result?.error ||
+                    result?.failures?.[0]?.message ||
+                    'Import produced no transactions';
+                return { success: false, error: errMsg, data: result };
+            }
             notifyBudgetStateChanged('prosperity:updated', {
                 userId: currentUser.id,
                 reason: 'transaction:imported',
@@ -4346,6 +4445,102 @@ function setupIpcHandlers() {
             console.error('transactions:executeImport error:', error);
             return { success: false, error: error.message };
         }
+        });
+    });
+
+    ipcMain.handle('db:getWriteState', async () => {
+        try {
+            return { success: true, data: dbWriteQueue.getWriteState() };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('db:waitForIdle', async (event, opts = {}) => {
+        try {
+            const state = await dbWriteQueue.waitForDbIdle(opts);
+            return { success: true, data: state };
+        } catch (error) {
+            return { success: false, error: error.message, data: dbWriteQueue.getWriteState() };
+        }
+    });
+
+    ipcMain.handle('db:beginExclusiveWindow', async (event, owner = 'exclusive') => {
+        try {
+            dbWriteQueue.beginExclusiveWriteWindow(owner);
+            return { success: true, data: dbWriteQueue.getWriteState() };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('db:endExclusiveWindow', async (event, owner = 'exclusive') => {
+        try {
+            dbWriteQueue.endExclusiveWriteWindow(owner);
+            return { success: true, data: dbWriteQueue.getWriteState() };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('harness:softDeleteMonthTransactions', async (event, payload = {}) => {
+        return enqueueWrite('harness:softDeleteMonthTransactions', async () => {
+        try {
+            const currentUser = userService.getCurrentUser();
+            if (!currentUser) return { success: false, error: 'No user logged in' };
+            const {
+                budgetMonth,
+                accountNames = null,
+                accountNamePrefix = 'BDD',
+            } = payload;
+            const monthPrefix = String(budgetMonth || '').slice(0, 7);
+            if (!monthPrefix) return { success: true, data: { deleted: 0 } };
+
+            const db = await getDatabase();
+            let accountRows;
+            if (Array.isArray(accountNames) && accountNames.length > 0) {
+                const placeholders = accountNames.map(() => '?').join(',');
+                accountRows = await db.all(
+                    `SELECT id FROM accounts WHERE user_id = ? AND name IN (${placeholders})`,
+                    [currentUser.id, ...accountNames]
+                );
+            } else {
+                accountRows = await db.all(
+                    `SELECT id FROM accounts WHERE user_id = ? AND name LIKE ?`,
+                    [currentUser.id, `${accountNamePrefix}%`]
+                );
+            }
+
+            const data = await dbWriteQueue.runImmediateTransaction(db, async (activeDb) => {
+                let totalDeleted = 0;
+                for (const acct of accountRows) {
+                    if (!acct?.id) continue;
+                    const result = await activeDb.run(
+                        `UPDATE transactions
+                         SET is_deleted = 1, updated_at = datetime('now')
+                         WHERE account_id = ?
+                           AND is_deleted = 0
+                           AND COALESCE(is_system, 0) = 0
+                           AND date LIKE ?`,
+                        [acct.id, `${monthPrefix}%`]
+                    );
+                    totalDeleted += result?.changes || 0;
+                }
+                return { deleted: totalDeleted };
+            });
+
+            if (data.deleted > 0) {
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: currentUser.id,
+                    reason: 'harness:soft-delete',
+                });
+            }
+            return { success: true, data };
+        } catch (error) {
+            console.error('harness:softDeleteMonthTransactions error:', error);
+            return { success: false, error: error.message };
+        }
+        });
     });
 
     ipcMain.handle('import-get-category-mappings', async (event, payload) => {
@@ -4383,6 +4578,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('import-delete-category-mapping', async (event, payload) => {
+        return enqueueWrite('import-delete-category-mapping', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -4401,9 +4597,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('import-save-category-mappings', async (event, payload) => {
+        return enqueueWrite('import-save-category-mappings', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
@@ -4428,6 +4626,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     function normalizeTransactionUpdatePayload(updates) {
@@ -4470,6 +4669,7 @@ function setupIpcHandlers() {
     }
 
     ipcMain.handle('addTransaction', async (event, transaction) => {
+        return enqueueWrite('addTransaction', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4616,9 +4816,11 @@ function setupIpcHandlers() {
             console.error('Error in addTransaction:', error);
             return { success: false, error: error.message };
         }
-    })
+        });
+    });
 
     ipcMain.handle('updateTransaction', async (event, id, updates) => {
+        return enqueueWrite('updateTransaction', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4805,9 +5007,11 @@ function setupIpcHandlers() {
             console.error('Error in updateTransaction:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('deleteTransaction', async (event, id) => {
+        return enqueueWrite('deleteTransaction', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4861,8 +5065,7 @@ function setupIpcHandlers() {
                 transactionRow: pre,
             });
 
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(async () => database);
             const result = await service.deleteTransaction(id, currentUser.id);
 
             if (transactionLifecycle?.runPostTransactionEffects) {
@@ -4885,9 +5088,11 @@ function setupIpcHandlers() {
             console.error('Error in deleteTransaction:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('transactions:bulkUpdate', async (event, payload) => {
+        return enqueueWrite('transactions:bulkUpdate', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4903,8 +5108,7 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No updates provided' };
             }
 
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const normalizedUpdates = normalizeTransactionUpdatePayload(updates);
 
             let bulkResult = { updated: 0, skipped: 0, accountIds: [], dates: [] };
@@ -4981,9 +5185,11 @@ function setupIpcHandlers() {
             console.error('transactions:bulkUpdate error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('transactions:bulkDelete', async (event, payload) => {
+        return enqueueWrite('transactions:bulkDelete', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -4993,8 +5199,7 @@ function setupIpcHandlers() {
                 return { success: false, error: 'No transaction ids provided' };
             }
 
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const result = await service.bulkDeleteTransactions(ids, currentUser.id);
 
             if (transactionLifecycle?.runPostTransactionEffects && result.dates?.length) {
@@ -5025,9 +5230,11 @@ function setupIpcHandlers() {
             console.error('transactions:bulkDelete error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('transactions:pairTransfers', async () => {
+        return enqueueWrite('transactions:pairTransfers', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -5051,6 +5258,7 @@ function setupIpcHandlers() {
             console.error('transactions:pairTransfers error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('transactions:getMlModelStatus', async () => {
@@ -5068,6 +5276,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('transactions:retrainCategoryMl', async () => {
+        return enqueueWrite('transactions:retrainCategoryMl', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -5078,6 +5287,7 @@ function setupIpcHandlers() {
             console.error('transactions:retrainCategoryMl error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('transactions:getMlSuggestion', async (event, transactionId) => {
@@ -5130,6 +5340,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('transactions:clearSplits', async (event, payload) => {
+        return enqueueWrite('transactions:clearSplits', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -5160,9 +5371,11 @@ function setupIpcHandlers() {
             console.error('transactions:clearSplits error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('transactions:setSplits', async (event, payload) => {
+        return enqueueWrite('transactions:setSplits', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
@@ -5195,28 +5408,30 @@ function setupIpcHandlers() {
             console.error('transactions:setSplits error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('toggleTransactionCleared', async (event, id, clearedStatus) => {
+        return enqueueWrite('toggleTransactionCleared', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const result = await service.updateTransaction(id, currentUser.id, { is_cleared: clearedStatus ? 1 : 0 });
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('reconcileAccount', async (event, accountId, statementBalance, transactionsToClear) => {
+        return enqueueWrite('reconcileAccount', async () => {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) return { success: false, error: 'No user logged in' };
             const db = await getDatabase();
-            const dbPath = getDatabasePath();
-            const service = new TransactionService(dbPath);
+            const service = new TransactionService(() => getDatabase());
             const result = await service.reconcileAccount(accountId, currentUser.id, statementBalance, transactionsToClear);
             if (result?.adjustment_transaction_id && transactionLifecycle?.runPostTransactionEffects) {
                 const poolTx = await db.get(
@@ -5242,6 +5457,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('debug-category-schema', async () => {
@@ -5264,6 +5480,7 @@ function setupIpcHandlers() {
 
     // ==================== CATEGORY HANDLERS ====================
     ipcMain.handle('createCategory', async (event, categoryData) => {
+        return enqueueWrite('createCategory', async () => {
         try {
             const db = await getDatabase();
             const ownerId = resolveCategoryOwnerId(categoryData.user_id);
@@ -5300,10 +5517,12 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     // ==================== ARCHIVE/RESTORE CATEGORY ====================
     ipcMain.handle('category:archive', async (event, categoryId, userId, archiveHints = {}) => {
+        return enqueueWrite('category:archive', async () => {
         try {
             const db = await getDatabase();
             const ownerId = await resolveBudgetOwnerId(db, userId);
@@ -5355,9 +5574,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('category:restore', async (event, categoryId, userId, restoreHints = {}) => {
+        return enqueueWrite('category:restore', async () => {
         try {
             const db = await getDatabase();
             const ownerId = await resolveBudgetOwnerId(db, userId);
@@ -5409,6 +5630,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('category:getArchived', async (event, userId) => {
@@ -5456,6 +5678,7 @@ function setupIpcHandlers() {
 
     // ==================== HIDE/UNHIDE CATEGORY ====================
     ipcMain.handle('category:toggleHide', async (event, categoryId, userId) => {
+        return enqueueWrite('category:toggleHide', async () => {
         try {
             const db = await getDatabase();
             const category = await db.get('SELECT is_hidden FROM categories WHERE id = ? AND user_id = ?', [categoryId, userId]);
@@ -5467,6 +5690,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('getCategories', async (event, userId, monthKey) => {
@@ -5658,6 +5882,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('budget:bulkAssignMonth', async (event, userId, monthKey, assignments, opts = {}) => {
+        return enqueueWrite('budget:bulkAssignMonth', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5699,9 +5924,11 @@ function setupIpcHandlers() {
             console.error('budget:bulkAssignMonth error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:repairAssignments', async (event, userId, monthKey, opts = {}) => {
+        return enqueueWrite('budget:repairAssignments', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5733,9 +5960,11 @@ function setupIpcHandlers() {
             console.error('budget:repairAssignments error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:consolidateAssignments', async (event, userId, monthKey, opts = {}) => {
+        return enqueueWrite('budget:consolidateAssignments', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5765,9 +5994,11 @@ function setupIpcHandlers() {
             console.error('budget:consolidateAssignments error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:unassignMonth', async (event, userId, monthKey) => {
+        return enqueueWrite('budget:unassignMonth', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5797,9 +6028,11 @@ function setupIpcHandlers() {
             console.error('budget:unassignMonth error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:resetEnvelopes', async (event, userId, monthKey) => {
+        return enqueueWrite('budget:resetEnvelopes', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5824,9 +6057,11 @@ function setupIpcHandlers() {
             console.error('budget:resetEnvelopes error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:setReadyToAssignPool', async (event, userId, targetBalance) => {
+        return enqueueWrite('budget:setReadyToAssignPool', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5856,9 +6091,11 @@ function setupIpcHandlers() {
             console.error('budget:setReadyToAssignPool error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:reconcilePoolEnvelope', async (event, userId) => {
+        return enqueueWrite('budget:reconcilePoolEnvelope', async () => {
         try {
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
@@ -5883,6 +6120,7 @@ function setupIpcHandlers() {
             console.error('budget:reconcilePoolEnvelope error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('budget:getIntegrityState', async (event, userId, monthKey) => {
@@ -5910,6 +6148,7 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('budget:scopeActiveAccounts', async (event, userId, keepAccountNames) => {
+        return enqueueWrite('budget:scopeActiveAccounts', async () => {
         try {
             const budgetIntegrityService =
                 require(path.join(__dirname, '../services/budget/budgetIntegrityService.cjs'));
@@ -5932,9 +6171,11 @@ function setupIpcHandlers() {
             console.error('budget:scopeActiveAccounts error:', error);
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('delete-category', async (event, categoryId) => {
+        return enqueueWrite('delete-category', async () => {
         try {
             const db = await getDatabase();
             await db.run('DELETE FROM categories WHERE id = ?', [categoryId]);
@@ -5943,6 +6184,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     // ==================== LEGACY ACCOUNT HANDLERS ====================
@@ -5977,15 +6219,18 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('update-account', async (event, accountId, updates) => {
+        return enqueueWrite('update-account', async () => {
         try {
             const result = await accountService.updateAccount(accountId, updates);
             return { success: true, data: result };
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('deleteCategory', async (event, categoryId) => {
+        return enqueueWrite('deleteCategory', async () => {
         try {
             const db = await getDatabase();
             const category = await findCategoryRowById(db, categoryId);
@@ -6000,9 +6245,11 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message };
         }
+        });
     });
 
     ipcMain.handle('delete-account', async (event, accountId, userId) => {
+        return enqueueWrite('delete-account', async () => {
         try {
             const ownerId = resolveBudgetOwnerId(null, userId);
             if (ownerId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
@@ -6016,6 +6263,7 @@ function setupIpcHandlers() {
         } catch (error) {
             return { success: false, error: error.message, code: error.code };
         }
+        });
     });
 
     ipcMain.handle('get-account-transactions', async (event, accountId, limit) => {
@@ -6189,8 +6437,7 @@ app.on('before-quit', () => {
     if (backgroundSyncInterval) clearInterval(backgroundSyncInterval);
     if (extensionBridge) extensionBridge.stop();
     if (nativeServer) nativeServer.close();
-    if (db && typeof db.close === 'function') db.close();
-    else if (db && db.$pool) db.close();
+    sqliteOwner.close().catch(() => {});
 });
 
 createMenu();

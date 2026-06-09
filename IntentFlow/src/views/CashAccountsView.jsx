@@ -374,8 +374,8 @@ const CashAccountsView = () => {
       setShowInlineModal(false);
       resetInlineForm();
       notifyAccountsChanged({ reason: 'cash-account-created' });
-      await loadAccounts();
       alert('✅ Account created successfully!');
+      void loadAccounts();
     } catch (error) {
       console.error('❌ Error creating account:', error);
       alert(`Error: ${error.message}`);

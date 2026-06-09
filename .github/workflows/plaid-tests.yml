@@ -26,4 +26,5 @@ jobs:
           cache: 'npm'
           cache-dependency-path: IntentFlow/package-lock.json
       - run: npm ci
+      - run: npm run check:db-architecture
       - run: npm run test:plaid
