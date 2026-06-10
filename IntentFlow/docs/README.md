@@ -6,5 +6,6 @@ Project-level product, data, deployment, and recovery documentation lives here.
 
 - `intentflow-user-guide.html`: Premium interactive desktop application user guide.
 - `plaid-production-deploy.md`: Plaid production deployment and OAuth guidance.
+- `db-environment-isolation.md`: Development vs production database separation and packaging rules.
 - `guides/`: Database, backup, restore, and operational guides.
 - `archive/`: Historical planning and issue notes.

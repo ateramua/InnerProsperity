@@ -8,8 +8,10 @@
     "clean": "rimraf .next out release dist build",
     "clean:deep": "rimraf .next out release dist build node_modules/.cache .eslintcache",
     "build": "npm run check:db-architecture && next build && node scripts/copy-export-assets.cjs && node scripts/verify-production-export.cjs && node scripts/verify-testable-dialogs.cjs",
+    "generate:empty-schema": "node scripts/generate-empty-schema.cjs",
     "seed:db": "node src/db/scripts/seed-database.js",
-    "dist": "npm run clean && npm run build && electron-builder",
+    "verify:release-db-policy": "node scripts/verify-release-db-policy.cjs",
+    "dist": "npm run clean && npm run generate:empty-schema && npm run seed:db && npm run verify:release-db-policy && npm run build && electron-builder && node scripts/verify-release-artifact-db-policy.cjs",
     "dist:install-mac": "bash scripts/mac-reinstall-to-applications.sh",
     "start": "cross-env NODE_ENV=production electron .",
     "dev": "node scripts/electron-dev.cjs",
@@ -40,6 +42,7 @@
     "check:ipc-write-broker": "node scripts/check-ipc-write-broker.cjs",
     "test:db-broker": "node scripts/test-db-broker.cjs",
     "check:db-architecture": "npm run check:db-single-writer && npm run check:ipc-write-broker && npm run test:db-broker",
+    "check:db-isolation": "node scripts/test-db-environment-isolation.cjs && npm run generate:empty-schema && npm run seed:db && npm run verify:release-db-policy",
     "plaid:relay": "node scripts/plaid-webhook-relay.cjs",
     "plaid:relay-example": "node scripts/plaid-webhook-relay.example.cjs",
     "plaid:report-duplicates": "node scripts/report-plaid-duplicate-accounts.cjs",
@@ -62,7 +65,17 @@
       "src/main/**/*",
       "src/preload/**/*",
       "src/shared/**/*",
-      "src/db/**/*",
+      {
+        "from": "src/db",
+        "to": "src/db",
+        "filter": [
+          "**/*",
+          "!data/app.db",
+          "!data/**/*.db-wal",
+          "!data/**/*.db-shm",
+          "!data/**/*.db-journal"
+        ]
+      },
       "src/views/**/*",
       "src/services/**/*",
       "src/utils/**/*",
@@ -81,11 +94,12 @@
         ]
       },
       {
-        "from": "src/db/data/",
-        "to": "db/data/",
-        "filter": [
-          "**/*"
-        ]
+        "from": "src/db/data/empty-schema.sqlite",
+        "to": "db/data/empty-schema.sqlite"
+      },
+      {
+        "from": "src/db/data/production-seed.db",
+        "to": "db/data/production-seed.db"
       }
     ],
     "mac": {

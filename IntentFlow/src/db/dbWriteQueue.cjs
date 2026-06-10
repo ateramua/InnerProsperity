@@ -70,8 +70,9 @@ async function drainQueue() {
       if (!job) break;
       activeWrites += 1;
       try {
+        let db = null;
         if (dbProvider) {
-          const db = await dbProvider();
+          db = await dbProvider();
           await clearStaleTransaction(db);
         }
         const result = await retryWithBackoff(() => job.fn(), { label: job.label });
@@ -79,6 +80,14 @@ async function drainQueue() {
       } catch (err) {
         job.reject(err);
       } finally {
+        if (dbProvider) {
+          try {
+            const db = await dbProvider();
+            await clearStaleTransaction(db);
+          } catch (_) {
+            /* best-effort */
+          }
+        }
         activeWrites -= 1;
       }
     }
@@ -126,12 +135,18 @@ async function transaction(db, fn) {
 async function clearStaleTransaction(db) {
   if (!db) return;
   try {
-    if (await isDbInTransaction(db)) {
-      await db.exec('ROLLBACK');
-    }
+    await db.exec('ROLLBACK');
   } catch (rollbackErr) {
     if (!isNoActiveTransactionError(rollbackErr)) {
-      throw rollbackErr;
+      try {
+        if (await isDbInTransaction(db)) {
+          await db.exec('ROLLBACK');
+        }
+      } catch (retryErr) {
+        if (!isNoActiveTransactionError(retryErr)) {
+          throw retryErr;
+        }
+      }
     }
   }
 }

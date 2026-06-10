@@ -1418,6 +1418,259 @@ async function testReadyToAssignToOverspentCategory() {
   console.log('  ok Ready to Assign can fund overspent category');
 }
 
+async function testFundUnderfundedForMonthAppliesDeltas() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE user_budget_pool (
+      user_id INTEGER PRIMARY KEY,
+      ready_to_assign_balance REAL NOT NULL DEFAULT 0,
+      pool_backfilled INTEGER NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO user_budget_pool (user_id, ready_to_assign_balance, pool_backfilled)
+      VALUES (1, 1000, 1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      group_id TEXT,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      target_amount REAL DEFAULT 0,
+      target_type TEXT,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      direction TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    INSERT INTO category_groups (id, user_id, name, sort_order) VALUES ('g1', 1, 'Essentials', 0);
+    INSERT INTO categories (id, user_id, name, group_id, assigned, available, target_amount, target_type)
+      VALUES ('c-overspent', 1, 'Overspent', 'g1', 0, -80, 0, NULL);
+    INSERT INTO categories (id, user_id, name, group_id, assigned, available, target_amount, target_type)
+      VALUES ('c-goal', 1, 'Vacation', 'g1', 30, 30, 100, 'monthly');
+    INSERT INTO monthly_budgets (id, category_id, month, budgeted_amount, activity_amount, available_amount)
+      VALUES ('mb1', 'c-overspent', '${monthKey}', 0, 80, -80);
+    INSERT INTO monthly_budgets (id, category_id, month, budgeted_amount, activity_amount, available_amount)
+      VALUES ('mb2', 'c-goal', '${monthKey}', 30, 0, 30);
+    INSERT INTO accounts (id, user_id, type) VALUES ('a1', 1, 'checking');
+    INSERT INTO transactions (account_id, user_id, category_id, amount, date, direction)
+      VALUES ('a1', 1, 'c-overspent', 80, '${monthKey}', 'outflow');
+  `);
+
+  const { fundUnderfundedForMonth } = require('../src/services/budget/monthlyBudgetService.cjs');
+
+  const dryRun = await fundUnderfundedForMonth(db, 1, monthKey, { dryRun: true, totalCash: 1000 });
+  assert.strictEqual(dryRun.plan.totalToAssign, 150);
+  assert.strictEqual(dryRun.assignments.length, 0);
+  const mbDry = await db.get(
+    'SELECT budgeted_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c-overspent', monthKey]
+  );
+  assert.strictEqual(Number(mbDry.budgeted_amount), 0, 'dryRun must not mutate assigned');
+
+  const result = await fundUnderfundedForMonth(db, 1, monthKey, { totalCash: 1000 });
+  assert.strictEqual(result.plan.totalToAssign, 150);
+  assert.strictEqual(result.assignments.length, 2);
+  assert.strictEqual(result.readyToAssignDelta, -150);
+
+  const overspentMb = await db.get(
+    'SELECT budgeted_amount, available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c-overspent', monthKey]
+  );
+  assert.strictEqual(Number(overspentMb.budgeted_amount), 80);
+  assert.strictEqual(Number(overspentMb.available_amount), 0);
+
+  const goalMb = await db.get(
+    'SELECT budgeted_amount, available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c-goal', monthKey]
+  );
+  assert.strictEqual(Number(goalMb.budgeted_amount), 100);
+  assert.strictEqual(Number(goalMb.available_amount), 100);
+
+  const pool = await db.get('SELECT ready_to_assign_balance FROM user_budget_pool WHERE user_id = 1');
+  assert.strictEqual(Number(pool.ready_to_assign_balance), 850);
+
+  assert.ok(
+    Number(result.snapshot.underfundedTotal) <= 0.02,
+    `underfunded should clear after funding, got ${result.snapshot.underfundedTotal}`
+  );
+
+  await db.close();
+  console.log('  ok fundUnderfundedForMonth applies delta assignments and syncs RTA');
+}
+
+async function testUnassignCategoryReleasesManualAssignedWhenMonthRowIsZero() {
+  const db = await open({ filename: ':memory:', driver: sqlite3.Database });
+  const monthKey = toLocalMonthKey(new Date());
+  await db.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY);
+    INSERT INTO users (id) VALUES (1);
+    CREATE TABLE user_budget_pool (
+      user_id INTEGER PRIMARY KEY,
+      ready_to_assign_balance REAL NOT NULL DEFAULT 0,
+      pool_backfilled INTEGER NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO user_budget_pool (user_id, ready_to_assign_balance, pool_backfilled)
+      VALUES (1, 600, 1);
+    CREATE TABLE category_groups (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE categories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      group_id TEXT,
+      assigned REAL DEFAULT 0,
+      activity REAL DEFAULT 0,
+      available REAL DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      is_credit_card_payment_category INTEGER DEFAULT 0,
+      is_loan_payment_category INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE monthly_budgets (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      month DATE NOT NULL,
+      budgeted_amount REAL DEFAULT 0,
+      activity_amount REAL DEFAULT 0,
+      available_amount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category_id, month)
+    );
+    CREATE TABLE budget_assignment_audit (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      month TEXT NOT NULL,
+      previous_assigned REAL NOT NULL DEFAULT 0,
+      new_assigned REAL NOT NULL DEFAULT 0,
+      amount_changed REAL NOT NULL DEFAULT 0,
+      source TEXT,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO category_groups (id, user_id, name, sort_order) VALUES ('g1', 1, 'Essentials', 0);
+    INSERT INTO categories (id, user_id, name, group_id, assigned, available)
+      VALUES ('c-manual', 1, 'Manual Fund', 'g1', 400, 400);
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      date TEXT,
+      direction TEXT,
+      is_transfer INTEGER DEFAULT 0
+    );
+    CREATE TABLE transaction_splits (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      category_id TEXT,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      type TEXT
+    );
+    INSERT INTO monthly_budgets (id, category_id, month, budgeted_amount, activity_amount, available_amount)
+      VALUES ('mb-stale', 'c-manual', '${monthKey}', 0, 0, 0);
+  `);
+
+  const { unassignCategoryForMonth } = require('../src/services/budget/monthlyBudgetService.cjs');
+
+  const result = await unassignCategoryForMonth(db, 1, 'c-manual', monthKey, {
+    auditSource: 'unassign_category',
+  });
+  assert.strictEqual(result.released, 400);
+  assert.strictEqual(result.readyToAssignDelta, 400);
+
+  const cat = await db.get('SELECT assigned, available FROM categories WHERE id = ?', ['c-manual']);
+  assert.strictEqual(Number(cat.assigned), 0);
+  assert.strictEqual(Number(cat.available), 0);
+
+  const mb = await db.get(
+    'SELECT budgeted_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
+    ['c-manual', monthKey]
+  );
+  assert.strictEqual(Number(mb.budgeted_amount), 0);
+
+  const pool = await db.get('SELECT ready_to_assign_balance FROM user_budget_pool WHERE user_id = 1');
+  assert.strictEqual(Number(pool.ready_to_assign_balance), 1000);
+
+  const snapshot = await getBudgetMonthSnapshot(db, 1, monthKey);
+  const row = snapshot.categories.find((c) => c.id === 'c-manual');
+  assert.ok(row, 'category row missing from snapshot');
+  assert.strictEqual(Number(row.assigned), 0);
+
+  await db.close();
+  console.log('  ok unassignCategory releases manual assigned when monthly row is zero');
+}
+
 (async () => {
   try {
     await testCategoryToCategoryMoveDoesNotRequireRta();
@@ -1433,6 +1686,8 @@ async function testReadyToAssignToOverspentCategory() {
     await testAutomatedAssignmentChangeRejected();
     await testBulkAssignInsideOpenTransaction();
     await testFundUnderfundedNotClearedByGlobalSummary();
+    await testFundUnderfundedForMonthAppliesDeltas();
+    await testUnassignCategoryReleasesManualAssignedWhenMonthRowIsZero();
     await testConcurrentBulkAssignNoSavepointError();
   } catch (e) {
     console.error('  FAIL integration:', e.message);

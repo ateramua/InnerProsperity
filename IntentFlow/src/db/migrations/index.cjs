@@ -11,11 +11,91 @@ async function columnExists(db, tableName, columnName) {
     return columns.some(col => col.name === columnName);
 }
 
+function isSqlBoundaryChar(ch) {
+    return ch === undefined || /[\s;,()]/.test(ch);
+}
+
+function matchesSqlKeyword(sql, index, keyword) {
+    const slice = sql.slice(index, index + keyword.length);
+    if (slice.toUpperCase() !== keyword.toUpperCase()) {
+        return false;
+    }
+    const before = index > 0 ? sql[index - 1] : ' ';
+    const after = sql[index + keyword.length];
+    return isSqlBoundaryChar(before) && isSqlBoundaryChar(after);
+}
+
+/**
+ * Split SQL migration scripts without breaking CREATE TRIGGER ... BEGIN ... END bodies.
+ */
+function splitMigrationSqlStatements(sql) {
+    const statements = [];
+    let current = '';
+    let beginDepth = 0;
+    let inSingle = false;
+    let inDouble = false;
+
+    for (let i = 0; i < sql.length; i += 1) {
+        const ch = sql[i];
+
+        if (!inSingle && !inDouble && ch === '-' && sql[i + 1] === '-') {
+            while (i < sql.length && sql[i] !== '\n') {
+                current += sql[i];
+                i += 1;
+            }
+            if (i < sql.length) {
+                current += sql[i];
+            }
+            continue;
+        }
+
+        if (ch === "'" && !inDouble) {
+            if (inSingle && sql[i + 1] === "'") {
+                current += "''";
+                i += 1;
+                continue;
+            }
+            inSingle = !inSingle;
+            current += ch;
+            continue;
+        }
+
+        if (ch === '"' && !inSingle) {
+            inDouble = !inDouble;
+            current += ch;
+            continue;
+        }
+
+        if (!inSingle && !inDouble) {
+            if (matchesSqlKeyword(sql, i, 'BEGIN')) {
+                beginDepth += 1;
+            } else if (beginDepth > 0 && matchesSqlKeyword(sql, i, 'END')) {
+                beginDepth -= 1;
+            }
+        }
+
+        if (ch === ';' && !inSingle && !inDouble && beginDepth === 0) {
+            const trimmed = current.trim();
+            if (trimmed) {
+                statements.push(trimmed);
+            }
+            current = '';
+            continue;
+        }
+
+        current += ch;
+    }
+
+    const tail = current.trim();
+    if (tail) {
+        statements.push(tail);
+    }
+
+    return statements;
+}
+
 async function executeMigrationSql(db, sql) {
-    const statements = sql
-        .split(/;\s*(?:\r?\n|$)/)
-        .map(stmt => stmt.trim())
-        .filter(Boolean);
+    const statements = splitMigrationSqlStatements(sql);
 
     for (const statement of statements) {
         const cleanedStatement = statement.replace(/--.*$/gm, '').trim();
@@ -133,6 +213,7 @@ async function runMigrations(existingDb) {
             '032_forecast_shares_and_prefs.cjs',
             '033_accounts_hidden_carryover.cjs',
             '034_user_budget_pool.cjs',
+            '035_repair_category_group_ids.cjs',
         ];
 
         for (const migration of migrations) {
@@ -265,4 +346,4 @@ if (process.argv.includes('--reset')) {
 }
 
 // At the very bottom of the file, add:
-module.exports = { runMigrations };
+module.exports = { runMigrations, splitMigrationSqlStatements, executeMigrationSql };

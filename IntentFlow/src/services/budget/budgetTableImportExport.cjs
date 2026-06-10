@@ -2,6 +2,8 @@
  * Export / import Prosperity Map table rows (PropertyMapView columns).
  */
 
+const { v4: uuidv4 } = require('uuid');
+
 function loadXlsx() {
   try {
     return require('xlsx');
@@ -416,12 +418,24 @@ function parseImportContent(content, format, fileName) {
 
 function buildCategoryIndex(snapshot) {
   const byPair = new Map();
+  const byName = new Map();
   for (const cat of snapshot.categories || []) {
     const groupName = cat.group_name || 'Uncategorized';
     const pairKey = `${normKey(groupName)}::${normKey(cat.name)}`;
     byPair.set(pairKey, cat);
+    const nameKey = normKey(cat.name);
+    if (!nameKey) continue;
+    if (!byName.has(nameKey)) {
+      byName.set(nameKey, cat);
+    } else {
+      byName.set(nameKey, null);
+    }
   }
-  return { byPair };
+  return { byPair, byName };
+}
+
+function categoryGroupNorm(groupName) {
+  return normKey(groupName || 'Uncategorized');
 }
 
 function matchCategory(row, index, defaultMonthKey, toLocalMonthKey) {
@@ -431,7 +445,15 @@ function matchCategory(row, index, defaultMonthKey, toLocalMonthKey) {
   }
   const groupName = String(row.group || '').trim() || 'Uncategorized';
   const pairKey = `${normKey(groupName)}::${normKey(categoryName)}`;
-  const cat = index.byPair.get(pairKey);
+  let cat = index.byPair.get(pairKey);
+  let matchedBy = 'pair';
+  if (!cat) {
+    const nameHit = index.byName.get(normKey(categoryName));
+    if (nameHit) {
+      cat = nameHit;
+      matchedBy = 'name';
+    }
+  }
   const assigned = parseMoney(row.assigned);
   const goalTarget = parseMoney(row.goalTarget);
   const goalType = normalizeGoalType(row.goalType);
@@ -457,6 +479,13 @@ function matchCategory(row, index, defaultMonthKey, toLocalMonthKey) {
   }
 
   const changes = [];
+  const existingGroup = cat.group_name || 'Uncategorized';
+  if (
+    matchedBy === 'name' ||
+    categoryGroupNorm(existingGroup) !== categoryGroupNorm(groupName)
+  ) {
+    changes.push('group');
+  }
   if (assigned !== null && roundMoney(cat.assigned) !== assigned) {
     changes.push('assigned');
   }
@@ -470,10 +499,11 @@ function matchCategory(row, index, defaultMonthKey, toLocalMonthKey) {
   return {
     status: changes.length ? 'update' : 'unchanged',
     categoryId: cat.id,
-    existingGroup: cat.group_name || 'Uncategorized',
+    existingGroup,
     normalized,
     changes,
     willCreate: false,
+    matchedBy,
   };
 }
 
@@ -519,19 +549,61 @@ function previewImport(snapshot, parsedRows, defaultMonthKey, toLocalMonthKey) {
   };
 }
 
-async function findOrCreateGroup(db, userId, groupName) {
+async function resolveCategoryGroupRecord(db, userId, groupName) {
   const name = String(groupName || '').trim() || 'Uncategorized';
   let row = await db.get(
-    'SELECT id, name FROM category_groups WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))',
+    `SELECT rowid, id, name FROM category_groups
+     WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))`,
     [userId, name]
   );
-  if (row) return row.id;
-  const result = await db.run(
-    `INSERT INTO category_groups (user_id, name, sort_order, created_at, updated_at)
-     VALUES (?, ?, 999, datetime('now'), datetime('now'))`,
+  if (row) {
+    const effectiveId =
+      row.id != null && String(row.id).trim() !== '' ? String(row.id).trim() : String(row.rowid);
+    if (!row.id || String(row.id).trim() === '') {
+      await db.run(
+        `UPDATE category_groups SET id = ?, updated_at = datetime('now')
+         WHERE rowid = ? AND user_id = ?`,
+        [effectiveId, row.rowid, userId]
+      );
+    }
+    return { id: effectiveId, name: row.name || name };
+  }
+  const id = uuidv4();
+  await db.run(
+    `INSERT INTO category_groups (id, user_id, name, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, 999, datetime('now'), datetime('now'))`,
+    [id, userId, name]
+  );
+  return { id, name };
+}
+
+async function findOrCreateGroup(db, userId, groupName) {
+  const group = await resolveCategoryGroupRecord(db, userId, groupName);
+  return group.id;
+}
+
+async function findCategoryByName(db, userId, categoryName) {
+  const name = String(categoryName || '').trim();
+  if (!name) return null;
+  return db.get(
+    `SELECT id, name, group_id FROM categories
+     WHERE user_id = ?
+       AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+       AND (archived IS NULL OR archived = 0)
+     LIMIT 1`,
     [userId, name]
   );
-  return result.lastID;
+}
+
+async function assignCategoryToGroup(db, userId, categoryId, groupName) {
+  const groupId = await findOrCreateGroup(db, userId, groupName);
+  if (!groupId || !categoryId) return null;
+  await db.run(
+    `UPDATE categories SET group_id = ?, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`,
+    [groupId, categoryId, userId]
+  );
+  return groupId;
 }
 
 async function applyImport(db, userId, monthKey, previewItems, options, deps) {
@@ -565,43 +637,60 @@ async function applyImport(db, userId, monthKey, previewItems, options, deps) {
 
     const { normalized } = item;
     const targetMonth = monthlyBudgetService.toLocalMonthKey(normalized.monthKey || mKey);
+    const shouldUpdateGroup =
+      item.status === 'unmatched' ||
+      (Array.isArray(item.changes) && item.changes.includes('group'));
 
     try {
       let categoryId = item.categoryId;
+      let created = false;
 
       if (item.status === 'unmatched') {
         if (!createMissing) {
           result.skipped++;
           continue;
         }
-        const groupId = await findOrCreateGroup(db, userId, normalized.group);
-        categoryId = `cat_import_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const assigned = normalized.assigned !== null ? normalized.assigned : 0;
-        const targetAmount = normalized.goalTarget !== null ? normalized.goalTarget : 0;
-        const targetType = normalized.goalType || 'monthly';
-        await db.run(
-          `INSERT INTO categories (id, user_id, name, group_id, assigned, target_type, target_amount, target_date)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            categoryId,
-            userId,
-            normalized.category,
-            groupId,
-            assigned,
-            targetType,
-            targetAmount,
-            null,
-          ]
-        );
-        result.created++;
-        if (notifyBudgetStateChanged) {
-          notifyBudgetStateChanged('category:created', { categoryId, userId });
+        const existingByName = await findCategoryByName(db, userId, normalized.category);
+        if (existingByName?.id) {
+          categoryId = existingByName.id;
+        } else {
+          const groupId = await findOrCreateGroup(db, userId, normalized.group);
+          categoryId = `cat_import_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const assigned = normalized.assigned !== null ? normalized.assigned : 0;
+          const targetAmount = normalized.goalTarget !== null ? normalized.goalTarget : 0;
+          const targetType = normalized.goalType || 'monthly';
+          await db.run(
+            `INSERT INTO categories (id, user_id, name, group_id, assigned, target_type, target_amount, target_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              categoryId,
+              userId,
+              normalized.category,
+              groupId,
+              assigned,
+              targetType,
+              targetAmount,
+              null,
+            ]
+          );
+          created = true;
+          result.created++;
+          if (notifyBudgetStateChanged) {
+            notifyBudgetStateChanged('category:created', { categoryId, userId });
+          }
         }
       }
 
       if (!categoryId) {
         result.skipped++;
         continue;
+      }
+
+      if (shouldUpdateGroup) {
+        await assignCategoryToGroup(db, userId, categoryId, normalized.group);
+        if (!created && item.status !== 'unmatched') {
+          result.applied++;
+        }
       }
 
       if (updateAssigned && normalized.assigned !== null) {
@@ -685,4 +774,9 @@ module.exports = {
   detectFormat,
   parseMoney,
   monthlyBudgetServiceKey,
+  buildCategoryIndex,
+  matchCategory,
+  findOrCreateGroup,
+  resolveCategoryGroupRecord,
+  assignCategoryToGroup,
 };

@@ -2,9 +2,10 @@
 const path = require('path');
 const fs = require('fs');
 const { app } = require('electron');
+const runtimeProfile = require('./runtimeProfile.cjs');
 
-const DB_FILE_NAME = 'money-manager.db';
-const CANONICAL_PROD_DIR_NAME = 'intentflow';
+const DB_FILE_NAME = runtimeProfile.DB_FILE_NAME;
+const CANONICAL_PROD_DIR_NAME = runtimeProfile.CANONICAL_PROD_DIR;
 
 function safeStatSize(filePath) {
     try {
@@ -17,8 +18,6 @@ function safeStatSize(filePath) {
 
 function getCanonicalProductionDbPath() {
     const appDataPath = app.getPath('appData');
-    // Use a fixed vendor folder to avoid switching when Electron userData changes
-    // because of app name / appId / bundle identifier differences across builds.
     return path.join(appDataPath, CANONICAL_PROD_DIR_NAME, DB_FILE_NAME);
 }
 
@@ -33,7 +32,6 @@ function getLegacyProductionCandidates() {
         candidates.push(path.join(appDataPath, 'com.intentflow.moneymanager', DB_FILE_NAME));
         candidates.push(path.join(appDataPath, 'IntentFlow', DB_FILE_NAME));
     }
-    // Deduplicate while preserving order.
     return [...new Set(candidates)];
 }
 
@@ -50,19 +48,34 @@ function migrateLegacyProductionDbIfNeeded(targetDbPath) {
     console.log(`📦 Migrated production DB from ${source.path} -> ${targetDbPath} (${source.size} bytes)`);
 }
 
-function getDatabasePath() {
-    const isPackaged = app.isPackaged;
-    let dbPath;
+function resolveRuntimeProfile() {
+    return runtimeProfile.resolveRuntimeProfile({ isPackaged: app.isPackaged });
+}
 
-    if (isPackaged) {
-        dbPath = getCanonicalProductionDbPath();
-        console.log('📦 Production mode - using DB path:', dbPath);
-    } else {
-        const projectRoot = path.resolve(__dirname, '../..');
-        dbPath = path.join(projectRoot, 'src/db/data/app.db');
-        console.log('🔧 Development mode - using DB path:', dbPath);
+function getDatabasePath() {
+    const profile = resolveRuntimeProfile();
+
+    if (profile === runtimeProfile.PROFILES.PRODUCTION) {
+        if (process.env.INTENTFLOW_DB_PATH) {
+            console.error(
+                '❌ INTENTFLOW_DB_PATH is ignored in production — customer data uses Application Support/intentflow/'
+            );
+        }
+        const dbPath = getCanonicalProductionDbPath();
+        console.log('📦 Production profile — DB path:', dbPath);
+        return dbPath;
     }
 
+    const override = process.env.INTENTFLOW_DB_PATH;
+    if (override) {
+        const resolved = path.resolve(override);
+        runtimeProfile.assertDbPathAllowedForProfile(profile, resolved);
+        console.log(`🔧 ${profile} profile — DB path (override):`, resolved);
+        return resolved;
+    }
+
+    const dbPath = runtimeProfile.getDefaultDevelopmentDbPath();
+    console.log(`🔧 ${profile} profile — DB path:`, dbPath);
     return dbPath;
 }
 
@@ -84,13 +97,17 @@ function ensureDatabaseDirectory() {
     }
 
     if (app.isPackaged) {
-        // One-time compatibility move for users coming from prior builds.
         migrateLegacyProductionDbIfNeeded(dbPath);
     }
 
-    // Do not create an empty database file here. Let SQLite create the file when opening
-    // it and let initializeDatabase detect whether schema creation is required.
     return dbPath;
 }
 
-module.exports = { getDatabasePath, ensureDatabaseDirectory };
+module.exports = {
+    getDatabasePath,
+    ensureDatabaseDirectory,
+    resolveRuntimeProfile,
+    getCanonicalProductionDbPath,
+    isProductionDatabasePath: runtimeProfile.isProductionDatabasePath,
+    isDevelopmentDatabasePath: runtimeProfile.isDevelopmentDatabasePath,
+};

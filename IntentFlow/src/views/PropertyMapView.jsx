@@ -7,7 +7,10 @@ import {
   deriveAvailableFromCategoryRow,
   roundMoney as roundMoneyEnvelope,
 } from "../shared/categoryAvailableEngine.mjs";
-import { computeFundUnderfundedPlan } from "../shared/underfundedEngine.mjs";
+import {
+  attachUnderfundedFields,
+  computeFundUnderfundedPlan,
+} from "../shared/underfundedEngine.mjs";
 import Button from '../components/ui/Button';
 import CategoryTargetModal from '../components/CategoryTargetModal';
 import CategoryBudgetEditRow from '../components/CategoryBudgetEditRow';
@@ -87,6 +90,15 @@ const PropertyMapView = ({ onNavigate }) => {
     monthKey: null,
     at: 0
   });
+  /** Blocks stale snapshot restore while assignment/unassign IPC is in flight. */
+  const budgetMutationInFlightRef = useRef(false);
+  /** Suppress stale snapshot restore briefly after a successful budget mutation. */
+  const recentBudgetMutationAtRef = useRef(0);
+  /** Monotonic generation for getBudgetGlobalSummary — stale in-flight responses are discarded. */
+  const globalSummaryRefreshSeqRef = useRef(0);
+  /** Authoritative RTA from the latest mutation IPC until a matching summary refresh confirms it. */
+  const authoritativeReadyToAssignRef = useRef(null);
+  const isQuickAssigningRef = useRef(false);
   const [showTargetModal, setShowTargetModal] = useState(false);
   const [selectedCategoryForTarget, setSelectedCategoryForTarget] = useState(null);
 
@@ -109,6 +121,9 @@ const PropertyMapView = ({ onNavigate }) => {
   /** Short-lived goal patches so background reloads cannot overwrite a just-saved target_amount. */
   const goalPatchByCategoryIdRef = useRef(new Map());
   const [isQuickAssigning, setIsQuickAssigning] = useState(false);
+  useEffect(() => {
+    isQuickAssigningRef.current = isQuickAssigning;
+  }, [isQuickAssigning]);
   const [isMonthBudgetLoading, setIsMonthBudgetLoading] = useState(false);
   const rtaRefreshTimerRef = useRef(null);
 
@@ -135,6 +150,7 @@ const PropertyMapView = ({ onNavigate }) => {
   const [showArchivedModal, setShowArchivedModal] = useState(false);
   const [archivedCategories, setArchivedCategories] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const collapsedByGroupNameRef = useRef({});
   const [focusCategoryId, setFocusCategoryId] = useState(null);
 
   const waitForElectronAPI = async (requiredMethods = [], timeout = 5000) => {
@@ -170,6 +186,10 @@ const PropertyMapView = ({ onNavigate }) => {
   });
   const [showFutureReservedPanel, setShowFutureReservedPanel] = useState(false);
   const [isUnassigningMonth, setIsUnassigningMonth] = useState(false);
+  const isUnassigningMonthRef = useRef(false);
+  useEffect(() => {
+    isUnassigningMonthRef.current = isUnassigningMonth;
+  }, [isUnassigningMonth]);
 
   const [budgetData, setBudgetData] = useState({
     categories: []
@@ -265,7 +285,7 @@ const PropertyMapView = ({ onNavigate }) => {
       console.log(`✅ Successfully moved $${amount} from "${spendingCategory.name}" to "${paymentCategory.name}"`);
       
       await loadCategoriesFromDB(0, { monthDate: monthKeyToLocalDate(ccMonth) });
-      calculateReadyToAssign();
+      calculateReadyToAssign(null, { refreshSummary: true });
       
       return true;
     } catch (error) {
@@ -303,13 +323,36 @@ const PropertyMapView = ({ onNavigate }) => {
   }, [budgetData.categories]);
 
   // ==================== HELPER FUNCTIONS ====================
-  const isGroupCollapsed = (groupId) => collapsedGroups[groupId] !== false;
+  const normalizeGroupNameKey = (name) =>
+    String(name || '')
+      .trim()
+      .toLowerCase();
 
-  const toggleGroupCollapse = (groupId) => {
-    setCollapsedGroups(prev => ({
-      ...prev,
-      [groupId]: prev[groupId] === false ? true : false,
-    }));
+  /** Groups default expanded; only collapse when explicitly toggled or saved preference. */
+  const isGroupCollapsed = (groupId) => collapsedGroups[groupId] === true;
+
+  const persistGroupCollapsePrefs = () => {
+    if (!userId) return;
+    try {
+      sessionStorage.setItem(
+        `intentflow.pmGroupCollapse.${userId}`,
+        JSON.stringify(collapsedByGroupNameRef.current),
+      );
+    } catch (_) {
+      // sessionStorage may be unavailable
+    }
+  };
+
+  const toggleGroupCollapse = (groupId, groupName) => {
+    setCollapsedGroups((prev) => {
+      const nextCollapsed = prev[groupId] !== true;
+      const next = { ...prev, [groupId]: nextCollapsed };
+      if (groupName) {
+        collapsedByGroupNameRef.current[normalizeGroupNameKey(groupName)] = nextCollapsed;
+        persistGroupCollapsePrefs();
+      }
+      return next;
+    });
   };
 
   const calculateTargetProgress = (category) =>
@@ -412,28 +455,63 @@ const PropertyMapView = ({ onNavigate }) => {
     }
   };
 
+  const invalidateGlobalSummaryRefresh = () => {
+    globalSummaryRefreshSeqRef.current += 1;
+  };
+
   const refreshGlobalBudgetSummary = async () => {
     if (!userId || !window.electronAPI?.getBudgetGlobalSummary) return null;
+    const requestSeq = ++globalSummaryRefreshSeqRef.current;
     try {
       const res = await window.electronAPI.getBudgetGlobalSummary(userId);
+      if (requestSeq !== globalSummaryRefreshSeqRef.current) {
+        return res?.success ? res.data : null;
+      }
       if (res?.success && res.data) {
         const data = res.data;
+        const serverRta = roundMoney(Number(data.readyToAssign) || 0);
+        const auth = authoritativeReadyToAssignRef.current;
+        let readyToAssign = serverRta;
+        if (
+          auth &&
+          Date.now() - auth.at < 12000 &&
+          Math.abs(serverRta - auth.value) > 0.02
+        ) {
+          readyToAssign = auth.value;
+        } else if (auth && Math.abs(serverRta - auth.value) <= 0.02) {
+          authoritativeReadyToAssignRef.current = null;
+        }
         setBudgetSummary((prev) => ({
           ...prev,
-          totalAvailable: data.readyToAssign,
-          unassigned: data.readyToAssign,
+          totalAvailable: readyToAssign,
+          unassigned: readyToAssign,
           totalAssigned: data.totalAssigned,
           totalCash: data.totalCash,
           futureAssigned: data.futureAssigned,
           futureBreakdown: data.futureBreakdown || [],
         }));
         await refreshBudgetMonthOptions(userId);
-        return data;
+        return { ...data, readyToAssign };
       }
     } catch (e) {
       console.warn('refreshGlobalBudgetSummary:', e);
     }
     return null;
+  };
+
+  /** Apply authoritative Ready to Assign from a budget mutation IPC response. */
+  const commitReadyToAssignFromServer = (payload) => {
+    if (!payload || payload.readyToAssign == null) return null;
+    const rta = roundMoney(Number(payload.readyToAssign) || 0);
+    invalidateGlobalSummaryRefresh();
+    recentBudgetMutationAtRef.current = Date.now();
+    authoritativeReadyToAssignRef.current = { value: rta, at: Date.now() };
+    setBudgetSummary((prev) => ({
+      ...prev,
+      unassigned: rta,
+      totalAvailable: rta,
+    }));
+    return rta;
   };
 
   const selectedBudgetMonthKey = formatBudgetMonthKey(selectedMonth);
@@ -498,6 +576,34 @@ const PropertyMapView = ({ onNavigate }) => {
     );
   };
 
+  /** Authoritative budget rows from IPC — never reads React state or session snapshot. */
+  const fetchBudgetMonthSnapshotRows = async (monthKey, ownerId = resolveBudgetUserId()) => {
+    if (!ownerId || !window.electronAPI?.getBudgetMonthSnapshot) return null;
+    const snap = await window.electronAPI.getBudgetMonthSnapshot(ownerId, monthKey);
+    if (!snap?.success || !Array.isArray(snap.data?.categories)) return null;
+    return snap.data.categories.map((cat) =>
+      mapDbCategoryToBudgetRow({ ...cat, _envelopeFromSnapshot: true }),
+    );
+  };
+
+  const fetchCategoryAssignedFromServer = async (categoryId, monthKey) => {
+    const rows = await fetchBudgetMonthSnapshotRows(monthKey);
+    if (!rows) return null;
+    const row = rows.find((cat) => String(cat.id) === String(categoryId));
+    if (!row) return 0;
+    return roundMoney(Math.max(0, Number(row.assigned) || 0));
+  };
+
+  const fetchMonthUnassignableTotalFromServer = async (monthKey) => {
+    const rows = await fetchBudgetMonthSnapshotRows(monthKey);
+    if (!rows) return null;
+    return roundMoney(
+      rows
+        .filter((cat) => cat && !isCategoryArchived(cat))
+        .reduce((sum, cat) => sum + Math.max(0, Number(cat.assigned) || 0), 0),
+    );
+  };
+
   const updateMonthMetricsFromCategories = (categoriesOverride = null) => {
     const source = Array.isArray(categoriesOverride)
       ? categoriesOverride
@@ -524,6 +630,10 @@ const PropertyMapView = ({ onNavigate }) => {
     const active = getActiveBudgetCategories(overrideRows);
     const plan = computeFundUnderfundedPlan(active, { pool });
     return roundMoney(plan.totalToAssign || 0);
+  };
+
+  const logFundUnderfunded = (step, payload = {}) => {
+    console.log(`[FundUnderfunded] ${step}`, payload);
   };
 
   const getFundUnderfundedButtonLabel = () => {
@@ -702,7 +812,7 @@ const PropertyMapView = ({ onNavigate }) => {
         categories: withDerivedAvailable(prev.categories || []),
       }));
     }
-    calculateReadyToAssign();
+    calculateReadyToAssign(null, { refreshSummary: true });
     console.log('✅ Available balances refreshed');
   };
 
@@ -718,9 +828,11 @@ const PropertyMapView = ({ onNavigate }) => {
   };
 
   // ==================== READY TO ASSIGN (GLOBAL POOL) ====================
-  const calculateReadyToAssign = (categoriesOverride = null) => {
+  const calculateReadyToAssign = (categoriesOverride = null, opts = {}) => {
     updateMonthMetricsFromCategories(categoriesOverride);
-    void refreshGlobalBudgetSummary();
+    if (opts.refreshSummary) {
+      void refreshGlobalBudgetSummary();
+    }
   };
 
   const updateAllProgress = () => {
@@ -765,9 +877,20 @@ const PropertyMapView = ({ onNavigate }) => {
     }
   };
 
+  const clearBudgetSessionSnapshot = () => {
+    try {
+      sessionStorage.removeItem(PROSPERITY_SNAPSHOT_KEY);
+    } catch (_) {
+      /* sessionStorage may be unavailable */
+    }
+  };
+
+  const isRecentBudgetMutation = () =>
+    Date.now() - (recentBudgetMutationAtRef.current || 0) < 15000;
+
   const loadSnapshotFromSession = (snapshotUserId, snapshotMonthKey) => {
     try {
-      const raw = sessionStorage.getItem(PROSERITY_SNAPSHOT_KEY);
+      const raw = sessionStorage.getItem(PROSPERITY_SNAPSHOT_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed?.categories?.length) return null;
@@ -802,12 +925,12 @@ const PropertyMapView = ({ onNavigate }) => {
     return true;
   };
 
-  const commitBudgetSnapshot = (categories, groupsArg, snapshotUserId, snapshotMonthKey) => {
-    const rows =
-      Array.isArray(categories) && categories.length > 0
-        ? categories
-        : lastGoodSnapshotRef.current.categories;
-    if (!rows?.length) return false;
+  const commitBudgetSnapshot = (categories, groupsArg, snapshotUserId, snapshotMonthKey, opts = {}) => {
+    const explicitRows = Array.isArray(categories);
+    const rows = explicitRows
+      ? categories
+      : (lastGoodSnapshotRef.current.categories || []);
+    if (!rows?.length && !opts.allowEmpty) return false;
 
     const groups =
       Array.isArray(groupsArg) && groupsArg.length > 0
@@ -823,7 +946,9 @@ const PropertyMapView = ({ onNavigate }) => {
       at: Date.now()
     };
     hasEverLoadedSuccessRef.current = true;
-    saveSnapshotToSession(lastGoodSnapshotRef.current);
+    if (opts.skipSessionPersist !== true) {
+      saveSnapshotToSession(lastGoodSnapshotRef.current);
+    }
     setBudgetData((prev) => ({ ...prev, categories: lastGoodSnapshotRef.current.categories }));
     setCategories(lastGoodSnapshotRef.current.categories);
     if (groups.length > 0) {
@@ -832,8 +957,194 @@ const PropertyMapView = ({ onNavigate }) => {
     return true;
   };
 
+  const applyCategoryRowsFromServer = (serverRows, monthKey) => {
+    if (!Array.isArray(serverRows) || serverRows.length === 0) return null;
+    const mapped = serverRows.map((cat) =>
+      mapDbCategoryToBudgetRow({ ...cat, _envelopeFromSnapshot: true }),
+    );
+    const byId = new Map(mapped.map((row) => [String(row.id), row]));
+    const next = withDerivedAvailable(
+      (budgetData.categories || []).map((cat) =>
+        byId.has(String(cat.id)) ? byId.get(String(cat.id)) : cat,
+      ),
+    );
+    commitBudgetSnapshot(next, categoryGroups, userId, monthKey);
+    return next;
+  };
+
+  /** Replace visible month rows from an authoritative server month snapshot. */
+  const applyServerBudgetSnapshot = (snapshot, monthKey) => {
+    if (!snapshot?.categories?.length) return null;
+    const dbCategories = snapshot.categories.map((cat) =>
+      mapDbCategoryToBudgetRow({ ...cat, _envelopeFromSnapshot: true }),
+    );
+    return applyCategoriesFromDb(dbCategories, monthKey, {
+      userId,
+      skipStaleRestore: true,
+    });
+  };
+
+  const enrichRowsWithUnderfunded = (rows) =>
+    (rows || []).map((cat) => {
+      const enriched = attachUnderfundedFields(cat);
+      return {
+        ...cat,
+        ...enriched,
+        underfunded: enriched.underfunded ?? enriched.needed ?? cat.underfunded ?? 0,
+        needed: enriched.needed ?? cat.needed,
+        goalType: enriched.goalType ?? cat.goalType,
+        goalStatus: enriched.goalStatus ?? cat.goalStatus,
+        goalProgress: enriched.goalProgress ?? cat.goalProgress,
+      };
+    });
+
+  /** Apply IPC assignment/unassign results to visible rows before authoritative reload. */
+  const applyMutationCategoryPatch = (patches, monthKey) => {
+    if (!Array.isArray(patches) || patches.length === 0) return null;
+    const byId = new Map(patches.map((patch) => [String(patch.categoryId), patch]));
+    const source =
+      lastGoodSnapshotRef.current.categories?.length > 0
+        ? lastGoodSnapshotRef.current.categories
+        : budgetData.categories || [];
+    const next = enrichRowsWithUnderfunded(
+      withDerivedAvailable(
+        source.map((cat) => {
+          const patch = byId.get(String(cat.id));
+          if (!patch) return cat;
+          const nextAssigned =
+            patch.assigned != null
+              ? roundMoney(Math.max(0, Number(patch.assigned) || 0))
+              : patch.released != null
+                ? 0
+                : cat.assigned;
+          return {
+            ...cat,
+            assigned: nextAssigned,
+            ...(patch.available != null
+              ? {
+                  available: roundMoney(Number(patch.available) || 0),
+                  _envelopeFromSnapshot: true,
+                }
+              : {}),
+            ...(patch.activity != null
+              ? {
+                  activity: roundMoney(Number(patch.activity) || 0),
+                  _envelopeFromSnapshot: true,
+                }
+              : {}),
+          };
+        }),
+      ),
+    );
+    commitBudgetSnapshot(next, categoryGroups, userId, monthKey);
+    return next;
+  };
+
+  /** Apply Fund Underfunded bulk-assign IPC result — assignments are the source of truth. */
+  const applyFundUnderfundedBulkResult = async (bulkData, monthKey, allocationRows) => {
+    const assignmentRows = Array.isArray(bulkData?.assignments) ? bulkData.assignments : [];
+    if (assignmentRows.length === 0 && (allocationRows?.length || 0) > 0) {
+      throw new Error('Fund Underfunded saved but no category assignment rows were returned');
+    }
+
+    commitReadyToAssignFromServer(bulkData);
+
+    let applied = null;
+    if (assignmentRows.length > 0) {
+      applied = applyMutationCategoryPatch(
+        assignmentRows.map((row) => ({
+          categoryId: row.categoryId,
+          assigned: row.assigned,
+          available: row.available,
+          activity: row.activity,
+        })),
+        monthKey,
+      );
+    }
+
+    if (window.electronAPI?.getBudgetMonthSnapshot) {
+      const snapRes = await window.electronAPI.getBudgetMonthSnapshot(userId, monthKey);
+      if (snapRes?.success && snapRes.data?.categories?.length) {
+        const snapApplied = applyServerBudgetSnapshot(snapRes.data, monthKey);
+        if (assignmentRows.length > 0) {
+          applied = applyMutationCategoryPatch(
+            assignmentRows.map((row) => ({
+              categoryId: row.categoryId,
+              assigned: row.assigned,
+              available: row.available,
+              activity: row.activity,
+            })),
+            monthKey,
+          );
+        } else if (snapApplied?.length) {
+          applied = enrichRowsWithUnderfunded(snapApplied);
+          commitBudgetSnapshot(applied, categoryGroups, userId, monthKey);
+        }
+      }
+    }
+
+    applied = applied || lastGoodSnapshotRef.current.categories || null;
+    if (!Array.isArray(applied) || applied.length === 0) {
+      throw new Error('Fund Underfunded saved but category rows did not update');
+    }
+
+    recentBudgetMutationAtRef.current = Date.now();
+    calculateReadyToAssign(applied);
+    await refreshGlobalBudgetSummary();
+    return applied;
+  };
+
+  const logUnassign = (step, payload = {}) => {
+    console.log(`[Unassign] ${step}`, payload);
+  };
+
+  /** Apply unassign IPC result — zero-assigned patches are authoritative; avoid post-reload revert. */
+  const applyUnassignMutationResult = (data, monthKey, patchRows = []) => {
+    const zeroPatches = patchRows
+      .filter((row) => row && row.categoryId != null)
+      .map((row) => ({
+        ...row,
+        assigned: 0,
+      }));
+
+    commitReadyToAssignFromServer(data);
+
+    if (zeroPatches.length > 0) {
+      applyMutationCategoryPatch(zeroPatches, monthKey);
+    }
+
+    if (data?.snapshot?.categories?.length) {
+      applyServerBudgetSnapshot(data.snapshot, monthKey);
+    }
+
+    if (zeroPatches.length > 0) {
+      applyMutationCategoryPatch(zeroPatches, monthKey);
+    }
+
+    updateMonthMetricsFromCategories();
+    recentBudgetMutationAtRef.current = Date.now();
+    calculateReadyToAssign(lastGoodSnapshotRef.current.categories || budgetData.categories || []);
+
+    const applied = lastGoodSnapshotRef.current.categories || budgetData.categories || [];
+    logUnassign('ui:applyComplete', {
+      monthKey,
+      released: roundMoney(Number(data?.released ?? data?.totalReleased) || 0),
+      readyToAssign: getGlobalReadyToAssign(),
+      patchedCategoryIds: zeroPatches.map((row) => String(row.categoryId)),
+      sampleAssigned: applied.slice(0, 8).map((cat) => ({
+        id: cat.id,
+        name: cat.name,
+        assigned: cat.assigned,
+      })),
+    });
+    return applied;
+  };
+
   /** Restore UI from last good snapshot when a reload would wipe visible rows. */
   const restoreFromLastGoodSnapshotIfNeeded = (opts = {}) => {
+    if (budgetMutationInFlightRef.current || isRecentBudgetMutation()) {
+      return false;
+    }
     const { groupsOnly = false } = opts;
     let snap = lastGoodSnapshotRef.current;
     const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
@@ -908,7 +1219,7 @@ const PropertyMapView = ({ onNavigate }) => {
       saveSnapshotToSession(lastGoodSnapshotRef.current);
     } else {
       try {
-        sessionStorage.removeItem(PROSERITY_SNAPSHOT_KEY);
+        sessionStorage.removeItem(PROSPERITY_SNAPSHOT_KEY);
       } catch (_) {
         /* ignore */
       }
@@ -962,11 +1273,11 @@ const PropertyMapView = ({ onNavigate }) => {
         at: Date.now(),
       };
     }
-    if (hasKnownCategoryRows() && !actualMonthChanged) {
+    if (hasKnownCategoryRows() && !actualMonthChanged && !opts.skipStaleRestore && !budgetMutationInFlightRef.current && !isRecentBudgetMutation()) {
       console.warn('⚠️ Transient empty categories response — kept current table data.');
       return lastGoodSnapshotRef.current.categories || budgetData.categories || null;
     }
-    if (restoreFromLastGoodSnapshotIfNeeded()) {
+    if (!opts.skipStaleRestore && !budgetMutationInFlightRef.current && !isRecentBudgetMutation() && restoreFromLastGoodSnapshotIfNeeded()) {
       console.warn('⚠️ Transient empty categories response — restored last known snapshot.');
       return lastGoodSnapshotRef.current.categories || null;
     }
@@ -986,14 +1297,34 @@ const PropertyMapView = ({ onNavigate }) => {
       setLoading(true);
       const result = await window.electronAPI.getCategoryGroups(ownerId);
       if (result?.success && Array.isArray(result.data) && result.data.length > 0) {
+        setCategoryGroups(result.data);
+        if (opts.groupsOnly) {
+          lastGoodSnapshotRef.current = {
+            ...lastGoodSnapshotRef.current,
+            categoryGroups: result.data.map((g) => ({ ...g })),
+            userId: ownerId,
+            at: Date.now(),
+          };
+          return;
+        }
+        const shouldPreserveCategoryRows =
+          budgetMutationInFlightRef.current ||
+          isRecentBudgetMutation() ||
+          isQuickAssigningRef.current;
         // Use ref first — budgetData React state can lag behind a just-finished load/archive.
         const cats =
           lastGoodSnapshotRef.current.categories?.length > 0
             ? lastGoodSnapshotRef.current.categories
             : budgetData.categories;
-        setCategoryGroups(result.data);
-        if (cats?.length) {
+        if (cats?.length && !shouldPreserveCategoryRows) {
           commitBudgetSnapshot(cats, result.data, ownerId);
+        } else if (cats?.length) {
+          lastGoodSnapshotRef.current = {
+            ...lastGoodSnapshotRef.current,
+            categoryGroups: result.data.map((g) => ({ ...g })),
+            userId: ownerId,
+            at: Date.now(),
+          };
         } else {
           lastGoodSnapshotRef.current = {
             ...lastGoodSnapshotRef.current,
@@ -1054,6 +1385,55 @@ const PropertyMapView = ({ onNavigate }) => {
         setLoading(true);
       }
 
+      if (opts.forceFreshSnapshotOnly && window.electronAPI.getBudgetMonthSnapshot) {
+        const snap = await window.electronAPI.getBudgetMonthSnapshot(ownerId, monthKey);
+        if (snap?.success && snap.data && Array.isArray(snap.data.categories)) {
+          const dbCategories = mapSnapshotCategories(snap.data.categories);
+          const loaded = applyCategoriesFromDb(dbCategories, monthKey, {
+            ...opts,
+            userId: ownerId,
+            skipStaleRestore: true,
+          });
+          setTimeout(() => {
+            loadCategoryGroups({ userId: ownerId });
+          }, 100);
+          return loaded;
+        }
+        console.warn('⚠️ forceFreshSnapshotOnly: snapshot unavailable — refusing stale restore');
+        return null;
+      }
+
+      if (opts.skipStaleRestore && window.electronAPI.getBudgetMonthSnapshot) {
+        const snap = await window.electronAPI.getBudgetMonthSnapshot(ownerId, monthKey);
+        if (snap?.success && snap.data && Array.isArray(snap.data.categories) && snap.data.categories.length > 0) {
+          const dbCategories = mapSnapshotCategories(snap.data.categories);
+          const loaded = applyCategoriesFromDb(dbCategories, monthKey, {
+            ...opts,
+            userId: ownerId,
+            skipStaleRestore: true,
+          });
+          setTimeout(() => {
+            loadCategoryGroups({ userId: ownerId });
+          }, 100);
+          return loaded;
+        }
+        const result = await window.electronAPI.getCategories(ownerId, monthKey);
+        if (result?.success && Array.isArray(result.data) && result.data.length > 0) {
+          const dbCategories = mapSnapshotCategories(result.data);
+          const loaded = applyCategoriesFromDb(dbCategories, monthKey, {
+            ...opts,
+            userId: ownerId,
+            skipStaleRestore: true,
+          });
+          setTimeout(() => {
+            loadCategoryGroups({ userId: ownerId });
+          }, 100);
+          return loaded;
+        }
+        console.warn('⚠️ skipStaleRestore: fresh load failed — refusing stale restore');
+        return null;
+      }
+
       if (window.electronAPI.getBudgetMonthSnapshot) {
         const snap = await window.electronAPI.getBudgetMonthSnapshot(ownerId, monthKey);
         if (snap?.success && snap.data && Array.isArray(snap.data.categories)) {
@@ -1096,10 +1476,70 @@ const PropertyMapView = ({ onNavigate }) => {
       }
     }
 
-    if (restoreFromLastGoodSnapshotIfNeeded()) {
+    if (!opts.skipStaleRestore && !budgetMutationInFlightRef.current && !isRecentBudgetMutation() && restoreFromLastGoodSnapshotIfNeeded()) {
       return lastGoodSnapshotRef.current.categories || null;
     }
     return null;
+  };
+
+  const shouldSkipStaleBudgetRestore = (eventType, data) => {
+    if (budgetMutationInFlightRef.current || isRecentBudgetMutation()) return true;
+    const budgetMutationEvents = new Set([
+      'budget:unassigned',
+      'budget:bulkAssigned',
+      'budget:assigned',
+      'budget:repaired',
+      'budget:consolidated',
+    ]);
+    if (budgetMutationEvents.has(eventType)) return true;
+    const reason = String(data?.reason || '').toLowerCase();
+    return (
+      eventType === 'prosperity:updated' &&
+      (reason.startsWith('budget:') ||
+        reason.includes('unassign') ||
+        reason.includes('assign') ||
+        reason.includes('move_money'))
+    );
+  };
+
+  /** Reload budget rows from DB after assignment/unassign — never restore stale session snapshot. */
+  const reloadBudgetAfterMoneyMutation = async (monthKey, opts = {}) => {
+    const manageInFlight = opts.retainInFlight !== true;
+    if (manageInFlight) {
+      budgetMutationInFlightRef.current = true;
+    }
+    try {
+      clearBudgetSessionSnapshot();
+      const monthDate = monthKeyToLocalDate(monthKey);
+      const loadOpts = {
+        monthDate,
+        userId: opts.userId,
+        allowWhileEditing: true,
+        skipStaleRestore: true,
+        forceFreshSnapshotOnly: true,
+        suppressLoading: opts.suppressLoading,
+      };
+      let reloaded = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        reloaded = await loadCategoriesFromDB(0, loadOpts);
+        if (Array.isArray(reloaded) && reloaded.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+      }
+      if (!Array.isArray(reloaded) || reloaded.length === 0) {
+        reloaded = await loadCategoriesFromDB(0, {
+          ...loadOpts,
+          forceFreshSnapshotOnly: false,
+        });
+      }
+      await refreshGlobalBudgetSummary();
+      calculateReadyToAssign(reloaded || lastGoodSnapshotRef.current.categories || []);
+      recentBudgetMutationAtRef.current = Date.now();
+      return reloaded;
+    } finally {
+      if (manageInFlight) {
+        budgetMutationInFlightRef.current = false;
+      }
+    }
   };
 
   const loadArchivedCategories = async () => {
@@ -1281,14 +1721,13 @@ const PropertyMapView = ({ onNavigate }) => {
       setEditingCategory(null);
       editingCategoryRef.current = null;
 
-      const moneyChanged = Number.isFinite(parsedAssigned);
-      if (moneyChanged) {
-        const reloaded = await loadCategoriesFromDB(0, {
-          monthDate: selectedMonthRef.current || selectedMonth,
-        });
-        calculateReadyToAssign(
-          reloaded || lastGoodSnapshotRef.current.categories || budgetData.categories,
-        );
+      const existingRow = budgetData.categories.find((cat) => sameCategoryId(cat.id, categoryId));
+      const assignedChanged =
+        Number.isFinite(parsedAssigned) &&
+        roundMoney(parsedAssigned) !== roundMoney(Number(existingRow?.assigned) || 0);
+
+      if (assignedChanged) {
+        await reloadBudgetAfterMoneyMutation(monthKey, { suppressLoading: true });
       } else {
         const nextCategories = budgetData.categories.map((cat) => {
           if (!sameCategoryId(cat.id, categoryId)) return cat;
@@ -1523,14 +1962,17 @@ const PropertyMapView = ({ onNavigate }) => {
     }
     try {
       setLoading(true);
-      const result = await window.electronAPI.deleteCategoryGroup(groupId, userId);
+      const result = await window.electronAPI.deleteCategoryGroup(gid, userId);
       if (result && result.success) {
-        if (editingGroup && editingGroup.id === groupId) {
+        if (editingGroup && normalizeGroupId(editingGroup.id) === gid) {
           setShowEditGroupModal(false);
           setEditingGroup(null);
           setEditGroupName('');
         }
-        setCategoryGroups(prevGroups => prevGroups.filter(g => g.id !== groupId));
+        setCategoryGroups((prevGroups) =>
+          prevGroups.filter((g) => normalizeGroupId(g.id) !== gid),
+        );
+        await loadCategoryGroups();
         alert('✅ Group deleted successfully');
       } else {
         alert('❌ Failed to delete group: ' + (result?.error || 'Unknown error'));
@@ -1603,7 +2045,7 @@ const PropertyMapView = ({ onNavigate }) => {
         });
         setShowAddIncomeModal(false);
         await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
-        calculateReadyToAssign();
+        calculateReadyToAssign(null, { refreshSummary: true });
         alert(`✅ $${amount.toFixed(2)} added to Ready to Assign`);
       } else {
         alert('❌ Error recording income: ' + result.error);
@@ -1611,6 +2053,173 @@ const PropertyMapView = ({ onNavigate }) => {
     } catch (error) {
       console.error('Error adding income:', error);
       alert('❌ Error adding income: ' + error.message);
+    }
+  };
+
+  const applyLocalUnassignMonth = (breakdown, monthKey) => {
+    if (!Array.isArray(breakdown) || breakdown.length === 0) return;
+    const releasedIds = new Set(breakdown.map((entry) => String(entry.categoryId)));
+    const next = withDerivedAvailable(
+      (budgetData.categories || []).map((cat) =>
+        releasedIds.has(String(cat.id)) ? { ...cat, assigned: 0 } : cat,
+      ),
+    );
+    commitBudgetSnapshot(next, categoryGroups, userId, monthKey);
+  };
+
+  const applyLocalUnassignCategory = (categoryId, monthKey) => {
+    const next = withDerivedAvailable(
+      (budgetData.categories || []).map((cat) =>
+        sameCategoryId(cat.id, categoryId) ? { ...cat, assigned: 0 } : cat,
+      ),
+    );
+    commitBudgetSnapshot(next, categoryGroups, userId, monthKey);
+  };
+
+  const handleUnassignCategory = async (category) => {
+    if (!category?.id || !userId) return;
+    if (!window.electronAPI?.unassignCategoryBudget) {
+      alert('Unassign is not available in this build. Rebuild IntentFlow to pick up the latest version.');
+      return;
+    }
+
+    const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+    const serverAssigned = await fetchCategoryAssignedFromServer(category.id, monthKey);
+    const uiAssigned = roundMoney(Math.max(0, Number(getCategoryById(category.id)?.assigned) || 0));
+    const assigned =
+      serverAssigned != null
+        ? serverAssigned
+        : uiAssigned;
+    if (assigned <= 0) {
+      await showIntentFlowDialog({
+        id: 'category-update',
+        type: 'info',
+        title: 'Nothing to unassign',
+        message: `${category.name || 'This category'} has no assigned amount for this month.`,
+      });
+      return;
+    }
+
+    const freshCategory = { ...(getCategoryById(category.id) || category), assigned };
+    const monthLabel = selectedMonth.toLocaleString('default', {
+      month: 'long',
+      year: 'numeric',
+    });
+    const confirmed = await showIntentFlowConfirmDialog({
+      id: 'unassign-confirm',
+      title: 'Unassign Category',
+      message:
+        `Unassign ${formatCurrency(assigned)} from "${freshCategory.name}" for ${monthLabel}?\n\n` +
+        'This returns the assigned amount to Ready to Assign.',
+    });
+    if (!confirmed) return;
+
+    clearBudgetSessionSnapshot();
+    budgetMutationInFlightRef.current = true;
+    const rtaBefore = getGlobalReadyToAssign();
+    try {
+      const res = await window.electronAPI.unassignCategoryBudget(
+        userId,
+        freshCategory.id,
+        monthKey,
+      );
+      if (!res?.success) {
+        throw new Error(res?.error || 'Unassign failed');
+      }
+
+      const released = roundMoney(res.data?.released ?? 0);
+      const uiExpectedRelease = assigned;
+
+      if (uiExpectedRelease > 0.005 && released <= 0.005) {
+        console.error('Unassign category false-success diagnostic:', {
+          categoryId: freshCategory.id,
+          categoryName: freshCategory.name,
+          monthKey,
+          uiAssigned: uiExpectedRelease,
+          ipcReleased: released,
+          verification: res.data?.verification,
+        });
+        throw new Error(
+          'Unassign completed but no assigned amount was released. Try Refresh categories, then retry.',
+        );
+      }
+
+      if (res.data?.verified === false) {
+        const detail = (res.data?.verification?.errors || []).join('; ') || 'verification failed';
+        throw new Error(`Unassign verification failed: ${detail}`);
+      }
+
+      logUnassign('category:ipcResponse', {
+        categoryId: freshCategory.id,
+        categoryName: freshCategory.name,
+        monthKey,
+        released,
+        readyToAssign: res.data?.readyToAssign,
+        readyToAssignDelta: res.data?.readyToAssignDelta,
+        verified: res.data?.verified,
+        ipcCategoryAssigned: res.data?.category?.assigned,
+      });
+
+      const categoryPatch =
+        released > 0.005
+          ? [
+              {
+                categoryId: res.data?.category?.id ?? freshCategory.id,
+                assigned: 0,
+                available: res.data?.category?.available,
+                activity: res.data?.category?.activity,
+                released,
+              },
+            ]
+          : [];
+
+      applyUnassignMutationResult(res.data, monthKey, categoryPatch);
+
+      const uiAssignedAfter = roundMoney(
+        Math.max(0, Number(getCategoryById(freshCategory.id)?.assigned) || 0),
+      );
+      if (released > 0.005 && uiAssignedAfter > 0.005) {
+        console.error('Unassign category UI stale after verified IPC:', {
+          categoryId: freshCategory.id,
+          uiAssignedAfter,
+          released,
+          verification: res.data?.verification,
+        });
+        throw new Error(
+          `Unassign saved in the database but the UI still shows ${formatCurrency(uiAssignedAfter)} assigned. Try Refresh categories.`,
+        );
+      }
+
+      const rtaAfter = getGlobalReadyToAssign();
+      if (released > 0.005 && roundMoney(rtaAfter - rtaBefore) + 0.02 < released) {
+        console.warn('Unassign category RTA UI lag after verified IPC', {
+          rtaBefore,
+          rtaAfter,
+          released,
+          ipcRtaDelta: res.data?.readyToAssignDelta,
+        });
+      }
+
+      await showIntentFlowDialog({
+        id: 'category-update',
+        type: 'success',
+        title: 'Category unassigned',
+        message: `✅ Unassigned ${formatCurrency(released)} from "${freshCategory.name}".`,
+      });
+    } catch (err) {
+      console.error('Unassign category error:', err);
+      await reloadBudgetAfterMoneyMutation(monthKey, {
+        suppressLoading: true,
+        retainInFlight: true,
+      });
+      await showIntentFlowDialog({
+        id: 'category-update',
+        type: 'error',
+        title: 'Unassign failed',
+        message: `❌ Error while unassigning: ${err.message}`,
+      });
+    } finally {
+      budgetMutationInFlightRef.current = false;
     }
   };
 
@@ -1627,8 +2236,9 @@ const PropertyMapView = ({ onNavigate }) => {
       year: 'numeric',
     });
 
-    await loadCategoriesFromDB(0, { monthDate: monthKeyToLocalDate(monthKey) });
-    const monthUnassignableTotal = getMonthUnassignableTotal();
+    const serverTotal = await fetchMonthUnassignableTotalFromServer(monthKey);
+    const monthUnassignableTotal =
+      serverTotal != null ? serverTotal : getMonthUnassignableTotal();
 
     if (monthUnassignableTotal <= 0) {
       alert(`No assigned amounts to clear for ${monthLabel}.`);
@@ -1647,21 +2257,41 @@ const PropertyMapView = ({ onNavigate }) => {
     }
 
     setIsUnassigningMonth(true);
+    budgetMutationInFlightRef.current = true;
+    clearBudgetSessionSnapshot();
     try {
       const res = await window.electronAPI.unassignMonthBudget(userId, monthKey);
       if (!res?.success) {
         throw new Error(res?.error || 'Unassign failed');
       }
 
-      const released = roundMoney(res.data?.totalReleased ?? monthUnassignableTotal);
+      const released = roundMoney(res.data?.totalReleased ?? 0);
       const count = res.data?.categoriesUpdated ?? 0;
 
-      const reloaded = await loadCategoriesFromDB(0, {
-        monthDate: selectedMonthRef.current || selectedMonth,
+      if (released <= 0.005 && count === 0 && monthUnassignableTotal > 0.005) {
+        throw new Error(
+          'Unassign completed but no assignments were cleared. Try Refresh categories, then retry.',
+        );
+      }
+
+      logUnassign('month:ipcResponse', {
+        monthKey,
+        totalReleased: released,
+        categoriesUpdated: count,
+        readyToAssign: res.data?.readyToAssign,
+        readyToAssignDelta: res.data?.readyToAssignDelta,
+        breakdownCount: res.data?.breakdown?.length ?? 0,
       });
-      calculateReadyToAssign(
-        reloaded || lastGoodSnapshotRef.current.categories,
-      );
+
+      const monthPatches = Array.isArray(res.data?.breakdown)
+        ? res.data.breakdown.map((entry) => ({
+            categoryId: entry.categoryId,
+            assigned: 0,
+            released: entry.released,
+          }))
+        : [];
+
+      applyUnassignMutationResult(res.data, monthKey, monthPatches);
 
       await showIntentFlowDialog({
         id: 'unassign-complete',
@@ -1673,10 +2303,10 @@ const PropertyMapView = ({ onNavigate }) => {
       });
     } catch (err) {
       console.error('Unassign month error:', err);
-      await loadCategoriesFromDB(0, {
-        monthDate: selectedMonthRef.current || selectedMonth,
-      });
-      calculateReadyToAssign();
+      await reloadBudgetAfterMoneyMutation(
+        formatBudgetMonthKey(selectedMonthRef.current || selectedMonth),
+        { suppressLoading: true, retainInFlight: true },
+      );
       await showIntentFlowDialog({
         id: 'unassign-complete',
         type: 'error',
@@ -1684,6 +2314,7 @@ const PropertyMapView = ({ onNavigate }) => {
         message: `❌ Error while unassigning: ${err.message}`,
       });
     } finally {
+      budgetMutationInFlightRef.current = false;
       setIsUnassigningMonth(false);
     }
   };
@@ -1700,15 +2331,8 @@ const PropertyMapView = ({ onNavigate }) => {
     setIsQuickAssigning(true);
     try {
     const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
-    const freshRows = await loadCategoriesFromDB(0, {
-      monthDate: monthKeyToLocalDate(monthKey),
-      suppressLoading: true,
-    });
-    const activeCategories = getActiveBudgetCategories(freshRows);
-    if (!activeCategories.length) {
-      alert('No budget categories are loaded for this month. Try Refresh categories, then try again.');
-      return;
-    }
+    const useServerFundUnderfunded =
+      method === 'underfunded' && Boolean(window.electronAPI?.fundUnderfundedMonthBudget);
 
     const pool = await resolveReadyToAssignPool();
 
@@ -1717,8 +2341,24 @@ const PropertyMapView = ({ onNavigate }) => {
       return;
     }
 
+    let activeCategories = null;
+    if (!useServerFundUnderfunded) {
+      const freshRows = await loadCategoriesFromDB(0, {
+        monthDate: monthKeyToLocalDate(monthKey),
+        suppressLoading: true,
+        skipStaleRestore: true,
+        forceFreshSnapshotOnly: true,
+      });
+      activeCategories = getActiveBudgetCategories(freshRows);
+      if (!activeCategories.length) {
+        alert('No budget categories are loaded for this month. Try Refresh categories, then try again.');
+        return;
+      }
+    }
+
     let allocations = [];
     let remainingFunds = pool;
+    let underfundedPlanFromServer = null;
 
     switch (method) {
       case 'smart': {
@@ -1757,6 +2397,23 @@ const PropertyMapView = ({ onNavigate }) => {
       }
 
       case 'underfunded': {
+        if (useServerFundUnderfunded) {
+          const preview = await window.electronAPI.fundUnderfundedMonthBudget(
+            userId,
+            monthKey,
+            { dryRun: true, totalCash: totalCashInAccounts },
+          );
+          if (!preview?.success) {
+            throw new Error(preview?.error || 'Failed to compute Fund Underfunded plan');
+          }
+          underfundedPlanFromServer = preview.data?.plan || null;
+          allocations = (underfundedPlanFromServer?.allocations || []).map((row) => ({
+            categoryId: row.categoryId,
+            amount: row.amount,
+            reason: row.reason,
+          }));
+          break;
+        }
         const plan = computeFundUnderfundedPlan(activeCategories, { pool });
         allocations = plan.allocations;
         break;
@@ -1793,7 +2450,9 @@ const PropertyMapView = ({ onNavigate }) => {
       const fundingSummary =
         method === 'underfunded'
           ? (() => {
-              const summary = getFundUnderfundedSummary(activeCategories);
+              const summary =
+                underfundedPlanFromServer ||
+                getFundUnderfundedSummary(activeCategories);
               const parts = [];
               if (summary.overspentTotal > 0) {
                 parts.push(`${formatCurrency(summary.overspentTotal)} overspent`);
@@ -1821,16 +2480,74 @@ const PropertyMapView = ({ onNavigate }) => {
         return;
       }
 
-      const deltaByCategoryId = new Map();
-      for (const allocation of allocations) {
-        const categoryId = String(allocation.categoryId);
-        deltaByCategoryId.set(
-          categoryId,
-          (deltaByCategoryId.get(categoryId) || 0) + allocation.amount
-        );
-      }
-
+      clearBudgetSessionSnapshot();
+      budgetMutationInFlightRef.current = true;
       try {
+        if (useServerFundUnderfunded) {
+          const bulkAssignments = allocations.map((row) => ({
+            categoryId: row.categoryId,
+            delta: row.amount,
+          }));
+          logFundUnderfunded('bulkAssign:start', {
+            userId,
+            monthKey,
+            pool,
+            assignmentCount: bulkAssignments.length,
+            totalDelta: roundMoney(bulkAssignments.reduce((sum, row) => sum + (Number(row.delta) || 0), 0)),
+          });
+          if (!window.electronAPI?.bulkAssignMonthBudget) {
+            throw new Error('bulkAssignMonthBudget is not available in this build');
+          }
+          const bulkRes = await window.electronAPI.bulkAssignMonthBudget(
+            userId,
+            monthKey,
+            bulkAssignments,
+            {
+              mode: 'delta',
+              totalCash: totalCashInAccounts,
+              auditSource: 'fund_underfunded',
+            },
+          );
+          logFundUnderfunded('bulkAssign:response', {
+            success: bulkRes?.success,
+            error: bulkRes?.error,
+            assignmentCount: bulkRes?.data?.assignments?.length ?? 0,
+            readyToAssign: bulkRes?.data?.readyToAssign,
+            readyToAssignDelta: bulkRes?.data?.readyToAssignDelta,
+          });
+          if (!bulkRes?.success) {
+            throw new Error(bulkRes?.error || 'Fund Underfunded failed');
+          }
+
+          const applied = await applyFundUnderfundedBulkResult(
+            bulkRes.data,
+            monthKey,
+            allocations,
+          );
+          logFundUnderfunded('ui:applyComplete', {
+            categoryCount: applied.length,
+            rta: getGlobalReadyToAssign(),
+            buttonAmount: getFundUnderfundedButtonAmount(applied),
+            underfundedNeed: roundMoney(getFundUnderfundedSummary(applied).totalFundingNeed || 0),
+            sampleCategories: applied.slice(0, 5).map((cat) => ({
+              id: cat.id,
+              name: cat.name,
+              assigned: cat.assigned,
+              available: cat.available,
+              underfunded: cat.underfunded,
+            })),
+          });
+          await loadCategoryGroups({ groupsOnly: true });
+        } else {
+        const deltaByCategoryId = new Map();
+        for (const allocation of allocations) {
+          const categoryId = String(allocation.categoryId);
+          deltaByCategoryId.set(
+            categoryId,
+            (deltaByCategoryId.get(categoryId) || 0) + allocation.amount
+          );
+        }
+
         const bulkAssignments = Array.from(deltaByCategoryId.entries()).map(
           ([categoryId, delta]) => ({
             categoryId,
@@ -1852,6 +2569,16 @@ const PropertyMapView = ({ onNavigate }) => {
           if (!bulkRes?.success) {
             throw new Error(bulkRes?.error || 'Bulk assign failed');
           }
+          commitReadyToAssignFromServer(bulkRes.data);
+          applyMutationCategoryPatch(
+            (bulkRes.data?.assignments || []).map((row) => ({
+              categoryId: row.categoryId,
+              assigned: row.assigned,
+              available: row.available,
+              activity: row.activity,
+            })),
+            monthKey,
+          );
         } else {
           for (const { categoryId, delta } of bulkAssignments) {
             const categoryRow = activeCategories.find((c) => sameCategoryId(c.id, categoryId));
@@ -1866,35 +2593,27 @@ const PropertyMapView = ({ onNavigate }) => {
           }
         }
 
-        await refreshGlobalBudgetSummary();
-        const reloadedCategories = await loadCategoriesFromDB(0, {
-          monthDate: monthKeyToLocalDate(monthKey),
-          forceMonthReplace: true,
+        await reloadBudgetAfterMoneyMutation(monthKey, {
           suppressLoading: true,
+          retainInFlight: true,
         });
-        await refreshGlobalBudgetSummary();
-        calculateReadyToAssign(
-          reloadedCategories || lastGoodSnapshotRef.current.categories,
-        );
+        }
         const completeId =
           method === 'underfunded' ? 'fund-underfunded-complete' : 'smart-assign-complete';
         await showIntentFlowDialog({
           id: completeId,
           type: 'success',
           title: confirmTitle,
-          message: `✅ Assigned ${formatCurrency(totalAssign)} to ${deltaByCategoryId.size} categories`,
+          message: `✅ Assigned ${formatCurrency(totalAssign)} to ${allocations.length} categories`,
         });
       } catch (err) {
         console.error('Quick assign error:', err);
-        const reloadedCategories = await loadCategoriesFromDB(0, {
-          monthDate: monthKeyToLocalDate(monthKey),
-          forceMonthReplace: true,
+        if (!useServerFundUnderfunded) {
+        await reloadBudgetAfterMoneyMutation(monthKey, {
           suppressLoading: true,
+          retainInFlight: true,
         });
-        await refreshGlobalBudgetSummary();
-        calculateReadyToAssign(
-          reloadedCategories || lastGoodSnapshotRef.current.categories,
-        );
+        }
         const completeId =
           method === 'underfunded' ? 'fund-underfunded-complete' : 'smart-assign-complete';
         await showIntentFlowDialog({
@@ -1903,6 +2622,8 @@ const PropertyMapView = ({ onNavigate }) => {
           title: confirmTitle,
           message: `❌ Error while saving assignments: ${err.message}`,
         });
+      } finally {
+        budgetMutationInFlightRef.current = false;
       }
     } else {
       await showIntentFlowDialog({
@@ -1969,7 +2690,7 @@ const PropertyMapView = ({ onNavigate }) => {
         });
         setShowRecordPaymentModal(false);
         await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
-        calculateReadyToAssign();
+        calculateReadyToAssign(null, { refreshSummary: true });
         alert(`✅ Payment of $${amount.toFixed(2)} recorded to ${selectedCategory.name}`);
       } else {
         alert('❌ Error recording payment: ' + result.error);
@@ -2034,6 +2755,13 @@ const PropertyMapView = ({ onNavigate }) => {
     if (isCategoryArchived(fromCategory)) {
       return 'Archived categories cannot be used for Move Money.';
     }
+    if (toReadyToAssign) {
+      const releasable = Math.max(0, Number(fromCategory.assigned) || 0);
+      if (releasable + 0.005 < amount) {
+        return 'Insufficient assigned amount in selected category.';
+      }
+      return '';
+    }
     if ((Number(fromCategory.available) || 0) < amount) {
       return 'Insufficient funds available in selected category.';
     }
@@ -2063,11 +2791,15 @@ const PropertyMapView = ({ onNavigate }) => {
     amount = '',
     source = 'manual',
   } = {}) => {
+    const fromCategory = fromCategoryId ? getCategoryById(fromCategoryId) : null;
+    const toReadyToAssign = isReadyToAssignDestination(toCategoryId);
     const suggestedAmount =
       amount ||
-      (toCategoryId
-        ? Math.abs(Math.min(0, Number(getCategoryById(toCategoryId)?.available) || 0))
-        : '');
+      (toReadyToAssign && fromCategory
+        ? Math.max(0, Number(fromCategory.assigned) || 0)
+        : toCategoryId
+          ? Math.abs(Math.min(0, Number(getCategoryById(toCategoryId)?.available) || 0))
+          : '');
     const readyToAssignPool = getGlobalReadyToAssign();
     const toCategory = toCategoryId ? getCategoryById(toCategoryId) : null;
     const isOverspentTarget = (Number(toCategory?.available) || 0) < -0.005;
@@ -2169,8 +2901,7 @@ const PropertyMapView = ({ onNavigate }) => {
 
     try {
       await persistMoveMoneyToDatabase(fromCategoryId, toCategoryId, amount, monthKey);
-      await refreshGlobalBudgetSummary();
-      calculateReadyToAssign(nextRows);
+      await reloadBudgetAfterMoneyMutation(monthKey, { suppressLoading: true });
       const fromCategory = getCategoryById(fromCategoryId);
       const toCategory = getCategoryById(toCategoryId);
       const fromReadyToAssign = String(fromCategoryId || '') === READY_TO_ASSIGN_ID;
@@ -2350,17 +3081,19 @@ const PropertyMapView = ({ onNavigate }) => {
         }
       }
 
-      const reloadedCategories = await loadCategoriesFromDB(0, {
-        monthDate: selectedMonthRef.current || selectedMonth,
+      const reloadedCategories = await reloadBudgetAfterMoneyMutation(monthKey, {
+        suppressLoading: true,
       });
-      calculateReadyToAssign(
-        reloadedCategories || lastGoodSnapshotRef.current.categories || budgetData.categories,
-      );
+      if (!reloadedCategories?.length) {
+        calculateReadyToAssign(
+          lastGoodSnapshotRef.current.categories || budgetData.categories,
+          { refreshSummary: true },
+        );
+      }
       alert('✅ Auto-assign completed successfully!');
     } catch (err) {
       console.error('Auto assign error:', err);
-      await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
-      calculateReadyToAssign();
+      await reloadBudgetAfterMoneyMutation(monthKey, { suppressLoading: true });
       alert(`❌ Error while saving auto-assign: ${err.message}`);
     }
   };
@@ -2427,11 +3160,13 @@ const PropertyMapView = ({ onNavigate }) => {
   // ==================== EFFECTS FOR PROGRESS & CALCULATIONS ====================
   useEffect(() => {
     if (!initialLoadComplete) return;
+    if (budgetMutationInFlightRef.current || isRecentBudgetMutation()) return;
     if (rtaRefreshTimerRef.current) {
       clearTimeout(rtaRefreshTimerRef.current);
     }
     rtaRefreshTimerRef.current = setTimeout(() => {
-      calculateReadyToAssign();
+      if (budgetMutationInFlightRef.current || isRecentBudgetMutation()) return;
+      calculateReadyToAssign(null, { refreshSummary: true });
     }, 400);
     return () => {
       if (rtaRefreshTimerRef.current) {
@@ -2546,30 +3281,44 @@ const PropertyMapView = ({ onNavigate }) => {
     'transaction:deleted',
   ];
 
-  const { lastUpdate } = useRealtimeUpdates(budgetRefreshEvents, () => {
+  const { lastUpdate } = useRealtimeUpdates(budgetRefreshEvents, (eventType, data) => {
     void (async () => {
-      if (editingCategoryRef.current != null) {
+      if (
+        editingCategoryRef.current != null ||
+        budgetMutationInFlightRef.current ||
+        isQuickAssigningRef.current ||
+        isUnassigningMonthRef.current
+      ) {
+        return;
+      }
+      if (isRecentBudgetMutation() && shouldSkipStaleBudgetRestore(eventType, data)) {
         return;
       }
       try {
         const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
+        const skipStaleRestore = shouldSkipStaleBudgetRestore(eventType, data);
 
-        await loadCategoryGroups();
-        const reloaded = await loadCategoriesFromDB(0, {
-          monthDate: monthKeyToLocalDate(monthKey),
-        });
-        await loadArchivedCategories();
-        const userResult = await window.electronAPI.getCurrentUser();
-        if (userResult?.success && userResult?.data) {
-          const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
-          if (accountsResult?.success && accountsResult.data) {
-            setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
-          }
+        if (skipStaleRestore) {
+          await reloadBudgetAfterMoneyMutation(monthKey, { suppressLoading: true });
+          await loadCategoryGroups({ groupsOnly: true });
+        } else {
+          await loadCategoryGroups();
+          await loadCategoriesFromDB(0, {
+            monthDate: monthKeyToLocalDate(monthKey),
+          });
         }
-        await refreshGlobalBudgetSummary();
-        calculateReadyToAssign(
-          reloaded || lastGoodSnapshotRef.current.categories,
-        );
+        await loadArchivedCategories();
+        if (!skipStaleRestore) {
+          const userResult = await window.electronAPI.getCurrentUser();
+          if (userResult?.success && userResult?.data) {
+            const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
+            if (accountsResult?.success && accountsResult.data) {
+              setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
+            }
+          }
+          await refreshGlobalBudgetSummary();
+          calculateReadyToAssign(lastGoodSnapshotRef.current.categories);
+        }
       } catch (e) {
         console.warn('prosperity:updated refresh:', e);
       }
@@ -2578,22 +3327,22 @@ const PropertyMapView = ({ onNavigate }) => {
 
   useEffect(() => {
     const handleRefresh = () => {
-      if (editingCategoryRef.current != null) return;
+      if (
+        editingCategoryRef.current != null ||
+        budgetMutationInFlightRef.current ||
+        isRecentBudgetMutation()
+      ) {
+        return;
+      }
       void (async () => {
         try {
+          const monthKey = formatBudgetMonthKey(selectedMonthRef.current || selectedMonth);
           await loadCategoryGroups();
-          const reloaded = await loadCategoriesFromDB();
+          await reloadBudgetAfterMoneyMutation(monthKey, {
+          suppressLoading: true,
+          retainInFlight: true,
+        });
           await loadArchivedCategories();
-          const userResult = await window.electronAPI.getCurrentUser();
-          if (userResult?.success && userResult?.data) {
-            const accountsResult = await window.electronAPI.getAccountsSummary(userResult.data.id);
-            if (accountsResult?.success && accountsResult.data) {
-              setTotalCashInAccounts(sumTotalBudgetCash(accountsResult.data));
-            }
-          }
-          calculateReadyToAssign(
-            reloaded || lastGoodSnapshotRef.current.categories,
-          );
         } catch (e) {
           console.warn('refresh-prosperity-map:', e);
         }
@@ -2648,6 +3397,38 @@ const PropertyMapView = ({ onNavigate }) => {
       // localStorage may be unavailable
     }
   }, [moveMoneyActivity, userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      const raw = sessionStorage.getItem(`intentflow.pmGroupCollapse.${userId}`);
+      if (raw) {
+        collapsedByGroupNameRef.current = JSON.parse(raw);
+      }
+    } catch (_) {
+      // ignore malformed cache
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    if (!categoryGroups?.length) return;
+    setCollapsedGroups((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const group of categoryGroups) {
+        const gid = normalizeGroupId(group.id);
+        const nameKey = normalizeGroupNameKey(group.name);
+        const saved = collapsedByGroupNameRef.current[nameKey];
+        if (saved === true || saved === false) {
+          if (next[gid] !== saved) {
+            next[gid] = saved;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [categoryGroups]);
 
   useEffect(() => {
     const handleFocusBudgetCategory = (event) => {
@@ -3002,7 +3783,7 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                                 <button
                                   type="button"
-                                  onClick={() => toggleGroupCollapse(group.id)}
+                                  onClick={() => toggleGroupCollapse(group.id, group.name)}
                                   className="shrink-0 rounded-full border px-3 py-2 transition hover:brightness-95"
                                   style={{
                                     borderColor: PM.categoryGroupRowBorder,
@@ -3133,6 +3914,18 @@ Ready to Assign: $${totalCash - totalAssigned}`);
                                               }}
                                             >
                                               Move Money
+                                            </button>
+                                            <button
+                                              type="button"
+                                              data-testid={`pm-unassign-category-${cat.id}`}
+                                              className="block w-full px-3 py-2 text-left text-sm text-[#F0F9FF]/95 hover:bg-[#0047AB]"
+                                              onClick={(e) => {
+                                                const root = e.currentTarget.closest('details');
+                                                if (root) root.open = false;
+                                                void handleUnassignCategory(cat);
+                                              }}
+                                            >
+                                              Unassign
                                             </button>
                                             <button
                                               type="button"

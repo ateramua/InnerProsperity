@@ -2,6 +2,8 @@
  * System-managed "Credit Card Payments" budget categories (one per active credit account).
  */
 
+const { v4: uuidv4 } = require('uuid');
+
 const CREDIT_CARD_PAYMENTS_GROUP_NAME = 'Credit Card Payments';
 const LEGACY_PAYMENT_SUFFIX = ' payment';
 
@@ -82,20 +84,13 @@ async function getOrCreateCreditCardPaymentsGroup(db, userId) {
     [userId]
   );
   const nextSort = (Number(maxSort?.max_sort) || -1) + 1;
-  const result = await db.run(
-    `INSERT INTO category_groups (user_id, name, sort_order, system_managed, created_at, updated_at)
-     VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))`,
-    [userId, CREDIT_CARD_PAYMENTS_GROUP_NAME, nextSort]
+  const id = uuidv4();
+  await db.run(
+    `INSERT INTO category_groups (id, user_id, name, sort_order, system_managed, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'))`,
+    [id, userId, CREDIT_CARD_PAYMENTS_GROUP_NAME, nextSort]
   );
-  if (result?.lastID) {
-    return db.get('SELECT * FROM category_groups WHERE id = ?', [result.lastID]);
-  }
-  return db.get(
-    `SELECT * FROM category_groups
-     WHERE user_id = ? AND lower(name) = lower(?)
-     LIMIT 1`,
-    [userId, CREDIT_CARD_PAYMENTS_GROUP_NAME]
-  );
+  return db.get('SELECT * FROM category_groups WHERE id = ?', [id]);
 }
 
 async function listPaymentCategoriesForAccount(db, userId, accountId, accountName) {

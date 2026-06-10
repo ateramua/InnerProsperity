@@ -257,6 +257,9 @@ try {
     bulkAssignMonthBudget: (userId, monthKey, assignments, opts) =>
       ipcRenderer.invoke('budget:bulkAssignMonth', userId, monthKey, assignments, opts),
 
+    fundUnderfundedMonthBudget: (userId, monthKey, opts) =>
+      ipcRenderer.invoke('budget:fundUnderfundedMonth', userId, monthKey, opts),
+
     repairBudgetAssignments: (userId, monthKey, opts) =>
       ipcRenderer.invoke('budget:repairAssignments', userId, monthKey, opts),
 
@@ -290,6 +293,9 @@ try {
 
     unassignMonthBudget: (userId, monthKey) =>
       ipcRenderer.invoke('budget:unassignMonth', userId, monthKey),
+
+    unassignCategoryBudget: (userId, categoryId, monthKey) =>
+      ipcRenderer.invoke('budget:unassignCategory', userId, categoryId, monthKey),
 
     exportProsperityTable: (payload) =>
       ipcRenderer.invoke('budget:exportProsperityTable', payload),

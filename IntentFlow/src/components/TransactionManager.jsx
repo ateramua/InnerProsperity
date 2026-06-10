@@ -482,7 +482,7 @@ const TransactionManager = ({
     if (confirm('Are you sure you want to delete this transaction?')) {
       const result = await onDeleteTransaction(id);
       if (!result || !result.success) {
-        alert('Error deleting transaction');
+        alert(result?.error || 'Error deleting transaction');
       }
     }
   };

@@ -61,6 +61,7 @@ async function main() {
   const env = {
     ...process.env,
     NODE_ENV: 'development',
+    INTENTFLOW_RUNTIME_PROFILE: process.env.INTENTFLOW_RUNTIME_PROFILE || 'development',
     PORT: String(port),
   };
 

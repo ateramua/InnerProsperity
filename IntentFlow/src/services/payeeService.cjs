@@ -1,6 +1,7 @@
 // src/services/payeeService.cjs
 const { v4: uuidv4 } = require('uuid');
 const { getDatabase } = require('../db/database.cjs');
+const { runTransaction } = require('../db/transactionRunner.cjs');
 const TransactionService = require('./transactions/transactionService.cjs');
 const {
   isAccountRoutingPayeeLabel,
@@ -745,26 +746,18 @@ class PayeeService {
       }
     }
     
-    await database.run('BEGIN TRANSACTION');
-    
-    try {
-      // Delete both transactions
+    await runTransaction(database, async () => {
       if (linkedId) {
         await database.run('DELETE FROM transactions WHERE id = ?', [linkedId]);
       }
       await database.run('DELETE FROM transactions WHERE id = ?', [transactionId]);
-      
-      await database.run('COMMIT');
+    });
 
-      const txSvc = new TransactionService(() => getDatabase());
-      await txSvc.updateAccountBalances(sourceAccountId);
-      if (peerAccountId) await txSvc.updateAccountBalances(peerAccountId);
-      
-      return { success: true, data: { deletedIds: [transactionId, linkedId].filter(Boolean) } };
-    } catch (error) {
-      await database.run('ROLLBACK');
-      throw error;
-    }
+    const txSvc = new TransactionService(() => getDatabase());
+    await txSvc.updateAccountBalances(sourceAccountId);
+    if (peerAccountId) await txSvc.updateAccountBalances(peerAccountId);
+
+    return { success: true, data: { deletedIds: [transactionId, linkedId].filter(Boolean) } };
   }
 }
 

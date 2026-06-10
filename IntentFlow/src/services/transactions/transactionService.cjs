@@ -12,6 +12,7 @@ const {
 } = require('../../utils/accountBalanceEngine.cjs');
 const { applySqlitePragmas } = require('../../db/sqlitePragmas.cjs');
 const { getDatabase } = require('../../db/database.cjs');
+const { runTransaction } = require('../../db/transactionRunner.cjs');
 
 const _warnedPathCtor = new Set();
 
@@ -308,8 +309,7 @@ class TransactionService {
         const accountIds = new Set();
         const dates = [];
 
-        await db.run('BEGIN TRANSACTION');
-        try {
+        await runTransaction(db, async () => {
             for (const row of rows) {
                 if (processed.has(row.id)) continue;
 
@@ -347,11 +347,7 @@ class TransactionService {
                 await deleteOne(row);
                 processed.add(row.id);
             }
-            await db.run('COMMIT');
-        } catch (err) {
-            await db.run('ROLLBACK');
-            throw err;
-        }
+        });
 
         for (const accountId of accountIds) {
             await this.updateAccountBalances(accountId);
@@ -407,8 +403,7 @@ class TransactionService {
         let updated = 0;
         let skipped = 0;
 
-        await db.run('BEGIN TRANSACTION');
-        try {
+        await runTransaction(db, async () => {
             for (const id of uniqueIds) {
                 const row = await db.get(
                     `SELECT * FROM transactions WHERE id = ? AND user_id = ?
@@ -458,11 +453,7 @@ class TransactionService {
                 if (row.date) dates.push(row.date);
                 updated += 1;
             }
-            await db.run('COMMIT');
-        } catch (err) {
-            await db.run('ROLLBACK');
-            throw err;
-        }
+        });
 
         for (const accountId of accountIds) {
             await this.updateAccountBalances(accountId);
@@ -656,8 +647,7 @@ class TransactionService {
             const reconciliationId = uuidv4();
             let adjustmentTransactionId = null;
 
-            await db.run('BEGIN TRANSACTION');
-            try {
+            await runTransaction(db, async () => {
                 if (Math.abs(difference) > 0.01) {
                     const adjResult = await db.run(
                         `
@@ -716,12 +706,7 @@ class TransactionService {
                         statementBalance - (balancesAfter?.working_balance ?? previousBalance),
                     ]
                 );
-
-                await db.run('COMMIT');
-            } catch (err) {
-                await db.run('ROLLBACK');
-                throw err;
-            }
+            });
 
             await this.updateAccountBalances(accountId);
 
