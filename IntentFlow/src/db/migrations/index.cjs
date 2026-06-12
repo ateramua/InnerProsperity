@@ -216,6 +216,8 @@ async function runMigrations(existingDb) {
             '035_repair_category_group_ids.cjs',
             '036_credit_card_ledger_direction.cjs',
             '037_exclusive_ledger_columns.cjs',
+            '038_imported_cash_reconciliation.cjs',
+            '039_budget_integrity_phase_completion.cjs',
         ];
 
         for (const migration of migrations) {

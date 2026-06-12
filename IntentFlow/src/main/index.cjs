@@ -1149,12 +1149,21 @@ async function initDatabase() {
 
 // ==================== PLAID HELPER FUNCTIONS ====================
 function getPlaidSyncDeps() {
+    const importedCashReconciliationService = require('../services/budget/importedCashReconciliationService.cjs');
     return {
         getDatabase,
         decryptToken,
         updateAccountBalances,
         ensureCreditCardPaymentCategoriesForUser: async (userId) => {
             return runCreditCardPaymentCategorySync(userId, 'plaid_sync');
+        },
+        processImportedCashOnboarding: async (db, userId, candidates, opts) => {
+            return importedCashReconciliationService.processImportedCashOnboarding(
+                db,
+                userId,
+                candidates,
+                opts
+            );
         },
         refreshBudgetAfterTransactions: async (userId, dates) => {
             if (!userId || !transactionLifecycle?.runPostTransactionEffects) return;
@@ -3798,11 +3807,18 @@ function setupIpcHandlers() {
                 await plaidRelayClient.registerPlaidItemWithRelay(itemId, currentUser.id);
             }
             notifyAccountsUpdated('plaid-connect');
+            if (accountSync?.onboarding?.processed > 0) {
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: currentUser.id,
+                    reason: 'plaid:onboarding_opening_balance',
+                });
+            }
             return {
                 success: true,
                 item_id: itemId,
                 sync: txResult,
                 mergeOffers: accountSync?.mergeOffers || [],
+                onboarding: accountSync?.onboarding || null,
             };
         } catch (error) {
             const message = logPlaidError('exchange public token', error);
@@ -3973,12 +3989,43 @@ function setupIpcHandlers() {
         try {
             const currentUser = userService.getCurrentUser();
             if (!currentUser) throw new Error('Not logged in');
+            const dbConnection = await getDatabase();
             const result = await plaidAccountMatch.keepPlaidAccountSeparate(
-                await getDatabase(),
+                dbConnection,
                 currentUser.id,
                 plaidAccountId
             );
+            const importedCashReconciliationService = require(path.join(
+                __dirname,
+                '../services/budget/importedCashReconciliationService.cjs'
+            ));
+            const account = await dbConnection.get(
+                'SELECT * FROM accounts WHERE id = ? AND user_id = ?',
+                [result.accountId, currentUser.id]
+            );
+            if (account) {
+                const bal = Math.max(
+                    0,
+                    Number(account.working_balance ?? account.balance) || 0
+                );
+                await importedCashReconciliationService.processImportedCashOnboarding(
+                    dbConnection,
+                    currentUser.id,
+                    [
+                        {
+                            accountId: result.accountId,
+                            priorBalance: 0,
+                            importedBalance: bal,
+                        },
+                    ],
+                    {}
+                );
+            }
             notifyAccountsUpdated('plaid-keep-separate');
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: currentUser.id,
+                reason: 'plaid-keep-separate-onboarding',
+            });
             return result;
         } catch (error) {
             return { success: false, error: error.message };
@@ -6461,8 +6508,10 @@ function setupIpcHandlers() {
 
     ipcMain.handle('budget:getIntegrityState', async (event, userId, monthKey) => {
         try {
-            const budgetIntegrityService =
-                require(path.join(__dirname, '../services/budget/budgetIntegrityService.cjs'));
+            const importedCashReconciliationService = require(path.join(
+                __dirname,
+                '../services/budget/importedCashReconciliationService.cjs'
+            ));
             const dbConnection = await getDatabase();
             let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
             if (targetUserId === '__AUTH_MISMATCH__') {
@@ -6471,7 +6520,7 @@ function setupIpcHandlers() {
             if (!targetUserId) {
                 return { success: false, error: 'User not found' };
             }
-            const state = await budgetIntegrityService.evaluateBudgetIdentity(
+            const state = await importedCashReconciliationService.getIdentityStatus(
                 dbConnection,
                 targetUserId,
                 { monthKey }
@@ -6481,6 +6530,155 @@ function setupIpcHandlers() {
             console.error('budget:getIntegrityState error:', error);
             return { success: false, error: error.message };
         }
+    });
+
+    ipcMain.handle('budget:analyzeImportedCash', async (event, userId, monthKey) => {
+        try {
+            const importedCashReconciliationService = require(path.join(
+                __dirname,
+                '../services/budget/importedCashReconciliationService.cjs'
+            ));
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const analysis = await importedCashReconciliationService.analyzeImportedCashMigration(
+                dbConnection,
+                targetUserId,
+                { monthKey }
+            );
+            return { success: true, data: analysis };
+        } catch (error) {
+            console.error('budget:analyzeImportedCash error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:reconcileImportedCash', async (event, userId, options = {}) => {
+        return enqueueWrite('budget:reconcileImportedCash', async () => {
+            try {
+                const importedCashReconciliationService = require(path.join(
+                    __dirname,
+                    '../services/budget/importedCashReconciliationService.cjs'
+                ));
+                const dbConnection = await getDatabase();
+                let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+                if (targetUserId === '__AUTH_MISMATCH__') {
+                    return { success: false, error: 'User mismatch for this session' };
+                }
+                if (!targetUserId) {
+                    return { success: false, error: 'User not found' };
+                }
+                const result = await importedCashReconciliationService.applyImportedCashReconciliation(
+                    dbConnection,
+                    targetUserId,
+                    { ...options, approvedByUser: true }
+                );
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: targetUserId,
+                    reason: 'budget:imported_cash_reconciled',
+                });
+                return { success: true, data: result };
+            } catch (error) {
+                console.error('budget:reconcileImportedCash error:', error);
+                return { success: false, error: error.message };
+            }
+        });
+    });
+
+    ipcMain.handle('budget:getIdentityDiagnostics', async (event, userId, monthKey) => {
+        try {
+            const importedCashReconciliationService = require(path.join(
+                __dirname,
+                '../services/budget/importedCashReconciliationService.cjs'
+            ));
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const data = await importedCashReconciliationService.getIdentityDiagnostics(
+                dbConnection,
+                targetUserId,
+                { monthKey }
+            );
+            return { success: true, data };
+        } catch (error) {
+            console.error('budget:getIdentityDiagnostics error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:suppressIntegrityWarning', async (event, userId, options = {}) => {
+        return enqueueWrite('budget:suppressIntegrityWarning', async () => {
+            try {
+                const importedCashReconciliationService = require(path.join(
+                    __dirname,
+                    '../services/budget/importedCashReconciliationService.cjs'
+                ));
+                const dbConnection = await getDatabase();
+                let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+                if (targetUserId === '__AUTH_MISMATCH__') {
+                    return { success: false, error: 'User mismatch for this session' };
+                }
+                if (!targetUserId) {
+                    return { success: false, error: 'User not found' };
+                }
+                const result = await importedCashReconciliationService.suppressIntegrityWarning(
+                    dbConnection,
+                    targetUserId,
+                    options || {}
+                );
+                return { success: true, data: result };
+            } catch (error) {
+                console.error('budget:suppressIntegrityWarning error:', error);
+                return { success: false, error: error.message };
+            }
+        });
+    });
+
+    ipcMain.handle('accounts:resolve-duplicate', async (event, payload = {}) => {
+        return enqueueWrite('accounts:resolve-duplicate', async () => {
+            try {
+                const currentUser = userService.getCurrentUser();
+                if (!currentUser) throw new Error('Not logged in');
+                const accountDuplicateResolutionService = require(path.join(
+                    __dirname,
+                    '../services/accounts/accountDuplicateResolutionService.cjs'
+                ));
+                const importedCashReconciliationService = require(path.join(
+                    __dirname,
+                    '../services/budget/importedCashReconciliationService.cjs'
+                ));
+                const dbConnection = await getDatabase();
+                const result = await accountDuplicateResolutionService.resolveAccountDuplicate(
+                    dbConnection,
+                    currentUser.id,
+                    payload,
+                    {
+                        ...getPlaidSyncDeps(),
+                        processImportedCashOnboarding:
+                            importedCashReconciliationService.processImportedCashOnboarding,
+                    }
+                );
+                notifyAccountsUpdated('duplicate-resolved');
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: currentUser.id,
+                    reason: `accounts:resolve-duplicate:${payload.action}`,
+                });
+                return { success: true, data: result };
+            } catch (error) {
+                console.error('accounts:resolve-duplicate error:', error);
+                return { success: false, error: error.message };
+            }
+        });
     });
 
     ipcMain.handle('budget:scopeActiveAccounts', async (event, userId, keepAccountNames) => {

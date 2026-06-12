@@ -694,6 +694,15 @@ const LinkedBanksView = ({ onNavigate }) => {
       <div style={styles.header}>
         <h2 style={styles.title}>Linked Banks</h2>
         <div style={styles.buttonGroup}>
+          {onNavigate && (
+            <button
+              type="button"
+              style={styles.syncAllButton}
+              onClick={() => onNavigate('budget-diagnostics')}
+            >
+              Budget diagnostics
+            </button>
+          )}
           <button
             onClick={handleSyncAll}
             style={styles.syncAllButton}

@@ -30,6 +30,13 @@ const {
   transactionCategorizationService,
 } = require('../transactions/transactionCategorizationService.cjs');
 const { pairTransfersForUser } = require('../transactions/plaidTransferPairing.cjs');
+const { isOnBudgetCashAccount } = require('../../utils/cashAccountUtils.cjs');
+
+function roundMoney(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round(x * 100) / 100;
+}
 
 async function getCategoryMappings(db, userId) {
   return db.all(
@@ -81,11 +88,13 @@ async function syncPlaidAccounts(itemId, deps) {
   const institutionName = item.institution_name || null;
   const institutionId = item.institution_id || null;
   const mergeOffers = [];
+  const onboardingCandidates = [];
 
   for (const plaidAccount of plaidAccounts) {
     const dismissed = await db.get(
       `SELECT 1 FROM plaid_account_dismissals
-       WHERE plaid_account_id = ? AND user_id = ?`,
+       WHERE plaid_account_id = ? AND user_id = ?
+         AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))`,
       [plaidAccount.account_id, item.user_id]
     ).catch(() => null);
     if (dismissed) {
@@ -191,6 +200,7 @@ async function syncPlaidAccounts(itemId, deps) {
 
     let internalAccountId = null;
     let createAsPendingMerge = false;
+    let priorMappedBalance = 0;
     const top = scoredCandidates[0];
 
     if (
@@ -199,6 +209,7 @@ async function syncPlaidAccounts(itemId, deps) {
       top.confidence >= THRESHOLD_AUTO
     ) {
       internalAccountId = top.id;
+      priorMappedBalance = roundMoney(Math.max(0, Number(top.balance) || 0));
     } else if (scoredCandidates.length >= 1 && top.confidence >= THRESHOLD_CONFIRM) {
       createAsPendingMerge = true;
       mergeOffers.push({
@@ -328,6 +339,29 @@ async function syncPlaidAccounts(itemId, deps) {
         fingerprint,
       ]
     );
+
+    const linkedAccount = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [
+      internalAccountId,
+      item.user_id,
+    ]);
+    const isOnBudgetCash =
+      linkedAccount &&
+      isOnBudgetCashAccount(linkedAccount) &&
+      internalType !== 'credit' &&
+      internalType !== 'loan';
+    if (
+      isOnBudgetCash &&
+      !createAsPendingMerge &&
+      !existingLink?.account_id &&
+      deps.processImportedCashOnboarding
+    ) {
+      onboardingCandidates.push({
+        accountId: internalAccountId,
+        priorBalance: priorMappedBalance,
+        importedBalance: roundMoney(Math.max(0, balance)),
+        skip: false,
+      });
+    }
   }
 
   await db.run(
@@ -362,7 +396,24 @@ async function syncPlaidAccounts(itemId, deps) {
     status: 'ok',
   });
 
-  return { success: true, mergeOffers };
+  let onboardingResult = null;
+  if (
+    onboardingCandidates.length > 0 &&
+    typeof deps.processImportedCashOnboarding === 'function'
+  ) {
+    try {
+      onboardingResult = await deps.processImportedCashOnboarding(
+        db,
+        item.user_id,
+        onboardingCandidates,
+        { itemId }
+      );
+    } catch (onboardErr) {
+      console.warn('Imported cash onboarding skipped:', onboardErr.message);
+    }
+  }
+
+  return { success: true, mergeOffers, onboarding: onboardingResult };
 }
 
 /**

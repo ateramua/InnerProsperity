@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { showAppToast } from '../AppToast';
+import { showIntentFlowConfirmDialog } from '../../utils/showIntentFlowDialog.jsx';
 
 /**
  * Merge Review Wizard — Plaid account ↔ existing manual account.
@@ -9,6 +10,7 @@ export default function AccountMergeWizard({
   onClose,
   onMerged,
   onKeptSeparate,
+  onResolved,
 }) {
   const [activeOffer, setActiveOffer] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -55,64 +57,8 @@ export default function AccountMergeWizard({
       Math.abs(Number(n) || 0)
     );
 
-  const handleMerge = async () => {
-    if (!activeOffer || !selectedTargetId) return;
-    setBusy(true);
-    try {
-      const res = await window.electronAPI?.executeAccountMerge?.(
-        activeOffer.plaidAccountId,
-        selectedTargetId
-      );
-      if (res?.success) {
-        showAppToast('Accounts merged successfully', 'success');
-        onMerged?.(activeOffer.plaidAccountId);
-        const rest = offers.filter((o) => o.plaidAccountId !== activeOffer.plaidAccountId);
-        if (rest.length) {
-          setActiveOffer(rest[0]);
-          setSelectedTargetId(rest[0].candidates?.[0]?.id ?? null);
-          setPreview(null);
-        } else {
-          onClose?.();
-        }
-      } else {
-        showAppToast(res?.error || 'Merge failed', 'error');
-      }
-    } catch (e) {
-      showAppToast(e.message || 'Merge failed', 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleKeepSeparate = async () => {
-    if (!activeOffer) return;
-    setBusy(true);
-    try {
-      const res = await window.electronAPI?.keepPlaidAccountSeparate?.(
-        activeOffer.plaidAccountId
-      );
-      if (res?.success) {
-        showAppToast('Accounts kept separate', 'success');
-        onKeptSeparate?.(activeOffer.plaidAccountId);
-        const rest = offers.filter((o) => o.plaidAccountId !== activeOffer.plaidAccountId);
-        if (rest.length) {
-          setActiveOffer(rest[0]);
-          setSelectedTargetId(rest[0].candidates?.[0]?.id ?? null);
-        } else {
-          onClose?.();
-        }
-      } else {
-        showAppToast(res?.error || 'Could not update account', 'error');
-      }
-    } catch (e) {
-      showAppToast(e.message, 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDecideLater = () => {
-    const rest = offers.filter((o) => o.plaidAccountId !== activeOffer?.plaidAccountId);
+  const advanceOfferQueue = (plaidAccountId) => {
+    const rest = offers.filter((o) => o.plaidAccountId !== plaidAccountId);
     if (rest.length) {
       setActiveOffer(rest[0]);
       setSelectedTargetId(rest[0].candidates?.[0]?.id ?? null);
@@ -122,6 +68,59 @@ export default function AccountMergeWizard({
     }
   };
 
+  const resolveDuplicate = async (action, extra = {}) => {
+    if (!activeOffer) return;
+    setBusy(true);
+    try {
+      const res = await window.electronAPI?.resolveAccountDuplicate?.({
+        action,
+        plaidAccountId: activeOffer.plaidAccountId,
+        targetAccountId: selectedTargetId,
+        ...extra,
+      });
+      if (res?.success) {
+        showAppToast(`Resolved: ${action.replace(/_/g, ' ')}`, 'success');
+        onResolved?.({ action, plaidAccountId: activeOffer.plaidAccountId, data: res.data });
+        if (action === 'merge') onMerged?.(activeOffer.plaidAccountId);
+        if (action === 'keep_both') onKeptSeparate?.(activeOffer.plaidAccountId);
+        advanceOfferQueue(activeOffer.plaidAccountId);
+      } else {
+        showAppToast(res?.error || 'Could not resolve duplicate', 'error');
+      }
+    } catch (e) {
+      showAppToast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMerge = () => resolveDuplicate('merge');
+  const handleReplace = () => resolveDuplicate('replace');
+  const handleKeepSeparate = () => resolveDuplicate('keep_both');
+
+  const handleKeepOffBudget = async () => {
+    const confirmed = await showIntentFlowConfirmDialog({
+      title: 'Keep off budget?',
+      message:
+        'The linked account will sync balances but will not affect Ready to Assign or your budget envelope.',
+    });
+    if (confirmed) await resolveDuplicate('keep_off_budget');
+  };
+
+  const handleIgnore = async () => {
+    const confirmed = await showIntentFlowConfirmDialog({
+      title: 'Ignore imported account?',
+      message: 'This Plaid account will not be imported again unless you reconnect it.',
+    });
+    if (confirmed) await resolveDuplicate('ignore');
+  };
+
+  const handleIgnoreTemporarily = () => resolveDuplicate('ignore_temporarily', { temporaryDays: 7 });
+
+  const handleDecideLater = () => {
+    advanceOfferQueue(activeOffer?.plaidAccountId);
+  };
+
   if (!offers.length || !activeOffer) return null;
 
   const dup = preview?.preview?.duplicateAnalysis;
@@ -129,16 +128,13 @@ export default function AccountMergeWizard({
   return (
     <div style={styles.overlay}>
       <div style={styles.panel}>
-        <h2 style={styles.title}>Account merge review</h2>
+        <h2 style={styles.title}>Duplicate account review</h2>
         <p style={styles.intro}>
-          We found an account that appears to match an existing account in IntentFlow.
+          This linked account may match an existing account. Choose how to resolve it.
           {activeOffer.confidence != null && (
             <span style={styles.confidence}>
               {' '}
               Match confidence: <strong>{activeOffer.confidence}%</strong>
-              {activeOffer.confidence >= 95
-                ? ' (high — review recommended)'
-                : ' (confirm before merging)'}
             </span>
           )}
         </p>
@@ -153,19 +149,14 @@ export default function AccountMergeWizard({
             {preview?.incoming && (
               <>
                 <p style={styles.row}>Balance: {formatMoney(preview.incoming.balance)}</p>
-                <p style={styles.row}>
-                  Transactions: {preview.incoming.transactionCount ?? 0}
-                </p>
-                <p style={styles.row}>
-                  Institution: {preview.incoming.institution || '—'}
-                </p>
+                <p style={styles.row}>Transactions: {preview.incoming.transactionCount ?? 0}</p>
               </>
             )}
           </div>
 
           <div style={styles.card}>
             <h4 style={styles.cardTitle}>Existing (IntentFlow)</h4>
-            <label style={styles.selectLabel}>Select account to merge into:</label>
+            <label style={styles.selectLabel}>Match target:</label>
             <select
               style={styles.select}
               value={selectedTargetId || ''}
@@ -182,12 +173,7 @@ export default function AccountMergeWizard({
             {preview?.existing && (
               <>
                 <p style={styles.row}>Balance: {formatMoney(preview.existing.balance)}</p>
-                <p style={styles.row}>
-                  Transactions: {preview.existing.transactionCount ?? 0}
-                </p>
-                <p style={styles.row}>
-                  Budget links: {preview.existing.connectedBudgets ?? 0}
-                </p>
+                <p style={styles.row}>Transactions: {preview.existing.transactionCount ?? 0}</p>
               </>
             )}
           </div>
@@ -199,40 +185,31 @@ export default function AccountMergeWizard({
           <div style={styles.previewBox}>
             <h4 style={styles.cardTitle}>Merge preview</h4>
             <ul style={styles.previewList}>
-              <li>
-                Total transactions after merge:{' '}
-                <strong>{preview.preview.totalTransactionsAfterMerge}</strong>
-              </li>
-              <li>
-                Exact duplicate transactions (auto-removed):{' '}
-                <strong>{dup.exactDuplicateCount}</strong>
-              </li>
-              <li>
-                Probable duplicates (review later):{' '}
-                <strong>{dup.probableDuplicateCount}</strong>
-              </li>
-              <li>
-                New transactions retained: <strong>{dup.uniqueIncomingCount}</strong>
-              </li>
+              <li>Exact duplicates removed: <strong>{dup.exactDuplicateCount}</strong></li>
+              <li>Probable duplicates: <strong>{dup.probableDuplicateCount}</strong></li>
+              <li>New transactions retained: <strong>{dup.uniqueIncomingCount}</strong></li>
             </ul>
-            <p style={styles.muted}>
-              Your notes, categories, and tags on existing transactions are preserved.
-              Plaid will own balances and institution data after merge.
-            </p>
           </div>
         )}
 
         <div style={styles.actions}>
-          <button
-            type="button"
-            style={styles.primary}
-            disabled={busy || !selectedTargetId}
-            onClick={handleMerge}
-          >
-            {busy ? 'Merging…' : 'Merge accounts'}
+          <button type="button" style={styles.primary} disabled={busy || !selectedTargetId} onClick={handleMerge}>
+            {busy ? 'Working…' : 'Merge accounts'}
+          </button>
+          <button type="button" style={styles.secondary} disabled={busy || !selectedTargetId} onClick={handleReplace}>
+            Replace manual
           </button>
           <button type="button" style={styles.secondary} disabled={busy} onClick={handleKeepSeparate}>
-            Keep separate
+            Keep both
+          </button>
+          <button type="button" style={styles.secondary} disabled={busy} onClick={handleKeepOffBudget}>
+            Keep off budget
+          </button>
+          <button type="button" style={styles.ghost} disabled={busy} onClick={handleIgnoreTemporarily}>
+            Snooze 7 days
+          </button>
+          <button type="button" style={styles.ghost} disabled={busy} onClick={handleIgnore}>
+            Ignore imported
           </button>
           <button type="button" style={styles.ghost} disabled={busy} onClick={handleDecideLater}>
             Decide later
@@ -240,9 +217,7 @@ export default function AccountMergeWizard({
         </div>
 
         {offers.length > 1 && (
-          <p style={styles.muted}>
-            {offers.length} account(s) waiting for review
-          </p>
+          <p style={styles.muted}>{offers.length} account(s) waiting for review</p>
         )}
       </div>
     </div>
@@ -265,7 +240,7 @@ const styles = {
     color: '#f1f5f9',
     borderRadius: 12,
     padding: 28,
-    maxWidth: 720,
+    maxWidth: 760,
     width: '100%',
     maxHeight: '90vh',
     overflow: 'auto',

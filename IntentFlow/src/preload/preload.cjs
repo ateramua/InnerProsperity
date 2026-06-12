@@ -281,6 +281,21 @@ try {
     getBudgetIntegrityState: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getIntegrityState', userId, monthKey),
 
+    analyzeImportedCash: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:analyzeImportedCash', userId, monthKey),
+
+    reconcileImportedCash: (userId, options) =>
+      ipcRenderer.invoke('budget:reconcileImportedCash', userId, options || {}),
+
+    getBudgetIdentityDiagnostics: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:getIdentityDiagnostics', userId, monthKey),
+
+    suppressBudgetIntegrityWarning: (userId, options) =>
+      ipcRenderer.invoke('budget:suppressIntegrityWarning', userId, options || {}),
+
+    resolveAccountDuplicate: (payload) =>
+      ipcRenderer.invoke('accounts:resolve-duplicate', payload || {}),
+
     scopeActiveAccountsExcept: (userId, keepAccountNames) =>
       ipcRenderer.invoke('budget:scopeActiveAccounts', userId, keepAccountNames),
 

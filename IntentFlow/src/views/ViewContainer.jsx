@@ -17,6 +17,7 @@ import AddLoanForm from './AddLoanForm';
 import ForecastPage from '../pages/forecast';
 import AccountModal from './AccountModal';
 import LinkedBanksView from './LinkedBanksView';
+import BudgetIdentityDiagnosticsView from './BudgetIdentityDiagnosticsView';
 import AppToastHost from '../components/AppToast';
 import {
   getCreditAccountDeleteConfirmMessage,
@@ -752,6 +753,9 @@ const ViewContainer = ({ currentView, accounts, budgetData, transactions, onNavi
 
       case 'linked-banks':
         return <LinkedBanksView onNavigate={onNavigate} />;
+
+      case 'budget-diagnostics':
+        return <BudgetIdentityDiagnosticsView onNavigate={onNavigate} />;
 
       case 'loan-dashboard':
         if (isLoadingLoans) {

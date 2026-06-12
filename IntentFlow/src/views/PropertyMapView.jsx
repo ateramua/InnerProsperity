@@ -40,6 +40,7 @@ import {
   showIntentFlowDialog,
   showIntentFlowConfirmDialog,
 } from '../utils/showIntentFlowDialog.jsx';
+import ImportedCashIntegrityBanner from '../components/budget/ImportedCashIntegrityBanner.jsx';
 
 const EMPTY_MOVE_MONEY_FORM = {
   amount: '',
@@ -3493,6 +3494,15 @@ const PropertyMapView = ({ onNavigate }) => {
             </button>
           </div>
         )}
+        <ImportedCashIntegrityBanner
+          userId={userId}
+          monthKey={formatBudgetMonthKey(selectedMonth)}
+          onNavigate={onNavigate}
+          onReconciled={async () => {
+            await refreshGlobalBudgetSummary();
+            await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
+          }}
+        />
         <section className="rounded-[2rem] border border-white/25 bg-[#0047AB] p-6 shadow-2xl shadow-[#0047AB]/35 min-w-0 overflow-hidden">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>

@@ -33,6 +33,8 @@
     "test:cc-payment-categories": "node scripts/test-credit-card-payment-category-service.cjs",
     "test:underfunded": "node scripts/test-underfunded-engine.cjs",
     "test:ready-to-assign": "node scripts/test-ready-to-assign-engine.cjs",
+    "test:imported-cash": "node scripts/test-imported-cash-reconciliation.cjs",
+    "test:duplicate-resolution": "node scripts/test-account-duplicate-resolution.cjs",
     "test:cash-forecast": "node scripts/test-cash-forecast-engine.mjs",
     "test:transaction-import": "node scripts/test-transaction-import-banks.cjs",
     "test:category-ml": "node scripts/test-category-ml.cjs",
