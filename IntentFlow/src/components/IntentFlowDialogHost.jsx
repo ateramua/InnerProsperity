@@ -14,6 +14,10 @@ const DIALOG_TEST_IDS = {
     dialog: 'group-created-dialog',
     ok: 'group-created-ok',
   },
+  'category-created': {
+    dialog: 'category-created-dialog',
+    ok: 'category-created-ok',
+  },
   'unassign-confirm': {
     dialog: 'unassign-confirm-dialog',
     ok: 'unassign-confirm-ok',

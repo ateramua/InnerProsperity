@@ -43,6 +43,7 @@
     "test:db-broker": "node scripts/test-db-broker.cjs",
     "check:db-architecture": "npm run check:db-single-writer && npm run check:ipc-write-broker && npm run test:db-broker",
     "check:db-isolation": "node scripts/test-db-environment-isolation.cjs && npm run generate:empty-schema && npm run seed:db && npm run verify:release-db-policy",
+    "plaid:sync-env": "node scripts/sync-plaid-env-to-userdata.cjs",
     "plaid:relay": "node scripts/plaid-webhook-relay.cjs",
     "plaid:relay-example": "node scripts/plaid-webhook-relay.example.cjs",
     "plaid:report-duplicates": "node scripts/report-plaid-duplicate-accounts.cjs",

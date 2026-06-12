@@ -226,7 +226,8 @@ class AccountService {
                 'next_payment_date', 'nextPaymentDate',
                 'loan_type', 'paired_category_id',
                 'rewards_program', 'transfer_limit', 'linked_savings_account',
-                'sync_enabled', 'balance_locked', 'is_hidden'
+                'sync_enabled', 'balance_locked', 'is_hidden', 'account_status',
+                'merged_into_account_id'
             ];
 
             const setClauses = [];

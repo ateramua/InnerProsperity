@@ -8,7 +8,9 @@ const {
     computeAccountBalances,
     computeTransactionsWithRunningBalance,
     isSystemTransaction,
-    signedStartingBalanceAmount,
+    buildStartingBalanceTransactionFields,
+    validateAccountLedgerInvariant,
+    assertExclusiveLedgerColumns,
 } = require('../../utils/accountBalanceEngine.cjs');
 const { applySqlitePragmas } = require('../../db/sqlitePragmas.cjs');
 const { getDatabase } = require('../../db/database.cjs');
@@ -100,6 +102,7 @@ class TransactionService {
         const {
             accountId, userId, date, description, amount, categoryId,
             payee, memo, isCleared,
+            direction: directionRaw,
             // NEW TRANSFER FIELDS
             isTransfer,
             transferGroupId,
@@ -107,16 +110,23 @@ class TransactionService {
             counterpartyAccountId
         } = transactionData;
 
+        const normalized = assertExclusiveLedgerColumns({
+            amount,
+            direction: directionRaw || null,
+        });
+        const direction = normalized.direction;
+        const storedAmount = normalized.amount;
+
         const query = `
     INSERT INTO transactions (
-      account_id, user_id, date, description, amount, category_id,
+      account_id, user_id, date, description, amount, direction, category_id,
       payee, memo, is_cleared, created_at,
       is_transfer, transfer_group_id, linked_transaction_id, counterparty_account_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?)
   `;
 
         const params = [
-            accountId, userId, date, description, amount, categoryId,
+            accountId, userId, date, description, storedAmount, direction, categoryId,
             payee, memo, isCleared || 0,
             isTransfer || 0,
             transferGroupId || null,
@@ -164,6 +174,24 @@ class TransactionService {
             if (Object.prototype.hasOwnProperty.call(effectiveUpdates, 'cleared')) {
                 effectiveUpdates.is_cleared = effectiveUpdates.cleared;
                 delete effectiveUpdates.cleared;
+            }
+
+            if (
+                Object.prototype.hasOwnProperty.call(effectiveUpdates, 'amount') ||
+                Object.prototype.hasOwnProperty.call(effectiveUpdates, 'direction')
+            ) {
+                const normalized = assertExclusiveLedgerColumns({
+                    amount:
+                        effectiveUpdates.amount !== undefined
+                            ? effectiveUpdates.amount
+                            : oldTransaction.amount,
+                    direction:
+                        effectiveUpdates.direction !== undefined
+                            ? effectiveUpdates.direction
+                            : oldTransaction.direction,
+                });
+                effectiveUpdates.amount = normalized.amount;
+                effectiveUpdates.direction = normalized.direction;
             }
 
             const allowedUpdates = [
@@ -506,6 +534,13 @@ class TransactionService {
             );
 
             const balances = computeAccountBalances(account, transactions);
+            const invariant = validateAccountLedgerInvariant(account, transactions);
+            if (!invariant.valid) {
+                console.warn(
+                    `[TransactionService] Ledger invariant drift for account ${accountId}: ` +
+                        `working=${invariant.working_balance} expected=${invariant.expected} delta=${invariant.delta}`
+                );
+            }
 
             if (isPlaidLinked) {
                 await db.run(
@@ -575,25 +610,40 @@ class TransactionService {
         const initialBalance = Math.abs(Number(account.initial_balance) || 0);
         if (initialBalance === 0) return null;
 
-        const signedAmount = signedStartingBalanceAmount(account.type, initialBalance);
+        const existing = await db.get(
+            `SELECT id FROM transactions
+             WHERE account_id = ? AND user_id = ?
+               AND IFNULL(is_system, 0) = 1
+               AND (LOWER(payee) = 'starting balance' OR LOWER(description) = 'starting balance')
+               AND (is_deleted IS NULL OR is_deleted = 0)
+             LIMIT 1`,
+            [account.id, userId]
+        );
+        if (existing) return { id: existing.id, skipped: true };
+
+        const { amount, direction } = buildStartingBalanceTransactionFields(
+            account.type,
+            initialBalance
+        );
         const date = startDate || new Date().toISOString().slice(0, 10);
 
         const result = await db.run(
             `
             INSERT INTO transactions (
-              account_id, user_id, date, description, amount,
+              account_id, user_id, date, description, amount, direction,
               payee, memo, is_cleared, is_system, is_reconciled, is_adjustment,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, datetime('now'), datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, datetime('now'), datetime('now'))
         `,
             [
                 account.id,
                 userId,
                 date,
                 'Starting Balance',
-                signedAmount,
+                amount,
+                direction,
                 'Starting Balance',
-                'Initial account balance',
+                'Opening Balance',
             ]
         );
 

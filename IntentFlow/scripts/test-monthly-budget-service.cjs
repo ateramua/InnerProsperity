@@ -35,18 +35,17 @@ test('toLocalMonthKey parses YYYY-MM-DD as local calendar month', () => {
   assert.strictEqual(toLocalMonthKey(new Date(2026, 4, 28, 12)), '2026-05-01');
 });
 
-test('resolveBudgetedForMonth prefers monthly row for current month', () => {
-  const cat = { assigned: 0 };
+test('resolveBudgetedForMonth uses monthly_budgets row only', () => {
   const mb = { budgeted_amount: 75 };
-  assert.strictEqual(resolveBudgetedForMonth(cat, mb, true), 75);
+  assert.strictEqual(resolveBudgetedForMonth(null, mb, true), 75);
 });
 
-test('resolveBudgetedForMonth uses category rollup when month row missing', () => {
+test('resolveBudgetedForMonth returns 0 when month row missing', () => {
   const cat = { assigned: 40 };
-  assert.strictEqual(resolveBudgetedForMonth(cat, undefined, true), 40);
+  assert.strictEqual(resolveBudgetedForMonth(cat, undefined, true), 0);
 });
 
-test('resolveBudgetedForMonth uses monthly row when category rollup is higher', () => {
+test('resolveBudgetedForMonth ignores stale category rollup', () => {
   const cat = { assigned: 5000 };
   const mb = { budgeted_amount: 1437.51 };
   assert.strictEqual(resolveBudgetedForMonth(cat, mb, true), 1437.51);

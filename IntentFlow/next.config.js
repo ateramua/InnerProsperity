@@ -5,7 +5,7 @@ const isDev = process.env.NODE_ENV !== 'production';
 // (requests like `/login/_next/static/...`). Use static export only for production builds.
 const nextConfig = {
   ...(isDev
-    ? { distDir: '.next' }
+    ? { distDir: process.env.INTENTFLOW_NEXT_DIST_DIR || '.next' }
     : {
         output: 'export',
         distDir: 'out',

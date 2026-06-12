@@ -40,13 +40,21 @@ function daysBetween(d1, d2) {
 const DATE_TOLERANCE_DAYS = 3;
 const MERCHANT_SIMILARITY_THRESHOLD = 0.75;
 
+/** Signed ledger impact for dedup (supports direction+magnitude and legacy signed amount). */
+function signedLedgerAmount(tx) {
+  const mag = Math.abs(Number(tx?.amount) || 0);
+  if (tx?.direction === 'outflow') return -mag;
+  if (tx?.direction === 'inflow') return mag;
+  return Math.round((Number(tx?.amount) || 0) * 100) / 100;
+}
+
 /**
  * Classify duplicate relationship between manual and incoming tx.
  * @returns {'exact'|'probable'|'unique'}
  */
 function classifyTransactionPair(manualTx, incomingTx) {
-  const mAmt = Math.round((Number(manualTx.amount) || 0) * 100) / 100;
-  const iAmt = Math.round((Number(incomingTx.amount) || 0) * 100) / 100;
+  const mAmt = signedLedgerAmount(manualTx);
+  const iAmt = signedLedgerAmount(incomingTx);
   if (mAmt !== iAmt) return 'unique';
 
   const mDate = String(manualTx.date || '').slice(0, 10);

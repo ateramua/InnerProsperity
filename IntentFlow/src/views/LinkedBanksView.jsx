@@ -408,7 +408,7 @@ const LinkedBanksView = ({ onNavigate }) => {
 
   // Connect new bank
   const handleConnectBank = async () => {
-    if (isConnectingBank || !plaidConfigured) return;
+    if (isConnectingBank) return;
     if (!window.electronAPI?.createLinkToken || !window.electronAPI?.exchangePublicToken) {
       setError('Plaid is not available. Restart the IntentFlow desktop app.');
       showAppToast('Plaid is not available in this window', 'error');
@@ -706,22 +706,12 @@ const LinkedBanksView = ({ onNavigate }) => {
             onClick={handleConnectBank}
             style={{
               ...styles.connectButton,
-              ...((!plaidConfigReady || isConnectingBank || !plaidConfigured) && styles.connectButtonDisabled),
+              ...(isConnectingBank && styles.connectButtonDisabled),
             }}
-            disabled={!plaidConfigReady || isConnectingBank || !plaidConfigured}
-            title={
-              !plaidConfigReady
-                ? 'Checking Plaid configuration…'
-                : !plaidConfigured
-                  ? 'Plaid is not configured — check .env and restart the app'
-                  : 'Connect a bank via Plaid'
-            }
+            disabled={isConnectingBank}
+            title="Connect a bank via Plaid"
           >
-            {!plaidConfigReady
-              ? 'Loading…'
-              : isConnectingBank
-                ? 'Connecting...'
-                : '+ Connect New Bank'}
+            {isConnectingBank ? 'Connecting...' : '+ Connect New Bank'}
           </button>
         </div>
       </div>
@@ -732,8 +722,10 @@ const LinkedBanksView = ({ onNavigate }) => {
 
       {plaidConfigReady && !plaidConfigured && (
         <div style={styles.error}>
-          Plaid is not configured. Set PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV
-          (sandbox, development, or production) in .env, then restart the IntentFlow desktop app.
+          Plaid is not configured for the packaged app. Copy your Plaid keys into{' '}
+          <code>~/Library/Application Support/IntentFlow/plaid.env.json</code>{' '}
+          (see <code>plaid.env.example.json</code>), or from the IntentFlow repo run{' '}
+          <code>npm run plaid:sync-env</code>, then restart the app.
         </div>
       )}
 

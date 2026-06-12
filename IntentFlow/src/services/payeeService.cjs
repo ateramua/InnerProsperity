@@ -166,38 +166,32 @@ class PayeeService {
       throw new Error('Account not found');
     }
 
-    // Source transaction (outflow from source account)
-    const sourceAmount = -Math.abs(amount);
-    const sourceBalanceChange = sourceAmount;
-
-    // Destination transaction (inflow to destination account)
-    const destinationAmount = Math.abs(amount);
-    const destinationBalanceChange = destinationAmount;
+    const transferMag = Math.abs(Number(amount) || 0);
 
     // Start a database transaction
     await database.run('BEGIN TRANSACTION');
 
     try {
-      // 1. Create source transaction
+      // 1. Create source transaction (outflow)
       const sourceResult = await database.run(`
         INSERT INTO transactions 
-        (account_id, amount, date, payee, category_id, memo, cleared, 
+        (account_id, amount, direction, date, payee, category_id, memo, cleared, 
          is_transfer, transfer_group_id, counterparty_account_id, user_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
       `, [
-        sourceAccountId, sourceAmount, date, sourcePayeeName, null, memo, cleared ? 1 : 0,
+        sourceAccountId, transferMag, 'outflow', date, sourcePayeeName, null, memo, cleared ? 1 : 0,
         1, transferGroupId, destinationAccountId, userId
       ]);
 
-      // 2. Create destination transaction (reverse)
+      // 2. Create destination transaction (inflow — payment on credit card register)
       const reversePayeeName = this.getReversePayeeName(sourceAccount.name);
       const destinationResult = await database.run(`
         INSERT INTO transactions 
-        (account_id, amount, date, payee, category_id, memo, cleared, 
+        (account_id, amount, direction, date, payee, category_id, memo, cleared, 
          is_transfer, transfer_group_id, counterparty_account_id, user_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
       `, [
-        destinationAccountId, destinationAmount, date, reversePayeeName, null, 
+        destinationAccountId, transferMag, 'inflow', date, reversePayeeName, null, 
         `Transfer from ${sourceAccount.name}`, cleared ? 1 : 0,
         1, transferGroupId, sourceAccountId, userId
       ]);

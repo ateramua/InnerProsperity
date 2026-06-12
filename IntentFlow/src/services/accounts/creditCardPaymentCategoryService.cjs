@@ -138,6 +138,28 @@ async function archiveCreditCardPaymentCategoryForAccount(db, accountRow, { reas
   let archivedCount = 0;
   for (const cat of categories) {
     if (cat.archived === 1) continue;
+    const stillReferenced = await db.get(
+      `SELECT id FROM accounts
+       WHERE user_id = ?
+         AND IFNULL(is_active, 1) = 1
+         AND IFNULL(account_status, 'active') = 'active'
+         AND merged_into_account_id IS NULL
+         AND (
+           CAST(paired_category_id AS TEXT) = CAST(? AS TEXT)
+           OR CAST(id AS TEXT) = CAST(? AS TEXT)
+         )
+       LIMIT 1`,
+      [ownerId, cat.id, cat.linked_account_id || '']
+    );
+    if (stillReferenced) {
+      logRepair('skip_archive_shared_payment_category', {
+        reason,
+        accountId: accountRow.id,
+        categoryId: cat.id,
+        keptByAccountId: stillReferenced.id,
+      });
+      continue;
+    }
     await db.run(
       `UPDATE categories
        SET archived = 1, archived_at = datetime('now'), updated_at = datetime('now')
@@ -282,7 +304,9 @@ async function syncCreditCardPaymentCategoriesForUser(db, userId, options = {}) 
   const repairs = [];
 
   const allCreditAccounts = await db.all(
-    `SELECT * FROM accounts WHERE user_id = ? AND lower(type) = 'credit'`,
+    `SELECT * FROM accounts
+     WHERE user_id = ?
+       AND lower(replace(replace(trim(type), '_', ' '), '-', ' ')) IN ('credit', 'credit card', 'charge card')`,
     [userId]
   );
 

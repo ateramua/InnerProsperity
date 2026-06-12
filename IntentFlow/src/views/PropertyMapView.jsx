@@ -1847,7 +1847,12 @@ const PropertyMapView = ({ onNavigate }) => {
         setShowAddCategoryModal(false);
         setNewCategoryData({ name: '', assigned: 0, groupId: null });
         setSelectedGroupForCategory(null);
-        alert('✅ Category created successfully!');
+        await showIntentFlowDialog({
+          id: 'category-created',
+          type: 'success',
+          title: 'Category created',
+          message: '✅ Category created successfully!',
+        });
         await loadCategoriesFromDB(0, { monthDate: selectedMonthRef.current || selectedMonth });
       } else {
         alert('❌ Failed to create category: ' + (result.error || 'Unknown error'));

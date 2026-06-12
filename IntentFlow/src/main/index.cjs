@@ -8,6 +8,12 @@ const {
 } = require('../services/plaid/plaidOAuth.cjs');
 const plaidRelayClient = require('../services/plaid/plaidRelayClient.cjs') || {};
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage, screen } = require('electron');
+const shardUserDataDir = process.env.INTENTFLOW_ELECTRON_USER_DATA_DIR;
+/** UI-E2E: run Electron with a sized but invisible window (CDP/Playwright still drives the renderer). */
+const uiHeadless = process.env.INTENTFLOW_UI_HEADLESS === '1';
+if (shardUserDataDir && app?.setPath) {
+    app.setPath('userData', shardUserDataDir);
+}
 const { getEditMenuTemplate, attachEditableContextMenu } = require('./textInputClipboard.cjs');
 const path = require('path');
 const fs = require('fs');
@@ -83,11 +89,19 @@ function resolvePreloadPath() {
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 
 if (!app.isPackaged) {
-    const debugPort =
-        process.env.INTENTFLOW_REMOTE_DEBUGGING_PORT ||
-        process.env.ELECTRON_REMOTE_DEBUGGING_PORT ||
-        '9222';
-    app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
+    const playwrightManagedCdp = process.argv.some((arg) =>
+        /--remote-debugging-port=0(?:\s|$)/.test(arg) || arg === '--remote-debugging-port=0'
+    );
+    const hasRemoteDebuggingArg = process.argv.some((arg) =>
+        arg.startsWith('--remote-debugging-port')
+    );
+    if (!playwrightManagedCdp && !hasRemoteDebuggingArg) {
+        const debugPort =
+            process.env.INTENTFLOW_REMOTE_DEBUGGING_PORT ||
+            process.env.ELECTRON_REMOTE_DEBUGGING_PORT ||
+            '9222';
+        app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
+    }
     app.commandLine.appendSwitch('remote-allow-origins', '*');
 }
 
@@ -807,7 +821,11 @@ let lastFocusPlaidSyncAt = 0;
 const FOCUS_SYNC_COOLDOWN_MS = 60_000;
 let pendingPlaidOAuthUrl = null;
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const gotSingleInstanceLock =
+    process.env.INTENTFLOW_ALLOW_MULTI_INSTANCE === '1' ||
+    process.env.INTENTFLOW_FORCE_ELECTRON_LAUNCH === '1'
+        ? true
+        : app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
     app.quit();
 }
@@ -1113,7 +1131,8 @@ async function initDatabase() {
 
         // Use the full schema initialization from initSchema.cjs
         const database = await initializeDatabase(dbPath, {
-            injectRecoveryUser: false // Automatic startup should only create structure/schema
+            // Test/automation shards use fresh per-process DBs — seed default login user.
+            injectRecoveryUser: process.env.INTENTFLOW_RUNTIME_PROFILE === 'test',
         });
 
         await sqliteOwner.initialize(dbPath, { adoptConnection: database });
@@ -1164,6 +1183,15 @@ function notifyAccountsUpdated(source = 'plaid') {
 
 function isWindowEffectivelyMaximized(win) {
     if (!win) return false;
+    if (uiHeadless) {
+        const bounds = win.getBounds();
+        const area = screen.getPrimaryDisplay().workArea;
+        const tolerance = 8;
+        return (
+            bounds.width >= area.width - tolerance &&
+            bounds.height >= area.height - tolerance
+        );
+    }
     if (win.isMaximized()) return true;
     if (process.platform !== 'darwin') return false;
     const bounds = win.getBounds();
@@ -1180,6 +1208,16 @@ function isWindowEffectivelyMaximized(win) {
 function maximizeAppWindow(win) {
     if (!win) return false;
     if (isWindowEffectivelyMaximized(win)) return true;
+    if (uiHeadless) {
+        const area = screen.getPrimaryDisplay().workArea;
+        win.setBounds({
+            x: area.x - 20000,
+            y: area.y - 20000,
+            width: area.width,
+            height: area.height,
+        });
+        return isWindowEffectivelyMaximized(win);
+    }
     if (process.platform === 'darwin') {
         const area = screen.getDisplayMatching(win.getBounds()).workArea;
         win.setBounds(area);
@@ -1374,9 +1412,20 @@ app.whenReady().then(async () => {
     const launchOAuthUrl = findPlaidOAuthArgv(process.argv);
     if (launchOAuthUrl) pendingPlaidOAuthUrl = launchOAuthUrl;
 
-    const plaidEnvLoad = loadPlaidEnvFromUserData(() => app.getPath('userData'));
+    const plaidEnvLoad = loadPlaidEnvFromUserData(() => app.getPath('userData'), {
+        isPackaged: app.isPackaged,
+        bootstrapFromDotEnv: app.isPackaged,
+    });
     if (plaidEnvLoad.loaded) {
-        console.log(`✅ Plaid env loaded from userData (${plaidEnvLoad.keysSet} keys)`);
+        const source = plaidEnvLoad.bootstrapped
+            ? `bootstrapped from ${plaidEnvLoad.bootstrapSource}`
+            : plaidEnvLoad.path;
+        console.log(`✅ Plaid env loaded (${plaidEnvLoad.keysSet} keys) — ${source}`);
+    } else if (app.isPackaged) {
+        console.warn(
+            `⚠️ Plaid not configured. Create ${path.join(app.getPath('userData'), 'plaid.env.json')} ` +
+            'or run: node scripts/sync-plaid-env-to-userdata.cjs'
+        );
     }
 
     console.log('🚀 Starting IntentFlow...');
@@ -1674,12 +1723,17 @@ function createWindow() {
     });
 
     win.once('ready-to-show', () => {
-        win.show();
-        console.log('🔵 Main window ready-to-show');
-        if (isDev) {
-            win.webContents.openDevTools({ mode: 'right' });
+        if (uiHeadless) {
+            maximizeAppWindow(win);
+            console.log('🔵 Main window ready (UI headless — window not shown)');
+        } else {
+            win.show();
+            console.log('🔵 Main window ready-to-show');
+            if (isDev) {
+                win.webContents.openDevTools({ mode: 'right' });
+            }
+            win.focus();
         }
-        win.focus();
     });
 
     return win;
@@ -1715,7 +1769,12 @@ async function finalizeManualAccountWithStartingBalance(db, accountId, userId) {
     if (initialBalance === 0) return account;
 
     const existingSystem = await db.get(
-        `SELECT id FROM transactions WHERE account_id = ? AND IFNULL(is_system, 0) = 1 LIMIT 1`,
+        `SELECT id FROM transactions
+         WHERE account_id = ?
+           AND IFNULL(is_system, 0) = 1
+           AND (LOWER(payee) = 'starting balance' OR LOWER(description) = 'starting balance')
+           AND (is_deleted IS NULL OR is_deleted = 0)
+         LIMIT 1`,
         [accountId]
     );
     if (existingSystem) return account;
@@ -1880,13 +1939,19 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('window:maximize', () => {
-        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        const win =
+            (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null) ||
+            BrowserWindow.getFocusedWindow() ||
+            BrowserWindow.getAllWindows()[0];
         const maximized = maximizeAppWindow(win);
         return { success: true, maximized };
     });
 
     ipcMain.handle('window:is-maximized', () => {
-        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        const win =
+            (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null) ||
+            BrowserWindow.getFocusedWindow() ||
+            BrowserWindow.getAllWindows()[0];
         return { success: true, maximized: isWindowEffectivelyMaximized(win) };
     });
 
@@ -3620,6 +3685,8 @@ function setupIpcHandlers() {
 
     // ==================== PLAID HANDLERS ====================
     ipcMain.handle('plaid-get-config-status', async () => {
+        const { getLastPlaidEnvLoadResult } = require('../services/plaid/loadPlaidEnv.cjs');
+        const envLoad = getLastPlaidEnvLoadResult ? getLastPlaidEnvLoadResult() : {};
         const cfg = getPlaidConfig ? getPlaidConfig() : { configured: false, env: process.env.PLAID_ENV || 'sandbox' };
         return {
             success: true,
@@ -3630,6 +3697,8 @@ function setupIpcHandlers() {
                 redirectUri: process.env.PLAID_REDIRECT_URI || null,
                 webhookRelayConfigured: Boolean(process.env.PLAID_WEBHOOK_RELAY_URL),
                 oauthDeepLinkScheme: `${PLAID_OAUTH_SCHEME}://`,
+                configPath: envLoad.path || path.join(app.getPath('userData'), 'plaid.env.json'),
+                configSource: envLoad.source || null,
             },
         };
     });
@@ -4793,8 +4862,17 @@ function setupIpcHandlers() {
             if (!currentUser) return { success: false, error: 'No user logged in' };
             const db = await getDatabase();
 
-            const amount = parseFloat(transaction.amount);
+            let amount = parseFloat(transaction.amount);
             if (isNaN(amount)) return { success: false, error: 'Invalid amount' };
+
+            let direction = transaction.direction || null;
+            if (!direction && transaction.transactionType) {
+                direction =
+                    transaction.transactionType === 'inflow' ? 'inflow' : 'outflow';
+            }
+            if (direction === 'inflow' || direction === 'outflow') {
+                amount = Math.abs(amount);
+            }
 
             // Check if this is a transfer
             if (transaction.isTransfer === 1 && transaction.transferAccountId) {
@@ -4860,6 +4938,7 @@ function setupIpcHandlers() {
                 date: transaction.date || new Date().toISOString().split('T')[0],
                 description: transaction.description || transaction.payee || 'Transaction',
                 amount,
+                direction,
                 categoryId: categoryId || null,
                 payee: transaction.payee || null,
                 memo: transaction.memo || null,
@@ -6026,6 +6105,7 @@ function setupIpcHandlers() {
                     auditSource: opts?.auditSource || 'bulk_assign',
                     auditMetadata: opts?.auditMetadata || null,
                     skipPoolAdjustment: opts?.skipPoolAdjustment === true,
+                    skipPostMutationInvariant: opts?.skipPostMutationInvariant === true,
                 }
             );
             notifyBudgetStateChanged('budget:bulkAssigned', {
@@ -6126,6 +6206,43 @@ function setupIpcHandlers() {
             return { success: true, data: result };
         } catch (error) {
             console.error('budget:repairAssignments error:', error);
+            return { success: false, error: error.message };
+        }
+        });
+    });
+
+    ipcMain.handle('budget:repairIntegrity', async (event, userId, monthKey, opts = {}) => {
+        return enqueueWrite('budget:repairIntegrity', async () => {
+        try {
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const result = await monthlyBudgetService.repairBudgetIntegrity(
+                dbConnection,
+                targetUserId,
+                {
+                    monthKey: monthKey || monthlyBudgetService.toLocalMonthKey(new Date()),
+                    forceReconcile: opts?.forceReconcile === true,
+                }
+            );
+            notifyBudgetStateChanged('budget:integrityRepaired', {
+                userId: targetUserId,
+                monthKey: result.monthKey,
+                discrepancyCount: result.discrepancies?.length || 0,
+                reconciled: result.reconciled,
+            });
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: targetUserId,
+                reason: 'budget:repairIntegrity',
+            });
+            return { success: true, data: result };
+        } catch (error) {
+            console.error('budget:repairIntegrity error:', error);
             return { success: false, error: error.message };
         }
         });

@@ -25,7 +25,10 @@ const CHECKS = [
   },
   {
     file: 'views/PropertyMapView.jsx',
-    forbidden: [/alert\s*\(\s*[`'"]\s*✅ Group created successfully/i],
+    forbidden: [
+      /alert\s*\(\s*[`'"]\s*✅ Group created successfully/i,
+      /alert\s*\(\s*[`'"]\s*✅ Category created successfully/i,
+    ],
     required: [/showIntentFlowDialog/],
   },
 ];

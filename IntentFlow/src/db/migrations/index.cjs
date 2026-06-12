@@ -214,6 +214,8 @@ async function runMigrations(existingDb) {
             '033_accounts_hidden_carryover.cjs',
             '034_user_budget_pool.cjs',
             '035_repair_category_group_ids.cjs',
+            '036_credit_card_ledger_direction.cjs',
+            '037_exclusive_ledger_columns.cjs',
         ];
 
         for (const migration of migrations) {

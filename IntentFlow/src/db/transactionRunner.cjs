@@ -74,17 +74,21 @@ async function runTransaction(db, fn) {
   if (await isDbInTransaction(db)) {
     return withSavepoint(db, fn);
   }
+
+  let beganOuter = false;
   try {
     await db.exec('BEGIN');
+    beganOuter = true;
   } catch (e) {
     if (isNestedTransactionError(e)) {
       return withSavepoint(db, fn);
     }
     throw e;
   }
+
   try {
     const result = await fn();
-    if (await isDbInTransaction(db)) {
+    if (beganOuter) {
       try {
         await db.exec('COMMIT');
       } catch (commitErr) {
@@ -92,10 +96,11 @@ async function runTransaction(db, fn) {
           throw commitErr;
         }
       }
+      beganOuter = false;
     }
     return result;
   } catch (e) {
-    if (await isDbInTransaction(db)) {
+    if (beganOuter) {
       try {
         await db.exec('ROLLBACK');
       } catch (rollbackErr) {

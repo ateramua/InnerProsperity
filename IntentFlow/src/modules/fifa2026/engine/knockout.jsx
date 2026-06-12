@@ -17,12 +17,24 @@ function buildGroupParticipants(groups, fixtures) {
   return { winners, runners, standings };
 }
 
-/** R32: Winner A vs Runner-up B, Winner C vs Runner-up D, … then mirrored pairs. */
+/** R32 pairings — official FIFA World Cup 2026 bracket (UTC schedule). */
 const R32_PAIRING = [
-  ['1A', '2B'], ['1C', '2D'], ['1E', '2F'], ['1G', '2H'],
-  ['1I', '2J'], ['1K', '2L'], ['1B', '2A'], ['1D', '2C'],
-  ['1F', '2E'], ['1H', '2G'], ['1J', '2I'], ['1L', '2K'],
-  ['1A', '2C'], ['1E', '2G'], ['1I', '2K'], ['1B', '2D'],
+  ['2A', '2B'],
+  ['1E', '3ABCDF'],
+  ['1F', '2C'],
+  ['1C', '2F'],
+  ['1I', '3CDFGH'],
+  ['2E', '2I'],
+  ['1A', '3CEFHI'],
+  ['1L', '3EHIJK'],
+  ['1D', '3BEFIJ'],
+  ['1G', '3AEHIJ'],
+  ['2K', '2L'],
+  ['1H', '2J'],
+  ['1B', '3EFGIJ'],
+  ['1J', '2H'],
+  ['1K', '3DEIJL'],
+  ['2D', '2G'],
 ];
 
 function resolveSeedToken(token, participants) {

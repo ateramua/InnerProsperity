@@ -263,6 +263,9 @@ try {
     repairBudgetAssignments: (userId, monthKey, opts) =>
       ipcRenderer.invoke('budget:repairAssignments', userId, monthKey, opts),
 
+    repairBudgetIntegrity: (userId, monthKey, opts) =>
+      ipcRenderer.invoke('budget:repairIntegrity', userId, monthKey, opts),
+
     consolidateBudgetAssignments: (userId, monthKey, opts) =>
       ipcRenderer.invoke('budget:consolidateAssignments', userId, monthKey, opts),
 

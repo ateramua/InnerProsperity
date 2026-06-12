@@ -18,6 +18,39 @@ export function isSystemTransaction(tx) {
   return tx?.is_system === 1 || tx?.is_system === true;
 }
 
+export function resolveTransactionDisplayColumns(tx) {
+  if (!tx || isDeleted(tx)) {
+    return { inflow: 0, outflow: 0 };
+  }
+  if (isStartingBalanceTransaction(tx)) {
+    return { inflow: Math.abs(Number(tx.amount) || 0), outflow: 0 };
+  }
+  if (tx.direction === 'inflow') {
+    return { inflow: Math.abs(Number(tx.amount) || 0), outflow: 0 };
+  }
+  if (tx.direction === 'outflow') {
+    return { inflow: 0, outflow: Math.abs(Number(tx.amount) || 0) };
+  }
+  const amount = Number(tx.amount);
+  if (!Number.isFinite(amount) || amount === 0) {
+    return { inflow: 0, outflow: 0 };
+  }
+  if (amount < 0) {
+    return { inflow: 0, outflow: Math.abs(amount) };
+  }
+  return { inflow: amount, outflow: 0 };
+}
+
+export function isStartingBalanceTransaction(tx) {
+  if (!tx || isDeleted(tx)) return false;
+  const payee = String(tx.payee || '').trim().toLowerCase();
+  const description = String(tx.description || '').trim().toLowerCase();
+  return (
+    isSystemTransaction(tx) &&
+    (payee === 'starting balance' || description === 'starting balance')
+  );
+}
+
 export function isCreditCardAccountType(type) {
   return CREDIT_TYPES.has(String(type || '').toLowerCase());
 }
@@ -47,19 +80,28 @@ export function calculateTransactionImpact(tx, accountType) {
 
   const isCredit = isCreditCardAccountType(accountType);
   if (isCredit) {
-    return direction === 'outflow' ? amount : -amount;
+    if (direction === 'outflow') return -amount;
+    if (isStartingBalanceTransaction(tx)) return -amount;
+    return amount;
   }
   return direction === 'inflow' ? amount : -amount;
 }
 
 export function hasSystemStartingTransaction(transactions) {
   return (transactions || []).some(
-    (tx) => !isDeleted(tx) && isSystemTransaction(tx)
+    (tx) => !isDeleted(tx) && isStartingBalanceTransaction(tx)
   );
 }
 
+function getInitialBalanceBase(account, transactions) {
+  const mag = Math.abs(Number(account?.initial_balance) || 0);
+  if (mag === 0) return 0;
+  if (hasSystemStartingTransaction(transactions)) return 0;
+  if (isCreditCardAccountType(account?.type)) return -mag;
+  return mag;
+}
+
 export function computeAccountBalances(account, transactions) {
-  const initialBalance = Number(account?.initial_balance) || 0;
   const active = (transactions || []).filter((tx) => !isDeleted(tx));
   const accountType = account?.type;
 
@@ -74,11 +116,10 @@ export function computeAccountBalances(account, transactions) {
     else unclearedSum += impact;
   }
 
-  const includeInitial = !hasSystemStartingTransaction(active);
-  const base = includeInitial ? initialBalance : 0;
+  const base = getInitialBalanceBase(account, active);
 
   return {
-    initial_balance: initialBalance,
+    initial_balance: Number(account?.initial_balance) || 0,
     working_balance: base + workingSum,
     cleared_balance: base + clearedSum,
     uncleared_balance: unclearedSum,
@@ -88,7 +129,6 @@ export function computeAccountBalances(account, transactions) {
 }
 
 export function computeTransactionsWithRunningBalance(account, transactions) {
-  const initialBalance = Number(account?.initial_balance) || 0;
   const active = (transactions || [])
     .filter((tx) => !isDeleted(tx))
     .slice()
@@ -101,8 +141,7 @@ export function computeTransactionsWithRunningBalance(account, transactions) {
       return ca.localeCompare(cb);
     });
 
-  const includeInitial = !hasSystemStartingTransaction(active);
-  let running = includeInitial ? initialBalance : 0;
+  let running = getInitialBalanceBase(account, active);
 
   const withBalance = active.map((tx) => {
     running += calculateTransactionImpact(tx, account?.type);
@@ -110,4 +149,17 @@ export function computeTransactionsWithRunningBalance(account, transactions) {
   });
 
   return withBalance.reverse();
+}
+
+export function buildStartingBalanceTransactionFields(accountType, initialBalanceAmount) {
+  const mag = Math.abs(Number(initialBalanceAmount) || 0);
+  if (mag === 0) {
+    return { amount: 0, direction: 'inflow', signedAmount: 0 };
+  }
+  const signedAmount = isCreditCardAccountType(accountType) ? -mag : mag;
+  return { amount: mag, direction: 'inflow', signedAmount };
+}
+
+export function signedStartingBalanceAmount(accountType, initialBalanceAmount) {
+  return buildStartingBalanceTransactionFields(accountType, initialBalanceAmount).signedAmount;
 }

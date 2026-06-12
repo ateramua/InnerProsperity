@@ -23,5 +23,12 @@ echo "📲 Installing to /Applications/IntentFlow.app (from: $APP)"
 rm -rf "/Applications/IntentFlow.app"
 ditto "$APP" "/Applications/IntentFlow.app"
 
+echo "🔑 Syncing Plaid credentials to Application Support (packaged app reads plaid.env.json)…"
+if node scripts/sync-plaid-env-to-userdata.cjs; then
+  echo "✅ Plaid env synced for production app"
+else
+  echo "⚠️  Plaid env not synced — copy IntentFlow/.env keys to ~/Library/Application Support/IntentFlow/plaid.env.json"
+fi
+
 echo "🚀 Opening IntentFlow…"
 open "/Applications/IntentFlow.app"

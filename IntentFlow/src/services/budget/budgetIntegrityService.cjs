@@ -57,6 +57,42 @@ async function computeCategoryAvailableTotal(db, userId, monthKey) {
   );
 }
 
+async function computeMultiMonthCategoryAvailableTotal(db, userId, centerMonthKey) {
+  const mbs = monthlyBudgetService();
+  const center = mbs.toLocalMonthKey(centerMonthKey);
+  const monthKeys = [
+    mbs.addCalendarMonths(center, -1),
+    center,
+    mbs.addCalendarMonths(center, 1),
+  ];
+  let total = 0;
+  for (const mk of monthKeys) {
+    total += await computeCategoryAvailableTotal(db, userId, mk);
+  }
+  return roundMoney(total);
+}
+
+/**
+ * Pool identity when RTA is global but category envelopes are month-scoped (cross-month assigns).
+ */
+async function evaluateMultiMonthBudgetIdentity(db, userId, centerMonthKey) {
+  const onBudgetCash = await computeOnBudgetCash(db, userId);
+  const readyToAssign = await readyToAssignPoolService.getPoolBalance(db, userId);
+  const categoryTotal = await computeMultiMonthCategoryAvailableTotal(db, userId, centerMonthKey);
+  const budgetInvariantDelta = roundMoney(
+    onBudgetCash - (readyToAssign + categoryTotal)
+  );
+  return {
+    onBudgetCash,
+    readyToAssign,
+    categoryTotal,
+    totalCash: onBudgetCash,
+    invariantValid: Math.abs(budgetInvariantDelta) < 0.02,
+    budgetInvariantDelta,
+    monthKey: monthlyBudgetService().toLocalMonthKey(centerMonthKey),
+  };
+}
+
 /**
  * @returns {Promise<{
  *   onBudgetCash: number,
@@ -130,34 +166,87 @@ async function assertBudgetIdentity(db, userId, opts = {}) {
  * Restrict active on-budget accounts to a scenario scope (test isolation).
  * @param {string[]} keepAccountNames
  */
+function rankScopedAccount(account, nameInKeepSet) {
+  let score = 0;
+  if (nameInKeepSet) score += 20;
+  if (account.paired_category_id) score += 10;
+  if (String(account.account_status || 'active').toLowerCase() === 'active') score += 5;
+  if (account.is_active === 1 || account.is_active === true) score += 1;
+  return score;
+}
+
 async function scopeActiveAccountsExcept(db, userId, keepAccountNames = []) {
-  const keep = new Set((keepAccountNames || []).map((n) => String(n).trim()));
-  const accounts = await db.all(
-    `SELECT id, name FROM accounts WHERE user_id = ?`,
-    [userId]
-  );
+  const keep = new Set((keepAccountNames || []).map((n) => String(n).trim()).filter(Boolean));
+  const accounts = await db.all(`SELECT * FROM accounts WHERE user_id = ?`, [userId]);
+
+  const byName = new Map();
+  for (const acc of accounts) {
+    const name = String(acc.name || '').trim();
+    if (!name) continue;
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push(acc);
+  }
+
   let deactivated = 0;
   let activated = 0;
-  for (const acc of accounts) {
-    const shouldKeep = keep.has(String(acc.name || '').trim());
-    const result = await db.run(
-      `UPDATE accounts
-       SET is_active = ?, updated_at = datetime('now')
-       WHERE id = ? AND user_id = ?`,
-      [shouldKeep ? 1 : 0, acc.id, userId]
+
+  for (const [name, rows] of byName.entries()) {
+    const shouldKeepName = keep.has(name);
+    if (!shouldKeepName) {
+      for (const acc of rows) {
+        if (acc.is_active === 1 || acc.is_active === true) {
+          await db.run(
+            `UPDATE accounts
+             SET is_active = 0,
+                 paired_category_id = NULL,
+                 updated_at = datetime('now')
+             WHERE id = ? AND user_id = ?`,
+            [acc.id, userId]
+          );
+          deactivated += 1;
+        }
+      }
+      continue;
+    }
+
+    const sorted = [...rows].sort(
+      (a, b) =>
+        rankScopedAccount(b, true) - rankScopedAccount(a, true) ||
+        String(a.id).localeCompare(String(b.id))
     );
-    if ((result?.changes ?? 0) > 0) {
-      if (shouldKeep) activated += 1;
+    const winner = sorted[0];
+
+    for (const acc of rows) {
+      const shouldBeActive = acc.id === winner.id;
+      const nextActive = shouldBeActive ? 1 : 0;
+      const currentlyActive = acc.is_active === 1 || acc.is_active === true;
+      if (currentlyActive === shouldBeActive && (!shouldBeActive || acc.paired_category_id === winner.paired_category_id)) {
+        continue;
+      }
+      await db.run(
+        `UPDATE accounts
+         SET is_active = ?,
+             account_status = CASE WHEN ? = 1 THEN 'active' ELSE account_status END,
+             merged_into_account_id = CASE WHEN ? = 1 THEN NULL ELSE merged_into_account_id END,
+             paired_category_id = CASE WHEN ? = 1 THEN paired_category_id ELSE NULL END,
+             updated_at = datetime('now')
+         WHERE id = ? AND user_id = ?`,
+        [nextActive, nextActive, nextActive, nextActive, acc.id, userId]
+      );
+      if (shouldBeActive) activated += 1;
       else deactivated += 1;
     }
   }
+
   return { deactivated, activated, kept: [...keep] };
 }
 
 module.exports = {
   computeOnBudgetCash,
   computeCategoryAvailableTotal,
+  computeMultiMonthCategoryAvailableTotal,
   evaluateBudgetIdentity,
+  evaluateMultiMonthBudgetIdentity,
   reconcileBudgetIdentity,
   assertBudgetIdentity,
   scopeActiveAccountsExcept,

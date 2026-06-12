@@ -52,8 +52,31 @@ function resolveRuntimeProfile() {
     return runtimeProfile.resolveRuntimeProfile({ isPackaged: app.isPackaged });
 }
 
+function isParallelShardExecution() {
+    const shardId = process.env.INTENTFLOW_SHARD_ID ?? process.env.INTENTFLOW_UI_SHARD;
+    return shardId != null && String(shardId) !== '';
+}
+
+function assertParallelShardDatabaseIsolation(profile) {
+    if (!isParallelShardExecution()) {
+        return;
+    }
+    if (profile === runtimeProfile.PROFILES.DEVELOPMENT) {
+        throw new Error(
+            'Parallel execution cannot use development DB path. ' +
+                'Set INTENTFLOW_RUNTIME_PROFILE=test and INTENTFLOW_DB_PATH per shard.'
+        );
+    }
+    if (!process.env.INTENTFLOW_DB_PATH) {
+        throw new Error(
+            'Parallel shard execution requires INTENTFLOW_DB_PATH (per-shard isolated database).'
+        );
+    }
+}
+
 function getDatabasePath() {
     const profile = resolveRuntimeProfile();
+    assertParallelShardDatabaseIsolation(profile);
 
     if (profile === runtimeProfile.PROFILES.PRODUCTION) {
         if (process.env.INTENTFLOW_DB_PATH) {

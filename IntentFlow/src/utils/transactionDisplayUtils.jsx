@@ -4,6 +4,7 @@
 
 import { resolveTransactionCategoryName } from './categoryDisplayUtils.jsx';
 import { isReadyToAssignSentinel, READY_TO_ASSIGN_LABEL } from './readyToAssignCategory.jsx';
+import { resolveTransactionDisplayColumns } from './accountBalanceEngine.jsx';
 
 export function formatTransactionCurrency(amount) {
   return new Intl.NumberFormat('en-US', {
@@ -50,19 +51,13 @@ export function getTransactionCategoryLabel(tx, category, categoryById) {
 }
 
 export function getTransactionOutflow(tx) {
-  if (tx?.direction === 'outflow') {
-    return formatTransactionCurrency(tx.amount);
-  }
-  const amount = Number(tx?.amount);
-  return Number.isFinite(amount) && amount < 0 ? formatTransactionCurrency(amount) : '';
+  const { outflow } = resolveTransactionDisplayColumns(tx);
+  return outflow > 0 ? formatTransactionCurrency(outflow) : '';
 }
 
 export function getTransactionInflow(tx) {
-  if (tx?.direction === 'inflow') {
-    return formatTransactionCurrency(tx.amount);
-  }
-  const amount = Number(tx?.amount);
-  return Number.isFinite(amount) && amount > 0 ? formatTransactionCurrency(amount) : '';
+  const { inflow } = resolveTransactionDisplayColumns(tx);
+  return inflow > 0 ? formatTransactionCurrency(inflow) : '';
 }
 
 export function getTransactionPayee(tx) {
