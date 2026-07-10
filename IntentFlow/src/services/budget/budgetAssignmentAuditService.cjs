@@ -1,11 +1,22 @@
 /**
  * Persists assignment change audit rows (spec: IntentFlow Budgeting Engine §9).
+ * Authoritative write-model for assignment events; monthly_budgets is a projection.
  */
 
 const crypto = require('crypto');
 const { roundMoney, normalizeMonthKey } = require('../../shared/readyToAssignEngine.cjs');
+const { mapAuditSourceToOperationType, OPERATION_TYPE } = require('./assignmentLedgerTypes.cjs');
 
 const toLocalMonthKey = normalizeMonthKey;
+
+let provenanceColumnsReady = null;
+
+async function hasProvenanceColumns(db) {
+  if (provenanceColumnsReady != null) return provenanceColumnsReady;
+  const cols = await db.all('PRAGMA table_info(budget_assignment_audit)');
+  provenanceColumnsReady = cols.some((c) => c.name === 'operation_type');
+  return provenanceColumnsReady;
+}
 
 /**
  * @param {import('sqlite').Database} db
@@ -16,6 +27,11 @@ const toLocalMonthKey = normalizeMonthKey;
  *   previousAssigned: number,
  *   newAssigned: number,
  *   source?: string,
+ *   operationType?: string,
+ *   createdByUserId?: string,
+ *   createdByOperation?: string,
+ *   createdByMigration?: string,
+ *   createdBySystem?: boolean|number,
  *   metadata?: object,
  * }} entry
  */
@@ -32,26 +48,59 @@ async function recordBudgetAssignmentAudit(db, entry) {
   const month = toLocalMonthKey(entry.monthKey || new Date());
   const metadata =
     entry.metadata != null ? JSON.stringify(entry.metadata) : null;
+  const source = entry.source || 'assign';
+  const operationType =
+    entry.operationType || mapAuditSourceToOperationType(source);
 
   const id = crypto.randomUUID();
-  await db.run(
-    `INSERT INTO budget_assignment_audit (
-      id, user_id, category_id, month,
-      previous_assigned, new_assigned, amount_changed,
-      source, metadata, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-    [
-      id,
-      userId,
-      categoryId,
-      month,
-      previousAssigned,
-      newAssigned,
-      amountChanged,
-      entry.source || 'assign',
-      metadata,
-    ]
-  );
+  const withProvenance = await hasProvenanceColumns(db);
+
+  if (withProvenance) {
+    await db.run(
+      `INSERT INTO budget_assignment_audit (
+        id, user_id, category_id, month,
+        previous_assigned, new_assigned, amount_changed,
+        source, metadata, created_at,
+        operation_type, created_by_user_id, created_by_operation,
+        created_by_migration, created_by_system
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)`,
+      [
+        id,
+        userId,
+        categoryId,
+        month,
+        previousAssigned,
+        newAssigned,
+        amountChanged,
+        source,
+        metadata,
+        operationType,
+        entry.createdByUserId || null,
+        entry.createdByOperation || null,
+        entry.createdByMigration || null,
+        entry.createdBySystem ? 1 : 0,
+      ]
+    );
+  } else {
+    await db.run(
+      `INSERT INTO budget_assignment_audit (
+        id, user_id, category_id, month,
+        previous_assigned, new_assigned, amount_changed,
+        source, metadata, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [
+        id,
+        userId,
+        categoryId,
+        month,
+        previousAssigned,
+        newAssigned,
+        amountChanged,
+        source,
+        metadata,
+      ]
+    );
+  }
 
   return {
     id,
@@ -61,9 +110,13 @@ async function recordBudgetAssignmentAudit(db, entry) {
     previousAssigned,
     newAssigned,
     amountChanged,
-    source: entry.source || 'assign',
+    source,
+    operationType,
   };
 }
+
+/** Alias for event-sourced assignment ledger writes. */
+const recordAssignmentEvent = recordBudgetAssignmentAudit;
 
 /**
  * @param {import('sqlite').Database} db
@@ -118,5 +171,6 @@ function safeParseJson(raw) {
 
 module.exports = {
   recordBudgetAssignmentAudit,
+  recordAssignmentEvent,
   getBudgetAssignmentAuditLog,
 };

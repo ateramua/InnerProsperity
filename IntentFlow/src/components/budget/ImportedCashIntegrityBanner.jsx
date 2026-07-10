@@ -6,6 +6,29 @@ function formatMoney(value) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
+const ISSUE_COPY = {
+  imported_cash_onboarding: {
+    title: 'Imported cash onboarding',
+    description: 'Accounts contain cash that has not been added to the budget.',
+  },
+  envelope_integrity: {
+    title: 'Envelope integrity',
+    description: 'One or more category balances appear corrupted (missing month carryover).',
+  },
+  credit_card_reserve: {
+    title: 'Credit card reserve',
+    description: 'Credit card payment reserves require recalculation.',
+  },
+  over_assigned: {
+    title: 'Over-assigned budget',
+    description: 'Category assignments exceed the cash available in your budget envelope.',
+  },
+  budget_identity_drift: {
+    title: 'Budget identity drift',
+    description: 'Budget balances are out of sync.',
+  },
+};
+
 const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigate }) => {
   const [status, setStatus] = useState(null);
   const [analysis, setAnalysis] = useState(null);
@@ -41,18 +64,25 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
     };
   }, [loadStatus]);
 
-  const proposals = analysis?.proposals || [];
+  const proposals = analysis?.proposals || status?.diagnostics?.onboardingGap
+    ? analysis?.proposals || []
+    : [];
   const proposedTotal = useMemo(() => {
-    if (!proposals.length) return status?.unallocatedImportedCash ?? 0;
+    if (!proposals.length) return status?.diagnostics?.onboardingGap ?? status?.unallocatedImportedCash ?? 0;
     const selected = proposals.filter((p) => selectedAccountIds.includes(p.accountId));
     return selected.reduce((sum, p) => sum + (Number(p.proposedOpeningBalance) || 0), 0);
   }, [proposals, selectedAccountIds, status]);
 
+  const issues = status?.issues || [];
+  const primaryIssue = status?.primaryIssue;
+  const primaryCopy = primaryIssue ? ISSUE_COPY[primaryIssue.type] : null;
+
   if (loading && !status) return null;
   if (!status?.needsReconciliation) return null;
 
-  const isOrphan = status.identityIssueType === 'orphaned_imported_cash' || status.needsOrphanRepair;
-  const isOverAssigned = status.identityIssueType === 'over_assigned' || status.needsOverAssignmentRepair;
+  const isOrphan = status.needsOrphanRepair || primaryIssue?.type === 'imported_cash_onboarding';
+  const isOverAssigned = status.needsOverAssignmentRepair || primaryIssue?.type === 'over_assigned';
+  const isEnvelope = status.needsEnvelopeRepair || primaryIssue?.type === 'envelope_integrity';
   const severity = status.healthStatus || 'warning';
   const isCritical = severity === 'critical' || severity === 'error';
 
@@ -92,24 +122,26 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
 
   const handleRepairOverAssignment = async () => {
     const confirmed = await showIntentFlowConfirmDialog({
-      title: 'Repair over-assignment?',
+      title: 'Backfill assignment ledger?',
       message:
-        'This adjusts Ready to Assign so it matches on-budget cash minus category balances. Use this when you have assigned more than your available cash envelope allows.',
+        'This creates missing assignment audit records for your existing category budgets ' +
+        '(without changing June assignments or category amounts), then recomputes Ready to Assign from the ledger.',
     });
     if (!confirmed) return;
 
     setBusy(true);
     setMessage(null);
     try {
-      const res = await window.electronAPI.repairBudgetIntegrity(userId, monthKey, {
-        forceReconcile: true,
-      });
+      const res = await window.electronAPI.backfillAssignmentLedger?.(userId);
       if (res?.success) {
-        setMessage('Budget identity repaired.');
+        setMessage(
+          `Assignment ledger reconstructed (${res.data?.applied?.length || 0} events). ` +
+            'Ready to Assign updated from ledger.'
+        );
         await loadStatus();
         onReconciled?.(res.data);
       } else {
-        setMessage(res?.error || 'Repair failed');
+        setMessage(res?.error || 'Ledger backfill failed');
       }
     } catch (err) {
       setMessage(err.message);
@@ -118,32 +150,26 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
     }
   };
 
-  const handleCombinedRepair = async () => {
+  const handleEnvelopeRepair = async () => {
     const confirmed = await showIntentFlowConfirmDialog({
-      title: 'Full budget repair?',
+      title: 'Repair category envelopes?',
       message:
-        'This will add opening balances for selected linked accounts, then reconcile Ready to Assign to restore budget identity. Recommended for accounts linked before onboarding was enabled.',
+        'This rebuilds missing month carryover bridges and refreshes category balances without changing assignments.',
     });
     if (!confirmed) return;
 
     setBusy(true);
     setMessage(null);
     try {
-      if (isOrphan && (selectedAccountIds.length || proposals.length)) {
-        await window.electronAPI.reconcileImportedCash(userId, {
-          monthKey,
-          accountIds: selectedAccountIds.length ? selectedAccountIds : undefined,
-        });
-      }
-      const repairRes = await window.electronAPI.repairBudgetIntegrity(userId, monthKey, {
-        forceReconcile: true,
+      const res = await window.electronAPI.repairBudgetIntegrity(userId, monthKey, {
+        forceReconcile: false,
       });
-      if (repairRes?.success) {
-        setMessage('Full budget repair complete.');
+      if (res?.success) {
+        setMessage('Category envelopes repaired.');
         await loadStatus();
-        onReconciled?.(repairRes.data);
+        onReconciled?.(res.data);
       } else {
-        setMessage(repairRes?.error || 'Repair failed');
+        setMessage(res?.error || 'Envelope repair failed');
       }
     } catch (err) {
       setMessage(err.message);
@@ -165,6 +191,14 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
     }
   };
 
+  const bannerTitle =
+    primaryCopy?.title ||
+    (issues.length > 1 ? 'Budget integrity issues detected' : 'Budget integrity issue');
+
+  const bannerDescription =
+    primaryCopy?.description ||
+    'Review the diagnostics below and choose the appropriate repair action.';
+
   return (
     <div
       data-testid="imported-cash-integrity-banner"
@@ -177,42 +211,58 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <p className="font-semibold">
-              {isOrphan && isOverAssigned
-                ? 'Budget identity mismatch'
-                : isOrphan
-                  ? 'Unallocated imported cash'
-                  : 'Over-assigned budget'}
-            </p>
-            <p className="mt-1 text-xs opacity-90 leading-relaxed">
-              {isOrphan
-                ? 'Linked account cash must be converted into Ready to Assign through opening balance inflows.'
-                : 'Category assignments exceed the cash available in your budget envelope.'}
-            </p>
+            <p className="font-semibold">{bannerTitle}</p>
+            <p className="mt-1 text-xs opacity-90 leading-relaxed">{bannerDescription}</p>
+
+            {issues.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {issues.map((issue) => {
+                  const copy = ISSUE_COPY[issue.type] || {
+                    title: issue.label,
+                    description: issue.message,
+                  };
+                  return (
+                    <li
+                      key={issue.type}
+                      className="rounded-lg border border-white/15 bg-black/10 px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">{copy.title}</p>
+                          <p className="mt-0.5 opacity-85">{copy.description}</p>
+                        </div>
+                        <span className="font-medium whitespace-nowrap">
+                          {formatMoney(issue.amount)}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
             <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
               <div>
                 <dt className="opacity-70">On-budget cash</dt>
                 <dd className="font-medium">{formatMoney(status.onBudgetCash)}</dd>
               </div>
               <div>
-                <dt className="opacity-70">Assigned</dt>
-                <dd className="font-medium">{formatMoney(status.totalAssigned ?? 0)}</dd>
+                <dt className="opacity-70">Reserved budget</dt>
+                <dd className="font-medium">{formatMoney(status.reservedBudget ?? 0)}</dd>
               </div>
               <div>
                 <dt className="opacity-70">Ready to Assign</dt>
                 <dd className="font-medium">{formatMoney(status.readyToAssign)}</dd>
               </div>
               <div>
-                <dt className="opacity-70">
-                  {isOrphan ? 'Unallocated imported' : 'Over-assigned gap'}
-                </dt>
-                <dd className="font-medium">
-                  {formatMoney(
-                    isOrphan ? status.unallocatedImportedCash : status.overAssignedGap
-                  )}
-                </dd>
+                <dt className="opacity-70">Identity delta</dt>
+                <dd className="font-medium">{formatMoney(status.budgetInvariantDelta)}</dd>
               </div>
             </dl>
+            <p className="mt-2 text-[11px] opacity-70">
+              Global budget identity (month-independent anchor:{' '}
+              {status.monthKey || status.anchorMonth || 'current month'})
+            </p>
           </div>
         </div>
 
@@ -242,15 +292,26 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
         )}
 
         <div className="flex flex-wrap gap-2">
-          {isOrphan && (
+          {isOrphan && proposals.length > 0 && (
             <button
               type="button"
               data-testid="imported-cash-reconcile-btn"
               className="rounded-lg bg-[#0047AB] px-4 py-2 text-xs font-semibold text-white hover:bg-[#003d94] disabled:opacity-60"
               onClick={handleReconcileSelected}
-              disabled={busy || (proposals.length > 0 && !selectedAccountIds.length)}
+              disabled={busy || !selectedAccountIds.length}
             >
               {busy ? 'Working…' : 'Add imported cash to budget'}
+            </button>
+          )}
+          {isEnvelope && (
+            <button
+              type="button"
+              data-testid="imported-cash-repair-envelope-btn"
+              className="rounded-lg bg-[#0047AB] px-4 py-2 text-xs font-semibold text-white hover:bg-[#003d94] disabled:opacity-60"
+              onClick={handleEnvelopeRepair}
+              disabled={busy}
+            >
+              Repair category envelopes
             </button>
           )}
           {isOverAssigned && (
@@ -261,18 +322,7 @@ const ImportedCashIntegrityBanner = ({ userId, monthKey, onReconciled, onNavigat
               onClick={handleRepairOverAssignment}
               disabled={busy}
             >
-              Repair over-assignment
-            </button>
-          )}
-          {isOrphan && isOverAssigned && (
-            <button
-              type="button"
-              data-testid="imported-cash-combined-repair-btn"
-              className="rounded-lg border border-white/30 px-4 py-2 text-xs font-semibold disabled:opacity-60"
-              onClick={handleCombinedRepair}
-              disabled={busy}
-            >
-              Full repair
+              Backfill assignment ledger
             </button>
           )}
           <button

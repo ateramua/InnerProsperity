@@ -113,6 +113,19 @@ function getAppPath() {
     return path.resolve(__dirname, '../..');
 }
 
+function resolveAppIconPath() {
+    const candidates = app.isPackaged
+        ? [
+            path.join(process.resourcesPath, 'assets', 'icon.png'),
+            path.join(getAppPath(), 'assets', 'icon.png'),
+        ]
+        : [path.join(getAppPath(), 'assets', 'icon.png')];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return undefined;
+}
+
 function getOutRootDir() {
     if (app.isPackaged) {
         return path.join(process.resourcesPath, 'out');
@@ -382,6 +395,9 @@ function notifyBudgetStateChanged(eventName, data) {
     }
 }
 const fileEncryption = requireModule('../services/fileEncryption.cjs') || require(path.join(__dirname, '../services/fileEncryption.cjs'));
+const RestoreValidator = requireModule('../services/backup/restoreValidator.cjs')
+    || require(path.join(__dirname, '../services/backup/restoreValidator.cjs'));
+const backupRestoreValidator = new RestoreValidator();
 const { registerBackupIpcHandlers } =
     requireModule('./backup/backupIpc.cjs') || require(path.join(__dirname, './backup/backupIpc.cjs'));
 
@@ -885,11 +901,63 @@ function getDatabasePath() {
     return dbPath;
 }
 
+const MIN_SQLITE_SNAPSHOT_BYTES = 100;
+const SQLITE_FILE_HEADER = 'SQLite format 3';
+
+function assertValidDatabaseSnapshot(snapshotPath, sourcePath) {
+    if (!fs.existsSync(snapshotPath)) {
+        throw new Error('Database snapshot was not created');
+    }
+    const snapshotSize = fs.statSync(snapshotPath).size;
+    if (snapshotSize <= 0) {
+        throw new Error(
+            'Database snapshot is empty. Close other apps using the database and try exporting again.'
+        );
+    }
+    if (snapshotSize < MIN_SQLITE_SNAPSHOT_BYTES) {
+        throw new Error('Database snapshot is too small to contain valid SQLite data');
+    }
+    const header = fs.readFileSync(snapshotPath, { start: 0, end: 15 }).toString('utf8');
+    if (!header.startsWith(SQLITE_FILE_HEADER)) {
+        throw new Error('Database snapshot does not contain a valid SQLite header');
+    }
+    if (sourcePath && fs.existsSync(sourcePath)) {
+        const sourceSize = fs.statSync(sourcePath).size;
+        if (sourceSize > MIN_SQLITE_SNAPSHOT_BYTES && snapshotSize < Math.min(sourceSize, 4096)) {
+            console.warn(
+                `⚠️ Snapshot size (${snapshotSize} bytes) is much smaller than source (${sourceSize} bytes)`
+            );
+        }
+    }
+    return snapshotSize;
+}
+
+async function checkpointDatabaseBeforeSnapshot() {
+    if (!db || typeof db.exec !== 'function') {
+        return;
+    }
+    try {
+        await Promise.race([
+            db.exec('PRAGMA wal_checkpoint(FULL)'),
+            new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('WAL checkpoint timed out')), 8000);
+            }),
+        ]);
+    } catch (checkpointError) {
+        console.warn('⚠️ WAL checkpoint skipped before snapshot:', checkpointError.message);
+    }
+}
+
 async function createDatabaseSnapshot() {
     const dbPath = getDatabasePath();
     if (!fs.existsSync(dbPath)) {
         throw new Error('Database file does not exist');
     }
+    const sourceSize = fs.statSync(dbPath).size;
+    if (sourceSize <= 0) {
+        throw new Error('Database file is empty and cannot be backed up');
+    }
+
     const snapshotPath = path.join(app.getPath('temp'), `intentflow-db-snapshot-${Date.now()}.db`);
     if (fs.existsSync(snapshotPath)) {
         fs.unlinkSync(snapshotPath);
@@ -912,6 +980,8 @@ async function createDatabaseSnapshot() {
         }
     };
 
+    await checkpointDatabaseBeforeSnapshot();
+
     if (typeof sqlite3.Database.prototype.backup === 'function') {
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
@@ -923,35 +993,39 @@ async function createDatabaseSnapshot() {
                     reject(openErr);
                     return;
                 }
-                source.backup(snapshotPath, (backupErr) => {
-                    clearTimeout(timer);
-                    source.close(() => {
-                        if (backupErr) {
-                            reject(backupErr);
-                        } else {
-                            resolve();
-                        }
+                const backup = source.backup(snapshotPath);
+                backup.step(-1, (stepErr) => {
+                    if (stepErr) {
+                        clearTimeout(timer);
+                        source.close(() => reject(stepErr));
+                        return;
+                    }
+                    if (backup.failed) {
+                        clearTimeout(timer);
+                        source.close(() => reject(new Error('Database snapshot backup failed')));
+                        return;
+                    }
+                    backup.finish((finishErr) => {
+                        clearTimeout(timer);
+                        source.close(() => {
+                            if (finishErr) {
+                                reject(finishErr);
+                            } else {
+                                resolve();
+                            }
+                        });
                     });
                 });
             });
         });
+        const snapshotSize = assertValidDatabaseSnapshot(snapshotPath, dbPath);
+        console.log(`📸 Database snapshot created (${snapshotSize} bytes): ${snapshotPath}`);
         return snapshotPath;
     }
 
-    if (db && typeof db.exec === 'function') {
-        try {
-            await Promise.race([
-                db.exec('PRAGMA wal_checkpoint(PASSIVE)'),
-                new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error('WAL checkpoint timed out')), 8000);
-                }),
-            ]);
-        } catch (checkpointError) {
-            console.warn('⚠️ WAL checkpoint skipped before snapshot:', checkpointError.message);
-        }
-    }
-
     copySnapshotFiles();
+    const snapshotSize = assertValidDatabaseSnapshot(snapshotPath, dbPath);
+    console.log(`📸 Database snapshot copied (${snapshotSize} bytes): ${snapshotPath}`);
     return snapshotPath;
 }
 
@@ -989,6 +1063,26 @@ async function restoreEncryptedBackup({ password, backupFilePath, mode = 'in-pla
             }
             return result;
         }
+
+        const postRestore = backupRestoreValidator.validatePostRestore({ restoredDbPath: destinationPath });
+        if (!postRestore.ok) {
+            if (mode === 'in-place' && rollbackCreated && fs.existsSync(rollbackPath)) {
+                try {
+                    fs.copyFileSync(rollbackPath, dbPath);
+                } catch (restoreError) {
+                    console.error('❌ Failed rollback after invalid restore:', restoreError.message);
+                }
+            } else if (mode === 'side-by-side' && fs.existsSync(destinationPath)) {
+                try {
+                    fs.unlinkSync(destinationPath);
+                } catch (cleanupError) {
+                    console.warn('⚠️ Could not remove invalid side-by-side restore:', cleanupError.message);
+                }
+            }
+            return { success: false, error: postRestore.reason };
+        }
+
+        console.log(`✅ Backup restored (${postRestore.fileSizeBytes} bytes) to ${destinationPath}`);
 
         if (mode === 'in-place') {
             setTimeout(() => {
@@ -1150,6 +1244,7 @@ async function initDatabase() {
 // ==================== PLAID HELPER FUNCTIONS ====================
 function getPlaidSyncDeps() {
     const importedCashReconciliationService = require('../services/budget/importedCashReconciliationService.cjs');
+    const creditAccountOpeningBalanceService = require('../services/accounts/creditAccountOpeningBalanceService.cjs');
     return {
         getDatabase,
         decryptToken,
@@ -1163,6 +1258,21 @@ function getPlaidSyncDeps() {
                 userId,
                 candidates,
                 opts
+            );
+        },
+        processPlaidCreditCardOpeningBalance: async (db, userId, candidates) => {
+            return creditAccountOpeningBalanceService.processPlaidCreditCardOpeningBalance(
+                db,
+                userId,
+                candidates,
+                { updateBalances: updateAccountBalances }
+            );
+        },
+        reconcileCreditAccountAfterImport: async (db, userId, accountId) => {
+            return creditAccountOpeningBalanceService.reconcileAfterHistoricalImport(
+                db,
+                userId,
+                accountId
             );
         },
         refreshBudgetAfterTransactions: async (userId, dates) => {
@@ -1506,6 +1616,27 @@ app.whenReady().then(async () => {
                 logPlaidError('relay registration on startup', err);
             });
             runCreditCardPaymentCategorySync(currentUser.id, 'app_startup').catch(() => {});
+            (async () => {
+                try {
+                    const budgetConsistencyService = require(path.join(
+                        __dirname,
+                        '../services/budget/budgetConsistencyService.cjs'
+                    ));
+                    const scan = await budgetConsistencyService.runConsistencyScan(
+                        db,
+                        currentUser.id
+                    );
+                    if (scan.level === 'error') {
+                        console.error(`⚠️ ${scan.logLine}`);
+                    } else if (scan.level === 'warning') {
+                        console.warn(`⚠️ ${scan.logLine}`);
+                    } else {
+                        console.log(`✅ ${scan.logLine}`);
+                    }
+                } catch (err) {
+                    console.warn('Budget consistency startup scan failed:', err.message);
+                }
+            })();
         }
 
         backgroundSyncInterval = setInterval(() => runPlaidBackgroundSync('background'), 3600000);
@@ -1539,7 +1670,7 @@ function createWindow() {
             allowRunningInsecureContent: isDev,
             devTools: true,
         },
-        icon: path.join(__dirname, '../renderer/public/favicon.ico'),
+        icon: resolveAppIconPath(),
         backgroundColor: '#111827'
     });
 
@@ -3467,6 +3598,42 @@ function setupIpcHandlers() {
         });
     });
 
+    ipcMain.handle('accounts:updateCreditOpeningBalance', async (event, payload) => {
+        return enqueueWrite('accounts:updateCreditOpeningBalance', async () => {
+        try {
+            const ownerId = resolveBudgetOwnerId(null, payload?.userId);
+            if (ownerId === '__AUTH_MISMATCH__') return { success: false, error: 'User mismatch for this session' };
+            if (!ownerId) return { success: false, error: 'No user logged in' };
+            const { accountId, transactionId, amount, date } = payload || {};
+            if (!accountId || !transactionId) {
+                return { success: false, error: 'accountId and transactionId are required' };
+            }
+            const db = await getDatabase();
+            const creditAccountOpeningBalanceService = require('../services/accounts/creditAccountOpeningBalanceService.cjs');
+            const txService = new TransactionService(() => getDatabase());
+            const updated = await creditAccountOpeningBalanceService.updateCreditOpeningBalanceTransaction(
+                db,
+                {
+                    userId: ownerId,
+                    accountId,
+                    transactionId,
+                    newAmount: amount,
+                    newDate: date,
+                    updateBalances: async (acctId) => txService.updateAccountBalances(acctId),
+                }
+            );
+            notifyAccountsUpdated('manual');
+            notifyBudgetStateChanged('prosperity:updated', {
+                userId: ownerId,
+                reason: 'credit_opening_balance_updated',
+            });
+            return { success: true, data: updated };
+        } catch (error) {
+            return { success: false, error: error.message, code: error.code };
+        }
+        });
+    });
+
     ipcMain.handle('accounts:delete', async (event, id, userId, opts = {}) => {
         return enqueueWrite('accounts:delete', async () => {
         try {
@@ -3524,6 +3691,25 @@ function setupIpcHandlers() {
             const deleted = await accountService.deleteAccount(id, ownerId, opts);
             if (deleted) {
                 notifyAccountsUpdated('manual');
+                try {
+                    const earliest = await db.get(
+                        `SELECT MIN(date) AS d FROM transactions
+                         WHERE CAST(account_id AS TEXT) = CAST(? AS TEXT)
+                           AND IFNULL(is_deleted, 0) = 0`,
+                        [id]
+                    );
+                    await monthlyBudgetService.refreshBudgetMonthsForward(
+                        db,
+                        ownerId,
+                        earliest?.d || new Date()
+                    );
+                    notifyBudgetStateChanged('prosperity:updated', {
+                        userId: ownerId,
+                        reason: 'account:deleted',
+                    });
+                } catch (refreshErr) {
+                    console.warn('budget refresh after account delete:', refreshErr?.message || refreshErr);
+                }
                 return { success: true };
             }
             return { success: false, error: 'Account not found or already deleted' };
@@ -3654,7 +3840,9 @@ function setupIpcHandlers() {
             if (summaryFailed) {
                 const db = await getDatabase();
                 const directAccounts = await db.all(
-                    'SELECT * FROM accounts WHERE user_id = ? AND IFNULL(is_active, 1) = 1',
+                    `SELECT * FROM accounts
+                     WHERE user_id = ?
+                       AND IFNULL(account_status, 'active') != 'archived'`,
                     [effectiveUserId]
                 );
                 result = directAccounts.map(account => ({ id: account.id, name: account.name, type: account.type, balance: account.balance || 0, institution: account.institution || '', account_type_category: account.account_type_category || 'budget', cleared_balance: account.cleared_balance || account.balance || 0, working_balance: account.working_balance || account.balance || 0, currency: account.currency || 'USD', is_active: account.is_active !== 0, source: account.source || 'manual' }));
@@ -4777,6 +4965,39 @@ function setupIpcHandlers() {
         });
     });
 
+    ipcMain.handle('harness:importedCash', async (event, payload = {}) => {
+        if (app.isPackaged) {
+            return { success: false, error: 'Imported-cash harness unavailable in packaged builds' };
+        }
+        return enqueueWrite('harness:importedCash', async () => {
+            try {
+                const currentUser = userService.getCurrentUser();
+                if (!currentUser) return { success: false, error: 'No user logged in' };
+                const bddPlaidHarness = require(path.join(
+                    __dirname,
+                    '../services/harness/bddPlaidHarness.cjs'
+                ));
+                const db = await getDatabase();
+                const data = await bddPlaidHarness.handleHarnessAction(
+                    db,
+                    currentUser.id,
+                    payload.action,
+                    payload,
+                    { isPackaged: app.isPackaged }
+                );
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: currentUser.id,
+                    reason: `harness:importedCash:${payload.action || 'unknown'}`,
+                });
+                notifyAccountsUpdated(`harness:importedCash:${payload.action || 'unknown'}`);
+                return { success: true, data };
+            } catch (error) {
+                console.error('harness:importedCash error:', error);
+                return { success: false, error: error.message };
+            }
+        });
+    });
+
     ipcMain.handle('import-get-category-mappings', async (event, payload) => {
         try {
             const currentUser = userService.getCurrentUser();
@@ -5323,6 +5544,18 @@ function setupIpcHandlers() {
                     });
                 } catch (e) {
                     console.warn('post-transaction budget refresh (delete):', e?.message || e);
+                }
+            }
+            if (pre.category_id && monthlyBudgetService?.refreshCategoryEnvelopesForward) {
+                try {
+                    await monthlyBudgetService.refreshCategoryEnvelopesForward(
+                        database,
+                        currentUser.id,
+                        pre.date,
+                        [String(pre.category_id)]
+                    );
+                } catch (e) {
+                    console.warn('category envelope refresh (delete):', e?.message || e);
                 }
             }
             notifyBudgetStateChanged('prosperity:updated', { userId: currentUser.id, reason: 'transaction:deleted' });
@@ -6590,6 +6823,39 @@ function setupIpcHandlers() {
         });
     });
 
+    ipcMain.handle('budget:reverseImportedCashOpeningBalance', async (event, userId, transactionId) => {
+        return enqueueWrite('budget:reverseImportedCashOpeningBalance', async () => {
+            try {
+                const importedCashReconciliationService = require(path.join(
+                    __dirname,
+                    '../services/budget/importedCashReconciliationService.cjs'
+                ));
+                const dbConnection = await getDatabase();
+                let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+                if (targetUserId === '__AUTH_MISMATCH__') {
+                    return { success: false, error: 'User mismatch for this session' };
+                }
+                if (!targetUserId) {
+                    return { success: false, error: 'User not found' };
+                }
+                const result =
+                    await importedCashReconciliationService.reverseOpeningBalanceTransaction(
+                        dbConnection,
+                        targetUserId,
+                        transactionId
+                    );
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: targetUserId,
+                    reason: 'budget:imported_cash_opening_reversed',
+                });
+                return { success: true, data: result };
+            } catch (error) {
+                console.error('budget:reverseImportedCashOpeningBalance error:', error);
+                return { success: false, error: error.message, code: error.code };
+            }
+        });
+    });
+
     ipcMain.handle('budget:getIdentityDiagnostics', async (event, userId, monthKey) => {
         try {
             const importedCashReconciliationService = require(path.join(
@@ -6614,6 +6880,111 @@ function setupIpcHandlers() {
             console.error('budget:getIdentityDiagnostics error:', error);
             return { success: false, error: error.message };
         }
+    });
+
+    ipcMain.handle('budget:getConsistencyReport', async (event, userId, monthKey) => {
+        try {
+            const budgetConsistencyService = require(path.join(
+                __dirname,
+                '../services/budget/budgetConsistencyService.cjs'
+            ));
+            const dbConnection = await getDatabase();
+            let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+            if (targetUserId === '__AUTH_MISMATCH__') {
+                return { success: false, error: 'User mismatch for this session' };
+            }
+            if (!targetUserId) {
+                return { success: false, error: 'User not found' };
+            }
+            const data = await budgetConsistencyService.generateReconciliationReport(
+                dbConnection,
+                targetUserId,
+                { monthKey }
+            );
+            return { success: true, data };
+        } catch (error) {
+            console.error('budget:getConsistencyReport error:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('budget:applyConsistencyRepairs', async (event, userId, repairIds, options = {}) => {
+        return enqueueWrite('budget:applyConsistencyRepairs', async () => {
+            try {
+                const budgetConsistencyService = require(path.join(
+                    __dirname,
+                    '../services/budget/budgetConsistencyService.cjs'
+                ));
+                const dbConnection = await getDatabase();
+                let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+                if (targetUserId === '__AUTH_MISMATCH__') {
+                    return { success: false, error: 'User mismatch for this session' };
+                }
+                if (!targetUserId) {
+                    return { success: false, error: 'User not found' };
+                }
+                if (!options?.userApproved) {
+                    return {
+                        success: false,
+                        error: 'Assignment repairs require explicit user approval.',
+                        code: 'REPAIR_NOT_USER_APPROVED',
+                    };
+                }
+                const result = await budgetConsistencyService.applyApprovedRepairs(
+                    dbConnection,
+                    targetUserId,
+                    repairIds || [],
+                    {
+                        userApproved: true,
+                        allowInitializationBackfill: options.allowInitializationBackfill === true,
+                        monthKey: options.monthKey,
+                    }
+                );
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: targetUserId,
+                    reason: 'budget:consistency_repairs_applied',
+                });
+                return { success: true, data: result };
+            } catch (error) {
+                console.error('budget:applyConsistencyRepairs error:', error);
+                return { success: false, error: error.message, code: error.code };
+            }
+        });
+    });
+
+    ipcMain.handle('budget:backfillAssignmentLedger', async (event, userId) => {
+        return enqueueWrite('budget:backfillAssignmentLedger', async () => {
+            try {
+                const assignmentLedgerService = require(path.join(
+                    __dirname,
+                    '../services/budget/assignmentLedgerService.cjs'
+                ));
+                const dbConnection = await getDatabase();
+                let targetUserId = await resolveBudgetOwnerId(dbConnection, userId);
+                if (targetUserId === '__AUTH_MISMATCH__') {
+                    return { success: false, error: 'User mismatch for this session' };
+                }
+                if (!targetUserId) {
+                    return { success: false, error: 'User not found' };
+                }
+                const result = await assignmentLedgerService.reconstructMissingLedgerEvents(
+                    dbConnection,
+                    targetUserId,
+                    {
+                        source: assignmentLedgerService.LEGACY_BACKFILL_SOURCE,
+                        createdByOperation: 'budget:backfillAssignmentLedger',
+                    }
+                );
+                notifyBudgetStateChanged('prosperity:updated', {
+                    userId: targetUserId,
+                    reason: 'budget:assignment_ledger_backfill',
+                });
+                return { success: true, data: result };
+            } catch (error) {
+                console.error('budget:backfillAssignmentLedger error:', error);
+                return { success: false, error: error.message, code: error.code };
+            }
+        });
     });
 
     ipcMain.handle('budget:suppressIntegrityWarning', async (event, userId, options = {}) => {

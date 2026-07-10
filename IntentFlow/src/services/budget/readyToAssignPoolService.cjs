@@ -115,6 +115,10 @@ async function ensurePoolRow(db, userId) {
 
 async function getPoolBalance(db, userId) {
   if (!userId) return 0;
+  const rtaLedgerService = require('./rtaLedgerService.cjs');
+  if (await rtaLedgerService.isLedgerAuthorityEnabled(db, userId)) {
+    return rtaLedgerService.computeDerivedRta(db, userId);
+  }
   await ensurePoolRow(db, userId);
   const row = await db.get(
     'SELECT ready_to_assign_balance FROM user_budget_pool WHERE user_id = ?',
@@ -123,8 +127,15 @@ async function getPoolBalance(db, userId) {
   return roundMoney(Number(row?.ready_to_assign_balance) || 0);
 }
 
-async function setPoolBalance(db, userId, balance) {
+async function setPoolBalance(db, userId, balance, opts = {}) {
   if (!userId) return 0;
+  const rtaLedgerService = require('./rtaLedgerService.cjs');
+  if (await rtaLedgerService.isLedgerAuthorityEnabled(db, userId)) {
+    rtaLedgerService.assertAdministrativeSetAllowed({
+      allowAdministrative: opts.allowAdministrative,
+      source: opts.source,
+    });
+  }
   const next = roundMoney(balance);
   await ensurePoolRow(db, userId);
   await db.run(
@@ -150,6 +161,14 @@ async function applyAssignmentPoolDelta(db, userId, previousAssigned, newAssigne
   if (!userId || opts.skipPoolAdjustment) return await getPoolBalance(db, userId);
   const delta = roundMoney(Number(newAssigned) - Number(previousAssigned));
   if (Math.abs(delta) < 0.005) return await getPoolBalance(db, userId);
+
+  const rtaLedgerService = require('./rtaLedgerService.cjs');
+  if (await rtaLedgerService.isLedgerAuthorityEnabled(db, userId)) {
+    const sync = await rtaLedgerService.syncPoolFromLedger(db, userId, {
+      source: opts.source || 'assignment_write',
+    });
+    return sync.readyToAssign;
+  }
   return adjustPoolBalance(db, userId, -delta);
 }
 
@@ -237,7 +256,8 @@ async function syncPoolForTransaction(db, userId, tx, mode = 'apply') {
  */
 async function backfillPoolFromLegacy(db, userId, totalCash, totalAssigned) {
   const legacy = roundMoney(Number(totalCash) - Number(totalAssigned));
-  return setPoolBalance(db, userId, legacy);
+  const rtaLedgerService = require('./rtaLedgerService.cjs');
+  return setPoolBalance(db, userId, legacy, { allowAdministrative: true, source: 'legacy_backfill' });
 }
 
 async function ensurePoolBackfilled(db, userId, totalCash, totalAssigned) {
@@ -268,6 +288,7 @@ module.exports = {
   isReconciliationOrManualAdjustment,
   isTrackingOffBudgetAccount,
   isBudgetToTrackingTransfer,
+  ensurePoolRow,
   ensurePoolRow,
   getPoolBalance,
   setPoolBalance,

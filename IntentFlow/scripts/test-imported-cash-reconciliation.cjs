@@ -115,7 +115,7 @@ async function openDb() {
 async function main() {
   const db = await openDb();
   const userId = 'u1';
-  await readyToAssignPoolService.setPoolBalance(db, userId, 0);
+  await readyToAssignPoolService.setPoolBalance(db, userId, 0, { allowAdministrative: true });
 
   const broken = await budgetIntegrityService.evaluateBudgetIdentity(db, userId, {
     monthKey: '2026-06-01',
@@ -166,6 +166,69 @@ async function main() {
 
   const acct = await db.get('SELECT onboarding_complete FROM accounts WHERE id = ?', ['chk']);
   assert.strictEqual(acct.onboarding_complete, 1);
+
+  // Transaction-derived reconciliation: flag drift must not affect unallocatedImportedCash.
+  await db.run(
+    `UPDATE accounts
+     SET onboarding_complete = 0, imported_opening_balance_transaction_id = NULL
+     WHERE id = 'chk'`
+  );
+  const onboardingAfterFlagDrift = await importedCashReconciliationService.computeOnboardingGap(
+    db,
+    userId
+  );
+  assert.strictEqual(
+    onboardingAfterFlagDrift.proposedTotalOpening,
+    0,
+    'OPENING_BALANCE ledger is source of truth — flags may drift'
+  );
+
+  const openingTotal = await importedCashReconciliationService.getOpeningBalanceTotalForAccount(
+    db,
+    'chk',
+    userId
+  );
+  assert.strictEqual(openingTotal, 70000);
+  const gap = importedCashReconciliationService.computeAccountOnboardingGap(70000, openingTotal);
+  assert.strictEqual(gap, 0);
+
+  const reverse = await importedCashReconciliationService.reverseOpeningBalanceForAccount(
+    db,
+    userId,
+    'chk'
+  );
+  assert.strictEqual(reverse.reversed, 1);
+  assert.strictEqual(reverse.totalAmount, 70000);
+
+  const rtaAfterReverse = await readyToAssignPoolService.getPoolBalance(db, userId);
+  assert.strictEqual(rtaAfterReverse, 0);
+
+  const obRemaining = await db.get(
+    `SELECT COUNT(*) AS c FROM transactions
+     WHERE account_id = 'chk' AND transaction_type = 'OPENING_BALANCE'
+       AND IFNULL(is_deleted, 0) = 0`
+  );
+  assert.strictEqual(obRemaining.c, 0);
+
+  assert.strictEqual(
+    importedCashReconciliationService.adjustOrphanDeltaForFutureAssignments(3029.62, 3029.62),
+    0
+  );
+  assert.strictEqual(
+    importedCashReconciliationService.adjustOrphanDeltaForFutureAssignments(589.94, 0),
+    589.94
+  );
+  assert.strictEqual(
+    importedCashReconciliationService.computeFutureAssignedAfterMonth(
+      [
+        { month: '2026-07-01', budgeted_amount: 100 },
+        { month: '2026-08-01', budgeted_amount: 50 },
+        { month: '2026-06-01', budgeted_amount: 200 },
+      ],
+      '2026-06-01'
+    ),
+    150
+  );
 
   console.log('✅ test-imported-cash-reconciliation passed');
 }

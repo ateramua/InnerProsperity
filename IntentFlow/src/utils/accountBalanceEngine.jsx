@@ -3,6 +3,10 @@
  * Logic mirrors accountBalanceEngine.cjs for client-side display.
  */
 
+import { compareTransactionsChronologically } from './transactionSortUtils.jsx';
+
+const CREDIT_OPENING_BALANCE_TYPE = 'CREDIT_OPENING_BALANCE';
+
 const CREDIT_TYPES = new Set(['credit', 'credit_card', 'loan']);
 
 export function isDeleted(tx) {
@@ -43,6 +47,7 @@ export function resolveTransactionDisplayColumns(tx) {
 
 export function isStartingBalanceTransaction(tx) {
   if (!tx || isDeleted(tx)) return false;
+  if (String(tx.transaction_type || '') === CREDIT_OPENING_BALANCE_TYPE) return true;
   const payee = String(tx.payee || '').trim().toLowerCase();
   const description = String(tx.description || '').trim().toLowerCase();
   return (
@@ -132,14 +137,7 @@ export function computeTransactionsWithRunningBalance(account, transactions) {
   const active = (transactions || [])
     .filter((tx) => !isDeleted(tx))
     .slice()
-    .sort((a, b) => {
-      const da = String(a.date || '');
-      const db = String(b.date || '');
-      if (da !== db) return da.localeCompare(db);
-      const ca = String(a.created_at || a.id || '');
-      const cb = String(b.created_at || b.id || '');
-      return ca.localeCompare(cb);
-    });
+    .sort(compareTransactionsChronologically);
 
   let running = getInitialBalanceBase(account, active);
 

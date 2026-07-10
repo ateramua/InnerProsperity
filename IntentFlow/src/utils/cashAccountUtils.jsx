@@ -2,6 +2,7 @@
  * Shared checking/savings account helpers — single source of truth for Cash Accounts UI + delete.
  */
 import { resolveDisplayAccountType } from './accountTypeUtils.cjs';
+import { isAccountListedInUi, filterListedAccounts as filterListedAccountsShared } from '../shared/accountVisibilityUtils.cjs';
 import { isPlaidLinkedAccount } from './accountRegisterBalance.jsx';
 
 export const CASH_ACCOUNT_TYPES = Object.freeze(['checking', 'savings']);
@@ -60,18 +61,28 @@ export function normalizeAccountId(id) {
   return id == null ? '' : String(id);
 }
 
-/** Active accounts only (excludes soft-deleted). */
+/** Active accounts only — for budget cash totals and Plaid sync. */
 export function filterActiveAccounts(list) {
   if (!Array.isArray(list)) return [];
   return list.filter((a) => a && isAccountActive(a));
 }
 
-/** Active checking + savings for UI lists (excludes hidden accounts). */
-export function filterActiveCashAccounts(list) {
+/** All non-archived accounts (includes is_active = 0). */
+export function filterListedAccounts(list) {
+  return filterListedAccountsShared(list);
+}
+
+/** Listed checking + savings for UI (excludes hidden flag). */
+export function filterListedCashAccounts(list) {
   if (!Array.isArray(list)) return [];
   return list.filter(
-    (a) => a && isAccountActive(a) && isCashAccountType(a) && !isAccountHidden(a)
+    (a) => a && isAccountListedInUi(a) && isCashAccountType(a) && !isAccountHidden(a)
   );
+}
+
+/** @deprecated Use filterListedCashAccounts */
+export function filterActiveCashAccounts(list) {
+  return filterListedCashAccounts(list);
 }
 
 /** All active cash accounts including hidden — for RTA / budget cash totals. */
@@ -81,10 +92,10 @@ export function filterBudgetCashAccounts(list) {
 }
 
 export function partitionCashAccounts(list) {
-  const active = filterActiveCashAccounts(list);
+  const listed = filterListedCashAccounts(list);
   const checking = [];
   const savings = [];
-  for (const account of active) {
+  for (const account of listed) {
     const resolved = resolveDisplayAccountType(account);
     if (resolved === 'checking') {
       checking.push(account);
@@ -92,7 +103,7 @@ export function partitionCashAccounts(list) {
       savings.push(account);
     }
   }
-  return { checking, savings, all: active };
+  return { checking, savings, all: listed };
 }
 
 export function getCashAccountDeleteConfirmMessage(accountName, account) {
@@ -198,7 +209,7 @@ export async function loadAllAccountsViaApi() {
   }
   return {
     success: true,
-    data: filterActiveAccounts(accountsResult.data || []),
+    data: filterListedAccounts(accountsResult.data || []),
   };
 }
 
@@ -207,7 +218,7 @@ export async function loadCashAccountsViaApi() {
   if (!result.success) return result;
   return {
     success: true,
-    data: filterActiveCashAccounts(result.data || []),
+    data: filterListedCashAccounts(result.data || []),
   };
 }
 

@@ -1,30 +1,59 @@
-import { compareTeams } from './tiebreakers';
-import { computeAllGroupStandings } from './standings';
+import { compareTeams, compareThirdPlaceTeams } from './tiebreakers';
+import {
+  QUALIFICATION_STATUS,
+  buildQualificationSnapshot,
+} from './qualification';
+
+const QUALIFICATION_TIER = {
+  [QUALIFICATION_STATUS.QUALIFIED]: 3,
+  [QUALIFICATION_STATUS.CONDITIONAL]: 2,
+  [QUALIFICATION_STATUS.ELIMINATED]: 1,
+};
 
 /**
- * Overall tournament ranking across all teams (for Rankings tab).
- * Group position weighted: 1st=12 pts, 2nd=8, 3rd=4, 4th=0 bonus on top of group stats.
+ * Tournament-wide rankings aligned with WC 2026 qualification rules.
  */
-export function computeOverallRankings(groups, fixtures) {
-  const standings = computeAllGroupStandings(groups, fixtures);
-  const rows = [];
+export function computeOverallRankings(groups, fixtures, snapshot = null) {
+  const qualification = snapshot ?? buildQualificationSnapshot(groups, fixtures);
+  const { groupStandings, bestThirdPlace } = qualification;
 
-  Object.entries(standings).forEach(([groupId, table]) => {
-    const positionBonus = { 1: 12, 2: 8, 3: 4, 4: 0 };
+  const thirdRankByTeam = Object.fromEntries(
+    bestThirdPlace.map((row) => [row.teamId, row.thirdPlaceRank]),
+  );
+
+  const rows = [];
+  Object.entries(groupStandings).forEach(([groupId, table]) => {
     table.forEach((row) => {
       rows.push({
         ...row,
         groupId,
-        rankingScore: row.points * 10 + positionBonus[row.position] + row.goalDifference,
+        qualificationStatus: row.qualificationStatus,
+        thirdPlaceRank: row.position === 3 ? thirdRankByTeam[row.teamId] ?? null : null,
       });
     });
   });
 
-  return rows.sort((a, b) => {
-    if (b.rankingScore !== a.rankingScore) return b.rankingScore - a.rankingScore;
-    return compareTeams(a, b);
-  }).map((row, index) => ({
-    ...row,
-    overallRank: index + 1,
-  }));
+  return rows
+    .sort((a, b) => compareOverallRankRows(a, b))
+    .map((row, index) => ({
+      ...row,
+      overallRank: index + 1,
+    }));
+}
+
+function compareOverallRankRows(a, b) {
+  const tierDiff =
+    (QUALIFICATION_TIER[b.qualificationStatus] ?? 0)
+    - (QUALIFICATION_TIER[a.qualificationStatus] ?? 0);
+  if (tierDiff !== 0) return tierDiff;
+
+  if (a.position !== b.position) return a.position - b.position;
+
+  if (a.position === 3 && b.position === 3) {
+    const rankDiff = (a.thirdPlaceRank ?? 99) - (b.thirdPlaceRank ?? 99);
+    if (rankDiff !== 0) return rankDiff;
+    return compareThirdPlaceTeams(a, b);
+  }
+
+  return compareTeams(a, b);
 }

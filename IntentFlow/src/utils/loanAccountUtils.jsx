@@ -3,6 +3,7 @@
  */
 import { normalizeAccountId } from './cashAccountUtils.jsx';
 import { resolveDisplayAccountType } from './creditAccountUtils.jsx';
+import { isAccountListedInUi } from '../shared/accountVisibilityUtils.cjs';
 
 export function isLoanAccountType(account) {
   return resolveDisplayAccountType(account) === 'loan';
@@ -10,7 +11,7 @@ export function isLoanAccountType(account) {
 
 export function filterLoanAccounts(list) {
   if (!Array.isArray(list)) return [];
-  return list.filter((account) => account && isLoanAccountType(account));
+  return list.filter((account) => account && isLoanAccountType(account) && isAccountListedInUi(account));
 }
 
 export async function loadLoansViaApi() {

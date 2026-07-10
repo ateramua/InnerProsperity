@@ -23,6 +23,13 @@ async function main() {
       is_cleared INTEGER DEFAULT 1,
       is_reconciled INTEGER DEFAULT 0
     );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      account_status TEXT DEFAULT 'active',
+      type TEXT
+    );
     CREATE TABLE transaction_splits (
       id TEXT PRIMARY KEY,
       transaction_id INTEGER NOT NULL,
@@ -36,32 +43,45 @@ async function main() {
   const userId = 1;
   const categoryId = 'cat-groceries';
   const month = '2026-06';
+  const activeAcct = 'acct-active';
+  const inactiveAcct = 'acct-inactive';
+
+  await db.run(
+    `INSERT INTO accounts (id, user_id, is_active, account_status, type)
+     VALUES (?, ?, 1, 'active', 'checking'), (?, ?, 0, 'active', 'checking')`,
+    [activeAcct, userId, inactiveAcct, userId]
+  );
 
   await db.run(
     `INSERT INTO transactions (user_id, account_id, category_id, amount, date, is_cleared)
-     VALUES (?, 'acct', ?, -50, '2026-06-04', 1)`,
-    [userId, categoryId]
+     VALUES (?, ?, ?, -50, '2026-06-04', 1)`,
+    [userId, activeAcct, categoryId]
   );
   await db.run(
     `INSERT INTO transactions (user_id, account_id, category_id, amount, date, is_cleared)
-     VALUES (?, 'acct', ?, -30, '2026-06-05', 0)`,
-    [userId, categoryId]
+     VALUES (?, ?, ?, -30, '2026-06-05', 0)`,
+    [userId, activeAcct, categoryId]
   );
   await db.run(
     `INSERT INTO transactions (user_id, account_id, category_id, amount, date, is_cleared, is_deleted)
-     VALUES (?, 'acct', ?, -20, '2026-06-06', 1, 1)`,
-    [userId, categoryId]
+     VALUES (?, ?, ?, -20, '2026-06-06', 1, 1)`,
+    [userId, activeAcct, categoryId]
+  );
+  await db.run(
+    `INSERT INTO transactions (user_id, account_id, category_id, amount, date, is_cleared)
+     VALUES (?, ?, ?, -81.19, '2026-06-02', 1)`,
+    [userId, inactiveAcct, categoryId]
   );
 
   const totals = await getCategoryTransactionTotals(db, userId, categoryId, month);
-  assert.strictEqual(totals.spending, 50, 'only cleared, non-deleted spending counts');
+  assert.strictEqual(totals.spending, 50, 'only cleared, non-deleted spending on active accounts counts');
   assert.strictEqual(totals.activity, 50);
 
   await db.run('DELETE FROM transactions');
   await db.run(
     `INSERT INTO transactions (user_id, account_id, category_id, amount, direction, date, is_cleared)
-     VALUES (?, 'acct', ?, 100, 'outflow', '2026-06-04', 1)`,
-    [userId, categoryId]
+     VALUES (?, ?, ?, 100, 'outflow', '2026-06-04', 1)`,
+    [userId, activeAcct, categoryId]
   );
   const directionTotals = await getCategoryTransactionTotals(db, userId, categoryId, month);
   assert.strictEqual(
@@ -84,17 +104,11 @@ async function main() {
   assert.strictEqual(updatedTotals.activity, 150);
 
   await db.run('DELETE FROM transactions');
-  await db.exec(`
-    CREATE TABLE accounts (
-      id TEXT PRIMARY KEY,
-      user_id INTEGER NOT NULL,
-      type TEXT NOT NULL
-    );
-  `);
   const creditAccountId = 'cc-1';
   const paymentCategoryId = 'cc-pay-1';
   await db.run(
-    `INSERT INTO accounts (id, user_id, type) VALUES (?, ?, 'credit')`,
+    `INSERT INTO accounts (id, user_id, type, is_active, account_status)
+     VALUES (?, ?, 'credit', 1, 'active')`,
     [creditAccountId, userId]
   );
   await db.run(

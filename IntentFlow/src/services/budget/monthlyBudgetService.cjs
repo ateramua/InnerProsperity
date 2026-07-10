@@ -20,6 +20,7 @@ const {
 const readyToAssignPoolService = require('./readyToAssignPoolService.cjs');
 const { runBudgetTransaction, withBudgetTransaction } = require('../../db/transactionRunner.cjs');
 const { recordBudgetAssignmentAudit } = require('./budgetAssignmentAuditService.cjs');
+const assignmentLedgerService = require('./assignmentLedgerService.cjs');
 const {
   assertAssignedMutationAllowed,
   requireUserIntentMaintenanceOperation,
@@ -30,6 +31,7 @@ const {
 } = require('./categorySpendingForecast.cjs');
 const { withBudgetDbLock } = require('./budgetDbLock.cjs');
 const { resolveCategoryCarryover } = require('./categoryCarryover.cjs');
+const envelopeCarryoverBridge = require('./envelopeCarryoverBridge.cjs');
 
 function normalizeCategoryId(id) {
   return id == null ? '' : String(id).trim();
@@ -97,15 +99,28 @@ async function assertMonthlyBudgetAssigned(db, userId, categoryId, monthKey, exp
 
 /**
  * ON_BUDGET_CASH = RTA + SUM(category available). Throws on violation.
+ * When opts.beforeDelta is supplied, a pre-existing gap that did not worsen is allowed
+ * (e.g. legacy CC payment envelope drift should not block Fund Underfunded).
  */
-async function assertPostMutationBudgetInvariant(db, userId, monthKey, context = '') {
+async function assertPostMutationBudgetInvariant(db, userId, monthKey, context = '', opts = {}) {
   const budgetIntegrityService = require('./budgetIntegrityService.cjs');
   const onBudgetCash = await budgetIntegrityService.computeOnBudgetCash(db, userId);
   if (Math.abs(onBudgetCash) < 0.01) {
     return null;
   }
-  const state = await budgetIntegrityService.evaluateBudgetIdentity(db, userId, { monthKey });
+  const state = await budgetIntegrityService.evaluateGlobalBudgetIdentity(db, userId, {
+    anchorMonth: monthKey,
+  });
   if (state.invariantValid) return state;
+
+  const beforeDelta = roundMoney(Number(opts.beforeDelta));
+  if (Number.isFinite(beforeDelta)) {
+    const afterDelta = roundMoney(state.budgetInvariantDelta);
+    if (Math.abs(afterDelta) <= Math.abs(beforeDelta) + 0.05) {
+      return state;
+    }
+  }
+
   const err = new Error(
     `Budget invariant violated${context ? ` (${context})` : ''}: ` +
       `on-budget cash ${state.onBudgetCash} != RTA ${state.readyToAssign} + ` +
@@ -162,11 +177,23 @@ async function readMonthAssignedForUnassign(db, userId, categoryId, monthKey) {
   return readMonthBudgeted(db, userId, categoryId, monthKey);
 }
 
-async function upsertMonthlyRow(db, row) {
+async function upsertMonthlyRow(db, row, opts = {}) {
   const month = monthDateBind(row.month);
   const categoryId = normalizeCategoryId(row.category_id);
   await dedupeMonthlyBudgetRowsForMonth(db, categoryId, month);
   const existing = await fetchMonthlyBudgetRow(db, categoryId, month);
+  const nextBudgeted = roundMoney(Number(row.budgeted_amount) || 0);
+  const prevBudgeted = roundMoney(Number(existing?.budgeted_amount) || 0);
+  if (
+    Math.abs(nextBudgeted - prevBudgeted) > 0.005 &&
+    opts.allowBudgetedProjectionWrite !== true
+  ) {
+    const err = new Error(
+      'Direct monthly_budgets.budgeted_amount writes are blocked. Use applyMonthBudgetedAmount().'
+    );
+    err.code = 'ASSIGNMENT_PROJECTION_WRITE_BLOCKED';
+    throw err;
+  }
   await db.run(
     `
     INSERT INTO monthly_budgets (
@@ -213,13 +240,12 @@ async function applyMonthBudgetedAmount(db, userId, categoryId, monthKey, budget
   );
   if (!cat) throw new Error('Category not found');
 
-  const prevRow = await db.get(
-    `SELECT available_amount FROM monthly_budgets
-     WHERE CAST(category_id AS TEXT) = CAST(? AS TEXT) AND month = ?`,
-    [categoryId, addCalendarMonths(mk, -1)]
+  const previousAvailable = await envelopeCarryoverBridge.resolvePreviousAvailable(
+    db,
+    cat,
+    categoryId,
+    mk
   );
-
-  const previousAvailable = resolveCategoryCarryover(cat, Number(prevRow?.available_amount) || 0);
 
   const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
     monthKey: mk,
@@ -229,13 +255,49 @@ async function applyMonthBudgetedAmount(db, userId, categoryId, monthKey, budget
   });
 
   await runBudgetTransaction(db, async () => {
+    await assignmentLedgerService.assertSufficientRtaForAssignment(
+      db,
+      userId,
+      roundMoney(envelope.assigned - previous),
+      { skipRtaCheck: opts.skipRtaCheck === true || opts.skipPoolAdjustment === true }
+    );
+
+    const auditRow = await recordBudgetAssignmentAudit(db, {
+      userId,
+      categoryId,
+      monthKey: mk,
+      previousAssigned: previous,
+      newAssigned: envelope.assigned,
+      source: opts.auditSource || 'assign',
+      createdByUserId: opts.createdByUserId || userId,
+      createdByOperation: opts.createdByOperation || 'monthlyBudgetService.applyMonthBudgetedAmount',
+      createdBySystem: opts.createdBySystem ? 1 : 0,
+      metadata: opts.auditMetadata,
+    });
+    assignmentLedgerService.assertAuditMatchesProjection(auditRow, previous, envelope.assigned);
+
+    if (opts.skipPoolAdjustment !== true) {
+      const rtaLedgerService = require('./rtaLedgerService.cjs');
+      if (await rtaLedgerService.isLedgerAuthorityEnabled(db, userId)) {
+        await rtaLedgerService.syncPoolFromLedger(db, userId, { source: 'assignment_write' });
+      } else {
+        await readyToAssignPoolService.applyAssignmentPoolDelta(
+          db,
+          userId,
+          previous,
+          envelope.assigned,
+          { skipPoolAdjustment: false }
+        );
+      }
+    }
+
     await upsertMonthlyRow(db, {
       category_id: categoryId,
       month: mk,
       budgeted_amount: envelope.assigned,
       activity_amount: envelope.activity,
       available_amount: envelope.available,
-    });
+    }, { allowBudgetedProjectionWrite: true });
 
     if (isCurrentCalendarMonth) {
       await db.run(
@@ -245,23 +307,6 @@ async function applyMonthBudgetedAmount(db, userId, categoryId, monthKey, budget
         [envelope.assigned, envelope.available, envelope.activity, categoryId, userId]
       );
     }
-
-    await readyToAssignPoolService.applyAssignmentPoolDelta(
-      db,
-      userId,
-      previous,
-      envelope.assigned,
-      { skipPoolAdjustment: opts.skipPoolAdjustment === true }
-    );
-
-    await recordBudgetAssignmentAudit(db, {
-      userId,
-      categoryId,
-      monthKey: mk,
-      previousAssigned: previous,
-      newAssigned: envelope.assigned,
-      source: opts.auditSource || 'assign',
-    });
   });
 
   const persistedAssigned = await assertMonthlyBudgetAssigned(
@@ -375,7 +420,11 @@ async function fundUnderfundedForMonth(db, userId, monthKey, opts = {}) {
   const logPrefix = '[fundUnderfundedForMonth]';
 
   const snapshot = await getBudgetMonthSnapshot(db, userId, mk);
-  const plan = computeFundUnderfundedPlan(snapshot.categories, {
+  // Snapshot already includes forecasted_need; filter archived CC payment rows for planning.
+  const planCategories = (snapshot.categories || []).filter(
+    (cat) => cat && !cat.archived,
+  );
+  const plan = computeFundUnderfundedPlan(planCategories, {
     pool: beforeRTA,
   });
 
@@ -476,12 +525,12 @@ async function getBudgetMonthSnapshot(db, userId, monthKey) {
 
   for (const c of categories) {
     const mb = await fetchMonthlyBudgetRow(db, c.id, mk);
-    const prevRow = await db.get(
-      `SELECT available_amount FROM monthly_budgets
-       WHERE CAST(category_id AS TEXT) = CAST(? AS TEXT) AND month = ?`,
-      [c.id, prevMonthKey]
+    const previousAvailable = await envelopeCarryoverBridge.resolvePreviousAvailable(
+      db,
+      c,
+      c.id,
+      mk
     );
-    const previousAvailable = previousAvailableForCategory(c, prevRow);
     const budgeted = resolveBudgetedForMonth(c, mb, isCurrentCalendarMonth);
 
     const envelope = await buildCategoryEnvelopeRow(db, userId, c, {
@@ -498,7 +547,9 @@ async function getBudgetMonthSnapshot(db, userId, monthKey) {
     });
   }
 
-  return enrichBudgetSnapshot({ monthKey: mk, categories: rows });
+  const forecastMap = await buildForecastedNeedMap(db, userId, rows, mk, { persist: false });
+  const withForecasts = applyForecastMapToCategories(rows, forecastMap);
+  return enrichBudgetSnapshot({ monthKey: mk, categories: withForecasts });
 }
 
 function mergeFundAssignmentsIntoSnapshotCategories(categories, assignments) {
@@ -519,6 +570,7 @@ function mergeFundAssignmentsIntoSnapshotCategories(categories, assignments) {
   });
 }
 
+/** @deprecated Use envelopeCarryoverBridge.resolvePreviousAvailable (handles month gaps). */
 function previousAvailableForCategory(category, prevRow) {
   const raw = prevRow ? Number(prevRow.available_amount) || 0 : 0;
   return resolveCategoryCarryover(category, raw);
@@ -562,9 +614,13 @@ async function getCategoryActivityTransactionIds(db, userId, categoryId, monthKe
       `
       SELECT DISTINCT t.id
       FROM transactions t
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE t.user_id = ?
         AND (t.category_id IS NULL OR t.category_id = '')
         AND IFNULL(t.is_transfer, 0) = 0
+        AND IFNULL(t.is_deleted, 0) = 0
+        AND IFNULL(a.is_active, 1) != 0
+        AND IFNULL(a.account_status, 'active') = 'active'
         AND t.amount > 0
         AND strftime('%Y-%m', t.date) = ?
     `,
@@ -578,17 +634,25 @@ async function getCategoryActivityTransactionIds(db, userId, categoryId, monthKe
     SELECT DISTINCT tx_id AS id FROM (
       SELECT CAST(t.id AS TEXT) AS tx_id
       FROM transactions t
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE t.user_id = ?
         AND t.category_id = ?
         AND IFNULL(t.is_transfer, 0) = 0
+        AND IFNULL(t.is_deleted, 0) = 0
+        AND IFNULL(a.is_active, 1) != 0
+        AND IFNULL(a.account_status, 'active') = 'active'
         AND strftime('%Y-%m', t.date) = ?
       UNION
       SELECT CAST(t.id AS TEXT) AS tx_id
       FROM transaction_splits ts
       INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE ts.user_id = ?
         AND ts.category_id = ?
         AND IFNULL(t.is_transfer, 0) = 0
+        AND IFNULL(t.is_deleted, 0) = 0
+        AND IFNULL(a.is_active, 1) != 0
+        AND IFNULL(a.account_status, 'active') = 'active'
         AND strftime('%Y-%m', t.date) = ?
     )
   `,
@@ -607,8 +671,12 @@ async function getActivityTotalsByCategoryForMonth(db, userId, monthKey) {
         t.category_id AS category_id,
         CASE WHEN IFNULL(t.is_transfer, 0) = 1 THEN 0 ELSE -t.amount END AS activity_line
       FROM transactions t
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE t.user_id = ?
         AND t.category_id IS NOT NULL
+        AND IFNULL(t.is_deleted, 0) = 0
+        AND IFNULL(a.is_active, 1) != 0
+        AND IFNULL(a.account_status, 'active') = 'active'
         AND strftime('%Y-%m', t.date) = ?
       UNION ALL
       SELECT
@@ -621,7 +689,11 @@ async function getActivityTotalsByCategoryForMonth(db, userId, monthKey) {
         END AS activity_line
       FROM transaction_splits ts
       INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE ts.user_id = ?
+        AND IFNULL(t.is_deleted, 0) = 0
+        AND IFNULL(a.is_active, 1) != 0
+        AND IFNULL(a.account_status, 'active') = 'active'
         AND strftime('%Y-%m', t.date) = ?
     )
     GROUP BY category_id
@@ -676,7 +748,7 @@ async function upsertMonthlyEnvelopeRow(db, row) {
     return roundMoney(Number(existing.budgeted_amount) || 0);
   }
 
-  await upsertMonthlyRow(db, { ...row, month, category_id: categoryId });
+  await upsertMonthlyRow(db, { ...row, month, category_id: categoryId }, { allowBudgetedProjectionWrite: true });
   return roundMoney(Number(row.budgeted_amount) || 0);
 }
 
@@ -704,13 +776,22 @@ async function enrichCategoriesWithUnderfunded(db, userId, categories, monthKey)
  * @param {string|Date} startMonthKey - any day in the first affected month
  * @param {number} [forwardMonths=36]
  */
-async function refreshBudgetMonthsForward(db, userId, startMonthKey, forwardMonths = 36) {
-  let key = toLocalMonthKey(startMonthKey);
-  const n = Math.max(1, Math.min(Number(forwardMonths) || 36, 120));
-  for (let i = 0; i < n; i++) {
-    await getBudgetMonthSnapshot(db, userId, key);
-    key = addCalendarMonths(key, 1);
-  }
+async function refreshBudgetMonthsForward(db, userId, startMonthKey, forwardMonths = 36, opts = {}) {
+  const categories = await db.all(
+    `SELECT id FROM categories WHERE user_id = ? AND ${sqlCategoryNotArchived('categories')}`,
+    [userId]
+  );
+  const categoryIds = (categories || []).map((c) => String(c.id)).filter(Boolean);
+  if (!categoryIds.length) return;
+
+  await refreshCategoryEnvelopesForward(
+    db,
+    userId,
+    startMonthKey,
+    categoryIds,
+    forwardMonths,
+    opts
+  );
 }
 
 /**
@@ -722,7 +803,8 @@ async function refreshCategoryEnvelopesForward(
   userId,
   startMonthKey,
   categoryIds,
-  forwardMonths = 36
+  forwardMonths = 36,
+  opts = {}
 ) {
   const ids = [...new Set((categoryIds || []).map((id) => String(id)).filter(Boolean))];
   if (!ids.length) return;
@@ -731,34 +813,62 @@ async function refreshCategoryEnvelopesForward(
   const todayKey = toLocalMonthKey(new Date());
   const n = Math.max(1, Math.min(Number(forwardMonths) || 36, 120));
 
+  await envelopeCarryoverBridge.ensureBridgeMonthsBeforeRefresh(db, userId, ids, key);
+
   for (let i = 0; i < n; i++) {
     const isCurrentCalendarMonth = key === todayKey;
-    const prevMonthKey = addCalendarMonths(key, -1);
-    const [rowThisMonth, rowPrevMonth] = await Promise.all([
-      getMonthlyRowMap(db, key, ids),
-      getMonthlyRowMap(db, prevMonthKey, ids),
-    ]);
+    await envelopeCarryoverBridge.ensureBridgeMonthsBeforeRefresh(db, userId, ids, key);
+
+    const rtaBefore = await readReadyToAssignBalance(db, userId);
+    const availableBefore = await envelopeCarryoverBridge.sumCategoryAvailableForMonth(db, ids, key);
+    let budgetedBefore = 0;
+    for (const categoryId of ids) {
+      budgetedBefore += await readMonthBudgeted(db, userId, categoryId, key);
+    }
+    budgetedBefore = roundMoney(budgetedBefore);
+
+    const [rowThisMonth] = await Promise.all([getMonthlyRowMap(db, key, ids)]);
+
+    let expectedAvailableAfter = 0;
+    const envelopeWrites = [];
+
+    for (const categoryId of ids) {
+      const cat = await db.get(
+        `SELECT * FROM categories
+         WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?`,
+        [categoryId, userId]
+      );
+      if (!cat) continue;
+
+      const mb = rowThisMonth.get(normalizeCategoryId(categoryId));
+      const previousAvailable = await envelopeCarryoverBridge.resolvePreviousAvailable(
+        db,
+        cat,
+        categoryId,
+        key
+      );
+      const budgeted = await readMonthBudgeted(db, userId, categoryId, key);
+
+      const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
+        monthKey: key,
+        previousAvailable,
+        budgeted,
+        isCurrentCalendarMonth,
+      });
+
+      expectedAvailableAfter = roundMoney(expectedAvailableAfter + envelope.available);
+      envelopeWrites.push({
+        categoryId,
+        cat,
+        budgeted,
+        envelope,
+        isCurrentCalendarMonth,
+      });
+    }
 
     await runBudgetTransaction(db, async () => {
-      for (const categoryId of ids) {
-        const cat = await db.get(
-          `SELECT * FROM categories
-           WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND user_id = ?`,
-          [categoryId, userId]
-        );
-        if (!cat) continue;
-
-        const mb = rowThisMonth.get(normalizeCategoryId(categoryId));
-        const prevRow = rowPrevMonth.get(normalizeCategoryId(categoryId));
-        const previousAvailable = previousAvailableForCategory(cat, prevRow);
-        const budgeted = await readMonthBudgeted(db, userId, categoryId, key);
-
-        const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
-          monthKey: key,
-          previousAvailable,
-          budgeted,
-          isCurrentCalendarMonth,
-        });
+      for (const write of envelopeWrites) {
+        const { categoryId, cat, budgeted, envelope, isCurrentCalendarMonth: isCurrent } = write;
 
         const persistedAssigned = await upsertMonthlyEnvelopeRow(db, {
           category_id: categoryId,
@@ -768,7 +878,7 @@ async function refreshCategoryEnvelopesForward(
           available_amount: envelope.available,
         });
 
-        if (isCurrentCalendarMonth) {
+        if (isCurrent) {
           await db.run(
             `UPDATE categories
              SET assigned = ?, available = ?, activity = ?, updated_at = datetime('now')
@@ -784,6 +894,27 @@ async function refreshCategoryEnvelopesForward(
         }
       }
     });
+
+    const rtaAfter = await readReadyToAssignBalance(db, userId);
+    const availableAfter = await envelopeCarryoverBridge.sumCategoryAvailableForMonth(db, ids, key);
+    let budgetedAfter = 0;
+    for (const categoryId of ids) {
+      budgetedAfter += await readMonthBudgeted(db, userId, categoryId, key);
+    }
+    budgetedAfter = roundMoney(budgetedAfter);
+    const budgetedDelta = roundMoney(budgetedAfter - budgetedBefore);
+
+    envelopeCarryoverBridge.assertEnvelopeRefreshIntegrity(
+      { categoryAvailable: availableBefore, readyToAssign: rtaBefore },
+      { categoryAvailable: availableAfter, readyToAssign: rtaAfter },
+      expectedAvailableAfter,
+      `refreshCategoryEnvelopesForward ${key}`,
+      {
+        ...opts,
+        budgetedDelta,
+        rtaDelta: roundMoney(rtaAfter - rtaBefore),
+      }
+    );
 
     key = addCalendarMonths(key, 1);
   }
@@ -923,9 +1054,7 @@ async function getGlobalBudgetSummary(db, userId, totalCash, _opts = {}) {
   );
   try {
     const budgetIntegrityService = require('./budgetIntegrityService.cjs');
-    const identity = await budgetIntegrityService.evaluateBudgetIdentity(db, userId, {
-      monthKey: currentMonthKey,
-    });
+    const identity = await budgetIntegrityService.evaluateGlobalBudgetIdentity(db, userId);
     categoryTotal = identity.categoryTotal;
     budgetInvariantValid = identity.invariantValid;
     budgetInvariantDelta = identity.budgetInvariantDelta;
@@ -972,8 +1101,10 @@ async function assertSufficientReadyToAssign(db, userId, positiveDelta, _totalCa
   }
 }
 
-async function setReadyToAssignPoolBalance(db, userId, target) {
-  return readyToAssignPoolService.setPoolBalance(db, userId, target);
+async function setReadyToAssignPoolBalance(db, userId, _target) {
+  const rtaLedgerService = require('./rtaLedgerService.cjs');
+  const sync = await rtaLedgerService.syncPoolFromLedger(db, userId, { source: 'ledger_sync' });
+  return sync.readyToAssign;
 }
 
 /**
@@ -1032,11 +1163,12 @@ async function applyMonthAssignedAndAvailable(db, userId, categoryId, monthKey, 
     throw new Error('Category not found');
   }
 
-  const prevRow = await db.get(
-    'SELECT available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
-    [categoryId, prevMonthKey]
+  const previousAvailable = await envelopeCarryoverBridge.resolvePreviousAvailable(
+    db,
+    cat,
+    categoryId,
+    normalizedMonth
   );
-  const previousAvailable = previousAvailableForCategory(cat, prevRow);
 
   const envelope = await buildCategoryEnvelopeRow(db, userId, cat, {
     monthKey: normalizedMonth,
@@ -1054,20 +1186,57 @@ async function applyMonthAssignedAndAvailable(db, userId, categoryId, monthKey, 
     }
   }
 
-  await upsertMonthlyRow(db, {
-    category_id: categoryId,
-    month: normalizedMonth,
-    budgeted_amount: a,
-    activity_amount: useActivity,
-    available_amount: useAvailable
-  });
-
-  if (isCurrentCalendarMonth) {
-    await db.run(
-      'UPDATE categories SET assigned = ?, available = ?, activity = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?',
-      [a, useAvailable, useActivity, categoryId, userId]
+  await runBudgetTransaction(db, async () => {
+    await assignmentLedgerService.assertSufficientRtaForAssignment(
+      db,
+      userId,
+      roundMoney(a - previousAssigned),
+      { skipRtaCheck: opts.skipRtaCheck === true || opts.skipPoolAdjustment === true }
     );
-  }
+
+    const auditRow = await recordBudgetAssignmentAudit(db, {
+      userId,
+      categoryId,
+      monthKey: normalizedMonth,
+      previousAssigned,
+      newAssigned: a,
+      source: opts.auditSource || 'assign',
+      createdByUserId: opts.createdByUserId || userId,
+      createdByOperation: opts.createdByOperation || 'monthlyBudgetService.applyMonthAssignedAndAvailable',
+      metadata: opts.auditMetadata,
+    });
+    assignmentLedgerService.assertAuditMatchesProjection(auditRow, previousAssigned, a);
+
+    if (opts.skipPoolAdjustment !== true) {
+      const rtaLedgerService = require('./rtaLedgerService.cjs');
+      if (await rtaLedgerService.isLedgerAuthorityEnabled(db, userId)) {
+        await rtaLedgerService.syncPoolFromLedger(db, userId, { source: 'assignment_write' });
+      } else {
+        await readyToAssignPoolService.applyAssignmentPoolDelta(
+          db,
+          userId,
+          previousAssigned,
+          a,
+          { skipPoolAdjustment: false }
+        );
+      }
+    }
+
+    await upsertMonthlyRow(db, {
+      category_id: categoryId,
+      month: normalizedMonth,
+      budgeted_amount: a,
+      activity_amount: useActivity,
+      available_amount: useAvailable,
+    }, { allowBudgetedProjectionWrite: true });
+
+    if (isCurrentCalendarMonth) {
+      await db.run(
+        'UPDATE categories SET assigned = ?, available = ?, activity = ?, updated_at = datetime("now") WHERE id = ? AND user_id = ?',
+        [a, useAvailable, useActivity, categoryId, userId]
+      );
+    }
+  });
 
   return {
     assigned: a,
@@ -1164,6 +1333,12 @@ async function applyMonthBudgetBulk(db, userId, monthKey, assignments, opts = {}
  * Apply bulk month assignments then refresh forward envelopes so UI + RTA stay aligned.
  */
 async function applyMonthBudgetBulkAndRefresh(db, userId, monthKey, assignments, opts = {}) {
+  const budgetIntegrityService = require('./budgetIntegrityService.cjs');
+  const normalizedMonth = toLocalMonthKey(monthKey);
+  const identityBefore = await budgetIntegrityService.evaluateGlobalBudgetIdentity(db, userId, {
+    anchorMonth: normalizedMonth,
+  });
+
   const result = await applyMonthBudgetBulk(db, userId, monthKey, assignments, opts);
   const forwardMonths = Number(opts.forwardMonths) || 36;
   const categoryIds = (assignments || [])
@@ -1209,7 +1384,9 @@ async function applyMonthBudgetBulkAndRefresh(db, userId, monthKey, assignments,
   }
 
   if (opts.skipPostMutationInvariant !== true) {
-    await assertPostMutationBudgetInvariant(db, userId, result.monthKey, 'post-bulk-assign');
+    await assertPostMutationBudgetInvariant(db, userId, result.monthKey, 'post-bulk-assign', {
+      beforeDelta: identityBefore.budgetInvariantDelta,
+    });
   }
 
   return {
@@ -1247,11 +1424,12 @@ async function repairImplicitAssignmentsForMonth(db, userId, monthKey) {
          FROM monthly_budgets WHERE category_id = ? AND month = ?`,
         [cat.id, normalizedMonth]
       );
-      const prevRow = await db.get(
-        'SELECT available_amount FROM monthly_budgets WHERE category_id = ? AND month = ?',
-        [cat.id, prevMonthKey]
+      const previousAvailable = await envelopeCarryoverBridge.resolvePreviousAvailable(
+        db,
+        cat,
+        cat.id,
+        normalizedMonth
       );
-      const previousAvailable = previousAvailableForCategory(cat, prevRow);
       const budgeted = mb ? Number(mb.budgeted_amount) || 0 : 0;
       const storedAvailable = mb ? Number(mb.available_amount) || 0 : 0;
 
@@ -1537,8 +1715,8 @@ async function repairBudgetIntegrity(db, userId, opts = {}) {
   const discrepancies = [];
 
   const rtaBefore = await readReadyToAssignBalance(db, userId);
-  const identityBefore = await budgetIntegrityService.evaluateBudgetIdentity(db, userId, {
-    monthKey,
+  const identityBefore = await budgetIntegrityService.evaluateGlobalBudgetIdentity(db, userId, {
+    anchorMonth: monthKey,
   });
   if (!identityBefore.invariantValid) {
     discrepancies.push({
@@ -1604,8 +1782,17 @@ async function repairBudgetIntegrity(db, userId, opts = {}) {
     }
   }
 
-  const identityAfter = await budgetIntegrityService.evaluateBudgetIdentity(db, userId, {
-    monthKey,
+  const envelopeRepair = await envelopeCarryoverBridge.repairCarryoverGapsForUser(db, userId);
+  if (envelopeRepair.bridgeRowsCreated > 0) {
+    await refreshBudgetMonthsForward(db, userId, monthKey, 48, { strictConservation: false });
+    discrepancies.push({
+      type: 'envelope_carryover_repaired',
+      bridgeRowsCreated: envelopeRepair.bridgeRowsCreated,
+    });
+  }
+
+  const identityAfter = await budgetIntegrityService.evaluateGlobalBudgetIdentity(db, userId, {
+    anchorMonth: monthKey,
   });
 
   console.log('[repairBudgetIntegrity] complete', {

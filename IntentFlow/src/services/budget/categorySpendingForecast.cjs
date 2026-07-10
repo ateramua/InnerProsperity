@@ -78,13 +78,18 @@ async function resolveForecastedNeedForCategory(db, userId, cat, monthKey) {
 /**
  * @returns {Promise<Map<string, number>>}
  */
-async function buildForecastedNeedMap(db, userId, categories, monthKey) {
+async function buildForecastedNeedMap(db, userId, categories, monthKey, opts = {}) {
+  const persist = opts.persist !== false;
   const map = new Map();
   for (const cat of categories || []) {
     if (!cat?.id) continue;
     const forecast = await resolveForecastedNeedForCategory(db, userId, cat, monthKey);
     map.set(String(cat.id), forecast);
-    if (forecast > 0 && (isSpendingTargetCategory(cat) || forecast !== Number(cat.average_spending))) {
+    if (
+      persist &&
+      forecast > 0 &&
+      (isSpendingTargetCategory(cat) || forecast !== Number(cat.average_spending))
+    ) {
       await db.run(
         `UPDATE categories
          SET average_spending = ?, updated_at = datetime('now')

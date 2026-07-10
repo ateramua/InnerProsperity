@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { sortIndicator } from '../../utils/transactionSortUtils.jsx';
+import {
+  getNextSortState,
+  sortIndicator,
+  sortRegisterDisplayOrder,
+} from '../../utils/transactionSortUtils.jsx';
 import { buildCategoryByIdMap } from '../../utils/categoryDisplayUtils.jsx';
 import {
   formatTransactionCurrency,
@@ -168,6 +172,12 @@ function TransactionTable({
   const categoryById = useMemo(() => buildCategoryByIdMap(categories), [categories]);
   const displayColumns = buildDisplayColumns(showAccountColumn);
   const selectAllRef = useRef(null);
+  const displayTransactions = useMemo(() => {
+    if (sort && sort.key !== 'date') {
+      return transactions;
+    }
+    return sortRegisterDisplayOrder(transactions);
+  }, [transactions, sort]);
 
   useEffect(() => {
     if (selectAllRef.current) {
@@ -177,9 +187,7 @@ function TransactionTable({
 
   const handleSort = (key) => {
     if (!onSortChange || !sort) return;
-    const prev = sort;
-    const nextDir = prev.key === key ? (prev.dir === 'asc' ? 'desc' : 'asc') : key === 'date' ? 'desc' : 'asc';
-    onSortChange({ key, dir: nextDir });
+    onSortChange(getNextSortState(sort, key));
   };
 
   const colSpan =
@@ -257,14 +265,14 @@ function TransactionTable({
               <td colSpan={colSpan} style={{ height: virtualPaddingTop, padding: 0, border: 'none' }} />
             </tr>
           ) : null}
-          {transactions.length === 0 && virtualPaddingTop === 0 && virtualPaddingBottom === 0 ? (
+          {displayTransactions.length === 0 && virtualPaddingTop === 0 && virtualPaddingBottom === 0 ? (
             <tr>
               <td colSpan={colSpan} style={styles.empty}>
                 {emptyMessage}
               </td>
             </tr>
           ) : (
-            transactions.map((tx) => {
+            displayTransactions.map((tx) => {
               if (editingId === tx.id && renderEditRow) {
                 return (
                   <React.Fragment key={tx.id}>{renderEditRow(tx)}</React.Fragment>

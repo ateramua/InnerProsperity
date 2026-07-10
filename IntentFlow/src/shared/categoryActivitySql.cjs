@@ -7,13 +7,21 @@
 const SQL_TX_NOT_DELETED = 'IFNULL(t.is_deleted, 0) = 0';
 
 /**
+ * Only transactions on active accounts count toward budget activity (matches the
+ * consolidated transaction register, which hides inactive/archived accounts).
+ * Requires `accounts a` joined on `t.account_id`.
+ */
+const SQL_TX_ACTIVE_ACCOUNT =
+  "(IFNULL(a.is_active, 1) != 0 AND IFNULL(a.account_status, 'active') = 'active')";
+
+/**
  * Cleared for budget activity: matches register "cleared" semantics.
  * Pending/uncleared (is_cleared = 0) do not affect envelope activity until posted.
  */
 const SQL_TX_CLEARED_FOR_BUDGET =
   '(IFNULL(t.is_cleared, 0) = 1 OR IFNULL(t.is_cleared, 0) = 2 OR IFNULL(t.is_reconciled, 0) = 1)';
 
-const SQL_BUDGET_ACTIVITY_WHERE = `${SQL_TX_NOT_DELETED} AND ${SQL_TX_CLEARED_FOR_BUDGET}`;
+const SQL_BUDGET_ACTIVITY_WHERE = `${SQL_TX_NOT_DELETED} AND ${SQL_TX_CLEARED_FOR_BUDGET} AND ${SQL_TX_ACTIVE_ACCOUNT}`;
 
 /**
  * Spending magnitude for envelope activity (outflows). Honors direction + positive
@@ -61,6 +69,7 @@ const SQL_SPLIT_INFLOW_MAGNITUDE = `
 
 module.exports = {
   SQL_TX_NOT_DELETED,
+  SQL_TX_ACTIVE_ACCOUNT,
   SQL_TX_CLEARED_FOR_BUDGET,
   SQL_BUDGET_ACTIVITY_WHERE,
   SQL_TX_SPENDING_MAGNITUDE,

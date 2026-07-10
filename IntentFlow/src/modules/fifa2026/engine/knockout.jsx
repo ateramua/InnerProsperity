@@ -1,6 +1,16 @@
-import { MATCH_STATUS } from '../config';
 import { seedLabel } from '../data/countryMeta';
+import { R32_PAIRING } from '../data/r32BracketTemplate';
+import {
+  assignThirdPlaceTeams,
+  getAssignmentForSlot,
+} from '../data/thirdPlaceAllocationMatrix';
+import { isGroupStageComplete } from './qualification';
 import { computeAllGroupStandings } from './standings';
+import { computeBestThirdPlaceRanking } from './qualification';
+import {
+  normalizeKnockoutMatch,
+  resolveKnockoutOutcome,
+} from './knockoutResolution';
 
 function buildGroupParticipants(groups, fixtures) {
   const standings = computeAllGroupStandings(groups, fixtures);
@@ -14,30 +24,21 @@ function buildGroupParticipants(groups, fixtures) {
     if (r) runners.push({ ...r, groupId, seed: `2${groupId}` });
   });
 
-  return { winners, runners, standings };
+  const bestThirdRanking = computeBestThirdPlaceRanking(standings);
+  const qualifiedThird = bestThirdRanking.filter((row) => row.qualifies);
+  const thirdPlaceAssignments = assignThirdPlaceTeams(qualifiedThird);
+
+  return {
+    winners,
+    runners,
+    qualifiedThird,
+    thirdPlaceAssignments,
+    standings,
+    groupStageComplete: isGroupStageComplete(fixtures),
+  };
 }
 
-/** R32 pairings — official FIFA World Cup 2026 bracket (UTC schedule). */
-const R32_PAIRING = [
-  ['2A', '2B'],
-  ['1E', '3ABCDF'],
-  ['1F', '2C'],
-  ['1C', '2F'],
-  ['1I', '3CDFGH'],
-  ['2E', '2I'],
-  ['1A', '3CEFHI'],
-  ['1L', '3EHIJK'],
-  ['1D', '3BEFIJ'],
-  ['1G', '3AEHIJ'],
-  ['2K', '2L'],
-  ['1H', '2J'],
-  ['1B', '3EFGIJ'],
-  ['1J', '2H'],
-  ['1K', '3DEIJL'],
-  ['2D', '2G'],
-];
-
-function resolveSeedToken(token, participants) {
+function resolveWinnerRunnerToken(token, participants) {
   if (token.startsWith('1') || token.startsWith('2')) {
     const pos = token[0] === '1' ? 1 : 2;
     const gid = token.slice(1);
@@ -48,9 +49,21 @@ function resolveSeedToken(token, participants) {
   return 'TBD';
 }
 
+function resolveThirdPlaceToken(token, r32Slot, side, participants) {
+  if (!token.startsWith('3')) return 'TBD';
+  return getAssignmentForSlot(participants.thirdPlaceAssignments, r32Slot, side);
+}
+
+function resolveR32SlotToken(token, r32Slot, side, participants) {
+  if (token.startsWith('3')) {
+    return resolveThirdPlaceToken(token, r32Slot, side, participants);
+  }
+  return resolveWinnerRunnerToken(token, participants);
+}
+
 export function populateKnockoutFromGroups(groups, fixtures, knockoutMatches) {
   const participants = buildGroupParticipants(groups, fixtures);
-  let matches = knockoutMatches.map((m) => ({ ...m }));
+  let matches = knockoutMatches.map((m) => normalizeKnockoutMatch(m));
 
   matches = matches.map((m) => {
     if (m.roundId !== 'r32') return m;
@@ -58,8 +71,8 @@ export function populateKnockoutFromGroups(groups, fixtures, knockoutMatches) {
     if (!pair) return m;
     return {
       ...m,
-      homeTeamId: resolveSeedToken(pair[0], participants),
-      awayTeamId: resolveSeedToken(pair[1], participants),
+      homeTeamId: resolveR32SlotToken(pair[0], m.slot, 'home', participants),
+      awayTeamId: resolveR32SlotToken(pair[1], m.slot, 'away', participants),
       homeSource: pair[0],
       awaySource: pair[1],
       homeSourceLabel: seedLabel(pair[0]),
@@ -70,65 +83,71 @@ export function populateKnockoutFromGroups(groups, fixtures, knockoutMatches) {
   return propagateKnockoutWinners(matches);
 }
 
+function getFeedSide(sourceMatchId, targetMatch) {
+  if (!targetMatch?.feedsFrom) return 'home';
+  const idx = targetMatch.feedsFrom.indexOf(sourceMatchId);
+  return idx === 1 ? 'away' : 'home';
+}
+
+function applyFeedSlot(match, feedId, byId) {
+  const side = getFeedSide(feedId, match);
+  const source = byId[feedId];
+  if (!source) return match;
+
+  const outcome = resolveKnockoutOutcome(source);
+  if (!outcome.complete) {
+    return {
+      ...match,
+      [`${side}TeamId`]: 'TBD',
+      [`${side}SourceLabel`]: null,
+    };
+  }
+
+  const useLoser = match.roundId === 'third';
+  const teamId = useLoser
+    ? (source.loserTeamId ?? outcome.loser)
+    : outcome.winner;
+  const prefix = useLoser ? 'Loser' : 'Winner';
+
+  return {
+    ...match,
+    [`${side}TeamId`]: teamId,
+    [`${side}SourceLabel`]: `${prefix} ${source.label}`,
+  };
+}
+
+/** Populate each slot from its feeder match; incomplete feeders leave TBD. */
+function populateMatchFromFeeds(match, byId) {
+  if (!match.feedsFrom || match.roundId === 'r32') return match;
+
+  const [feedA, feedB] = match.feedsFrom;
+  let next = match;
+  next = applyFeedSlot(next, feedA, byId);
+  next = applyFeedSlot(next, feedB, byId);
+  return next;
+}
+
+function annotateOutcomes(match) {
+  const outcome = resolveKnockoutOutcome(match);
+  if (!outcome.complete) {
+    return { ...match, winnerTeamId: null, loserTeamId: null };
+  }
+  return { ...match, winnerTeamId: outcome.winner, loserTeamId: outcome.loser };
+}
+
 export function propagateKnockoutWinners(knockoutMatches) {
-  const byId = Object.fromEntries(knockoutMatches.map((m) => [m.id, { ...m }]));
   const roundOrder = ['r32', 'r16', 'qf', 'sf', 'third', 'final'];
+  const byId = Object.fromEntries(
+    knockoutMatches.map((m) => [m.id, normalizeKnockoutMatch(m)]),
+  );
 
   roundOrder.forEach((roundId) => {
     knockoutMatches
       .filter((m) => m.roundId === roundId)
       .forEach((match) => {
         const current = byId[match.id];
-
-        if (roundId !== 'r32' && roundId !== 'third' && current.feedsFrom) {
-          const [feedA, feedB] = current.feedsFrom;
-          const srcA = byId[feedA];
-          const srcB = byId[feedB];
-          if (srcA?.status === MATCH_STATUS.COMPLETED && srcB?.status === MATCH_STATUS.COMPLETED) {
-            const winnerA = getWinner(srcA);
-            const winnerB = getWinner(srcB);
-            if (winnerA && winnerB) {
-              byId[current.id] = {
-                ...current,
-                homeTeamId: winnerA,
-                awayTeamId: winnerB,
-                homeSourceLabel: `Winner ${srcA.label}`,
-                awaySourceLabel: `Winner ${srcB.label}`,
-              };
-            }
-          }
-        }
-
-        if (current.status !== MATCH_STATUS.COMPLETED) return;
-        const { home, away } = current.score;
-        if (home == null || away == null) return;
-
-        const winner = home > away ? current.homeTeamId : away > home ? current.awayTeamId : null;
-        const loser = home > away ? current.awayTeamId : away > home ? current.homeTeamId : null;
-        if (!winner) return;
-
-        if (current.winnerAdvancesTo) {
-          const target = byId[current.winnerAdvancesTo];
-          if (target) {
-            const side = target.homeTeamId === 'TBD' ? 'home' : target.awayTeamId === 'TBD' ? 'away' : 'home';
-            byId[current.winnerAdvancesTo] = {
-              ...target,
-              [`${side}TeamId`]: winner,
-            };
-          }
-        }
-
-        if (roundId === 'sf' && loser) {
-          const thirdMatch = Object.values(byId).find((m) => m.roundId === 'third');
-          if (thirdMatch) {
-            const side = current.slot === 1 ? 'home' : 'away';
-            byId[thirdMatch.id] = {
-              ...thirdMatch,
-              [`${side}TeamId`]: loser,
-              [`${side}SourceLabel`]: `Loser ${current.label}`,
-            };
-          }
-        }
+        const populated = populateMatchFromFeeds(current, byId);
+        byId[match.id] = annotateOutcomes(populated);
       });
   });
 
@@ -139,19 +158,49 @@ export function propagateKnockoutWinners(knockoutMatches) {
   });
 }
 
-function getWinner(match) {
-  if (match.status !== MATCH_STATUS.COMPLETED) return null;
-  const { home, away } = match.score;
-  if (home == null || away == null) return null;
-  if (home > away) return match.homeTeamId;
-  if (away > home) return match.awayTeamId;
-  return null;
-}
-
 export function groupKnockoutByRound(matches) {
   return matches.reduce((acc, m) => {
     if (!acc[m.roundId]) acc[m.roundId] = [];
     acc[m.roundId].push(m);
     return acc;
   }, {});
+}
+
+export function buildMatchIndex(matches) {
+  return Object.fromEntries(matches.map((m) => [m.id, m]));
+}
+
+export function findNextMatch(match, matchIndex) {
+  return Object.values(matchIndex).find(
+    (candidate) => candidate.feedsFrom?.includes(match.id) && candidate.roundId !== 'third',
+  );
+}
+
+/** Match IDs on the champion's winning path (for UI highlighting). */
+export function computeChampionPath(matches, championTeamId) {
+  if (!championTeamId || championTeamId === 'TBD') return new Set();
+
+  const byId = buildMatchIndex(matches);
+  const path = new Set();
+
+  function walk(matchId) {
+    const match = byId[matchId];
+    if (!match || match.winnerTeamId !== championTeamId) return;
+    path.add(matchId);
+    match.feedsFrom?.forEach((sourceId) => walk(sourceId));
+  }
+
+  const finalMatch = matches.find((m) => m.roundId === 'final');
+  if (finalMatch) walk(finalMatch.id);
+
+  matches
+    .filter((m) => m.roundId === 'r32' && m.winnerTeamId === championTeamId)
+    .forEach((m) => path.add(m.id));
+
+  return path;
+}
+
+export function getNextMatchLabel(match, matchIndex) {
+  const next = findNextMatch(match, matchIndex);
+  return next?.label ?? null;
 }

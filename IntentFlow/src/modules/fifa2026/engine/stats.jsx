@@ -1,15 +1,21 @@
 import { MATCH_STATUS } from '../config';
+import { resolveKnockoutOutcome } from './knockoutResolution';
 
 function goalsFromMatches(matches) {
   const byTeam = {};
 
   matches.forEach((m) => {
     if (m.status !== MATCH_STATUS.COMPLETED) return;
-    const { home, away } = m.score;
+    const { home, away } = m.score ?? {};
     if (home == null || away == null) return;
 
     byTeam[m.homeTeamId] = (byTeam[m.homeTeamId] || 0) + home;
     byTeam[m.awayTeamId] = (byTeam[m.awayTeamId] || 0) + away;
+
+    if (m.extraTime) {
+      byTeam[m.homeTeamId] += m.extraTime.home ?? 0;
+      byTeam[m.awayTeamId] += m.extraTime.away ?? 0;
+    }
   });
 
   return byTeam;
@@ -29,12 +35,10 @@ export function computeTournamentStats(state) {
   const knockoutCompleted = state.knockoutMatches.filter((m) => m.status === MATCH_STATUS.COMPLETED).length;
 
   const final = state.knockoutMatches.find((m) => m.roundId === 'final');
-  let champion = null;
-  if (final?.status === MATCH_STATUS.COMPLETED) {
-    const { home, away } = final.score;
-    if (home != null && away != null && home !== away) {
-      champion = home > away ? final.homeTeamId : final.awayTeamId;
-    }
+  let champion = final?.winnerTeamId ?? null;
+  if (!champion && final?.status === MATCH_STATUS.COMPLETED) {
+    const outcome = resolveKnockoutOutcome(final);
+    champion = outcome.winner;
   }
 
   return {

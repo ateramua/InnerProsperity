@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
+import { sortRegisterDisplayOrder } from '../utils/transactionSortUtils.jsx';
 
 const AccountContext = createContext();
 
@@ -279,10 +280,9 @@ export function AccountProvider({ children }) {
     getTransactionsForAccount: useCallback((accountId, customFilters = null) => {
       const filters = customFilters || state.ui.filters;
       const transactionIds = state.transactions.byAccount[accountId] || [];
-      let transactions = transactionIds
-        .map(id => state.transactions.byId[id])
-        .filter(Boolean)
-        .sort((a, b) => new Date(b.date) - new Date(a.date));
+      let transactions = sortRegisterDisplayOrder(
+        transactionIds.map(id => state.transactions.byId[id]).filter(Boolean)
+      );
 
       // Apply filters
       if (filters.search) {

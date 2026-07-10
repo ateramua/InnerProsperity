@@ -218,6 +218,10 @@ async function runMigrations(existingDb) {
             '037_exclusive_ledger_columns.cjs',
             '038_imported_cash_reconciliation.cjs',
             '039_budget_integrity_phase_completion.cjs',
+            '040_credit_account_opening_balance.cjs',
+            '041_budget_integrity_architecture.cjs',
+            '042_budget_assignment_provenance.cjs',
+            '043_assignment_ledger_reconstruction.cjs',
         ];
 
         for (const migration of migrations) {

@@ -4,6 +4,7 @@ import EditAccountModal from './EditAccountModal';
 import { QRCodeCanvas } from 'qrcode.react';
 import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
 import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
+import InactiveAccountBadge from '../components/accounts/InactiveAccountBadge';
 import ConnectBankCTA from '../components/ConnectBankCTA';
 import {
   confirmNoDuplicateAccount,
@@ -756,6 +757,7 @@ function CreditCardManager({
                     <h3 style={styles.cardName}>
                       {card.name}
                       <PlaidLinkedBadge account={card} />
+                      <InactiveAccountBadge account={card} />
                       <PlaidManageConnectionLink account={card} onNavigate={onNavigate} />
                     </h3>
                     <div style={styles.cardInstitution}>

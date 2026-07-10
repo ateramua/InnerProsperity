@@ -8,10 +8,19 @@ const {
     computeAccountBalances,
     computeTransactionsWithRunningBalance,
     isSystemTransaction,
+    isCreditCardAccountType,
     buildStartingBalanceTransactionFields,
     validateAccountLedgerInvariant,
     assertExclusiveLedgerColumns,
 } = require('../../utils/accountBalanceEngine.cjs');
+const {
+    STARTING_BALANCE_PAYEE,
+    STARTING_BALANCE_DESCRIPTION,
+    STARTING_BALANCE_MEMO,
+} = require('../../shared/openingBalanceConstants.cjs');
+const {
+  isOpeningBalanceCategoryBlocked,
+} = require('../accounts/creditAccountOpeningBalanceService.cjs');
 const { applySqlitePragmas } = require('../../db/sqlitePragmas.cjs');
 const { getDatabase } = require('../../db/database.cjs');
 const { runTransaction } = require('../../db/transactionRunner.cjs');
@@ -87,7 +96,7 @@ class TransactionService {
                 params.push(filters.endDate);
             }
 
-            query += ` ORDER BY t.date DESC, t.created_at DESC`;
+            query += ` ORDER BY t.date DESC, t.created_at DESC, t.id DESC`;
 
             const transactions = await db.all(query, params);
             return transactions || [];
@@ -194,6 +203,14 @@ class TransactionService {
                 effectiveUpdates.direction = normalized.direction;
             }
 
+            if (isOpeningBalanceCategoryBlocked(oldTransaction)) {
+                if (Object.prototype.hasOwnProperty.call(effectiveUpdates, 'category_id')) {
+                    const err = new Error('Opening balance transactions cannot be categorized');
+                    err.code = 'OPENING_BALANCE_CATEGORY_BLOCKED';
+                    throw err;
+                }
+            }
+
             const allowedUpdates = [
                 'date', 'description', 'amount', 'category_id',
                 'payee', 'memo', 'check_number', 'is_cleared',
@@ -245,7 +262,7 @@ class TransactionService {
     LEFT JOIN categories c ON t.category_id = c.id
     WHERE t.account_id = ? AND t.user_id = ?
       AND (t.is_deleted IS NULL OR t.is_deleted = 0)
-    ORDER BY t.date DESC, t.created_at DESC
+    ORDER BY t.date DESC, t.created_at DESC, t.id DESC
   `;
         return await db.all(query, [accountId, userId]);
     }
@@ -293,9 +310,10 @@ class TransactionService {
      */
     async bulkDeleteTransactions(ids, userId) {
         const db = await this.getDb();
+        const importedCashReconciliationService = require('../budget/importedCashReconciliationService.cjs');
         const uniqueIds = [...new Set((ids || []).map((id) => String(id)).filter(Boolean))];
         if (!uniqueIds.length) {
-            return { deleted: 0, accountIds: [], dates: [] };
+            return { deleted: 0, reversed: 0, skipped: [], accountIds: [], dates: [] };
         }
 
         const rows = [];
@@ -304,7 +322,8 @@ class TransactionService {
             const chunk = uniqueIds.slice(i, i + chunkSize);
             const placeholders = chunk.map(() => '?').join(', ');
             const part = await db.all(
-                `SELECT id, account_id, date, plaid_transaction_id, is_transfer, linked_transaction_id
+                `SELECT id, account_id, date, plaid_transaction_id, is_transfer, linked_transaction_id,
+                        is_system, transaction_type, reconciliation_generated
                  FROM transactions
                  WHERE user_id = ?
                    AND id IN (${placeholders})
@@ -315,7 +334,7 @@ class TransactionService {
         }
 
         if (!rows.length) {
-            return { deleted: 0, accountIds: [], dates: [] };
+            return { deleted: 0, reversed: 0, skipped: [], accountIds: [], dates: [] };
         }
 
         const deleteOne = async (row) => {
@@ -336,18 +355,33 @@ class TransactionService {
         const processed = new Set();
         const accountIds = new Set();
         const dates = [];
+        const skipped = [];
+        const reversedIds = [];
+        const deletableRows = [];
+
+        for (const row of rows) {
+            if (row.is_system === 1) {
+                if (importedCashReconciliationService.isReversibleImportedCashOpeningBalance(row)) {
+                    await importedCashReconciliationService.reverseOpeningBalanceTransaction(
+                        db,
+                        userId,
+                        row.id
+                    );
+                    reversedIds.push(row.id);
+                    processed.add(row.id);
+                    accountIds.add(row.account_id);
+                    if (row.date) dates.push(row.date);
+                } else {
+                    skipped.push({ id: row.id, reason: 'system_protected' });
+                }
+                continue;
+            }
+            deletableRows.push(row);
+        }
 
         await runTransaction(db, async () => {
-            for (const row of rows) {
+            for (const row of deletableRows) {
                 if (processed.has(row.id)) continue;
-
-                const fullRow = await db.get(
-                    `SELECT is_system FROM transactions WHERE id = ? AND user_id = ?`,
-                    [row.id, userId]
-                );
-                if (fullRow && (fullRow.is_system === 1)) {
-                    continue;
-                }
 
                 accountIds.add(row.account_id);
                 if (row.date) dates.push(row.date);
@@ -382,7 +416,10 @@ class TransactionService {
         }
 
         return {
-            deleted: processed.size,
+            deleted: processed.size - reversedIds.length,
+            reversed: reversedIds.length,
+            reversedIds,
+            skipped,
             accountIds: [...accountIds],
             dates,
         };
@@ -607,6 +644,20 @@ class TransactionService {
      * Create a system starting-balance transaction for a new account.
      */
     async createStartingBalanceTransaction(db, account, userId, startDate = null) {
+        const { createCreditOpeningBalanceTransaction } = require('../accounts/creditAccountOpeningBalanceService.cjs');
+
+        if (isCreditCardAccountType(account?.type)) {
+            const result = await createCreditOpeningBalanceTransaction(db, {
+                account,
+                userId,
+                startDate,
+            });
+            if (result && !result.skipped) {
+                await this.updateAccountBalances(account.id);
+            }
+            return result;
+        }
+
         const initialBalance = Math.abs(Number(account.initial_balance) || 0);
         if (initialBalance === 0) return null;
 
@@ -631,19 +682,19 @@ class TransactionService {
             `
             INSERT INTO transactions (
               account_id, user_id, date, description, amount, direction,
-              payee, memo, is_cleared, is_system, is_reconciled, is_adjustment,
-              created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, datetime('now'), datetime('now'))
+              payee, memo, category_id, is_cleared, is_system, is_reconciled, is_adjustment,
+              mapping_status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 1, 1, 0, 'not_applicable', datetime('now'), datetime('now'))
         `,
             [
                 account.id,
                 userId,
                 date,
-                'Starting Balance',
+                STARTING_BALANCE_DESCRIPTION,
                 amount,
                 direction,
-                'Starting Balance',
-                'Opening Balance',
+                STARTING_BALANCE_PAYEE,
+                STARTING_BALANCE_MEMO,
             ]
         );
 

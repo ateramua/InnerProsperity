@@ -69,9 +69,29 @@ class BackupEngine {
     if (!fs.existsSync(dbPath)) {
       return { success: false, error: 'No database found to backup' };
     }
+    const sourceStats = fs.statSync(dbPath);
+    if (sourceStats.size <= 0) {
+      return { success: false, error: 'Database is empty and cannot be backed up' };
+    }
 
-    const snapshotPath = await this.createDbSnapshot();
+    let snapshotPath;
     try {
+      snapshotPath = await this.createDbSnapshot();
+    } catch (error) {
+      console.error('❌ Database snapshot failed:', error);
+      return { success: false, error: error.message || 'Database snapshot failed' };
+    }
+
+    try {
+      const snapshotStats = fs.statSync(snapshotPath);
+      if (snapshotStats.size <= 0) {
+        return {
+          success: false,
+          error:
+            'Database snapshot is empty. Export was aborted before writing a backup file.',
+        };
+      }
+
       const metadata = this.snapshotService.createSnapshotMetadata({
         dbPath: snapshotPath,
         sourceDeviceId: options.sourceDeviceId || 'desktop',
@@ -81,6 +101,24 @@ class BackupEngine {
       const result = await this.fileEncryption.backupDatabase(password, snapshotPath, null, options);
       if (!result.success) {
         return result;
+      }
+
+      try {
+        const container = this.fileEncryption.readBackupContainer(result.filePath);
+        const containerCheck = this.restoreValidator.validateBackupContainer(container);
+        if (!containerCheck.ok) {
+          try {
+            fs.unlinkSync(result.filePath);
+          } catch (_) {}
+          return { success: false, error: containerCheck.reason };
+        }
+      } catch (verifyError) {
+        try {
+          if (result.filePath && fs.existsSync(result.filePath)) {
+            fs.unlinkSync(result.filePath);
+          }
+        } catch (_) {}
+        return { success: false, error: verifyError.message || 'Backup verification failed' };
       }
 
       const version = {
@@ -204,6 +242,15 @@ class BackupEngine {
     }
     if (mode !== 'in-place' && mode !== 'side-by-side') {
       return { success: false, error: 'Unsupported restore mode' };
+    }
+    try {
+      const container = this.fileEncryption.readBackupContainer(backupFilePath);
+      const containerCheck = this.restoreValidator.validateBackupContainer(container);
+      if (!containerCheck.ok) {
+        return { success: false, error: containerCheck.reason };
+      }
+    } catch (error) {
+      return { success: false, error: error.message || 'Invalid backup file' };
     }
     return this.restoreFromEncrypted({ password, backupFilePath, mode });
   }

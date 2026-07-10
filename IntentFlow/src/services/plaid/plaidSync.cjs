@@ -785,6 +785,36 @@ async function syncTransactionsForItem(itemId, deps) {
     }
   }
 
+  let creditOpeningResult = null;
+  if (typeof deps.processPlaidCreditCardOpeningBalance === 'function') {
+    try {
+      const creditAccounts = await db.all(
+        `SELECT a.id, a.balance FROM accounts a
+         JOIN plaid_accounts pa ON pa.account_id = a.id
+         WHERE pa.item_id = ? AND a.user_id = ? AND LOWER(IFNULL(a.type, '')) = 'credit'`,
+        [itemId, userId]
+      );
+      const candidates = creditAccounts.map((a) => ({
+        accountId: a.id,
+        importedBalance: Number(a.balance) || 0,
+      }));
+      if (candidates.length > 0) {
+        creditOpeningResult = await deps.processPlaidCreditCardOpeningBalance(
+          db,
+          userId,
+          candidates
+        );
+      }
+      if (typeof deps.reconcileCreditAccountAfterImport === 'function') {
+        for (const acct of creditAccounts) {
+          await deps.reconcileCreditAccountAfterImport(db, userId, acct.id);
+        }
+      }
+    } catch (ccOpenErr) {
+      console.warn('Credit card opening balance after Plaid sync skipped:', ccOpenErr.message);
+    }
+  }
+
   return {
     success: true,
     transferPairsLinked: pairResult?.pairsLinked ?? 0,
@@ -792,6 +822,7 @@ async function syncTransactionsForItem(itemId, deps) {
     transactionsModified,
     transactionsRemoved,
     unmappedCategories: Array.from(unmappedCategories),
+    creditOpening: creditOpeningResult,
   };
 }
 

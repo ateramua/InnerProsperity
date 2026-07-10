@@ -1,8 +1,10 @@
 /**
  * FIFA group-stage tiebreakers (simplified official order):
  * 1. Points  2. Goal difference  3. Goals scored  4. Head-to-head (mini-league)
- * 5. Fair play  6. Drawing of lots (alphabetical code as stable fallback)
+ * 5. Fair play  6. FIFA ranking (final tie-breaker)
  */
+import { getFifaRanking } from '../data/countryMeta';
+
 export function compareTeams(a, b, h2hMap = new Map()) {
   if (b.points !== a.points) return b.points - a.points;
   if (b.goalDifference !== a.goalDifference) return b.goalDifference - a.goalDifference;
@@ -22,7 +24,16 @@ export function compareTeams(a, b, h2hMap = new Map()) {
   }
 
   if (a.fairPlayPoints !== b.fairPlayPoints) return a.fairPlayPoints - b.fairPlayPoints;
-  return a.teamId.localeCompare(b.teamId);
+  return getFifaRanking(a.teamId) - getFifaRanking(b.teamId);
+}
+
+/** Cross-group third-place ranking — no head-to-head between groups. */
+export function compareThirdPlaceTeams(a, b) {
+  if (b.points !== a.points) return b.points - a.points;
+  if (b.goalDifference !== a.goalDifference) return b.goalDifference - a.goalDifference;
+  if (b.goalsFor !== a.goalsFor) return b.goalsFor - a.goalsFor;
+  if (a.fairPlayPoints !== b.fairPlayPoints) return a.fairPlayPoints - b.fairPlayPoints;
+  return getFifaRanking(a.teamId) - getFifaRanking(b.teamId);
 }
 
 export function pairKey(a, b) {

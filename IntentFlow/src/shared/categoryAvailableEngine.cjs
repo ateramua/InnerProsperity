@@ -108,6 +108,7 @@ async function getCategoryTransactionTotals(db, userId, categoryId, monthYm, opt
         ${SQL_TX_SPENDING_MAGNITUDE} AS spending,
         ${SQL_TX_INFLOW_MAGNITUDE} AS inflows
       FROM transactions t
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE t.user_id = ?
         AND CAST(t.category_id AS TEXT) = CAST(? AS TEXT)
         AND strftime('%Y-%m', t.date) = ?
@@ -118,6 +119,7 @@ async function getCategoryTransactionTotals(db, userId, categoryId, monthYm, opt
         ${SQL_SPLIT_INFLOW_MAGNITUDE} AS inflows
       FROM transaction_splits ts
       INNER JOIN transactions t ON CAST(t.id AS TEXT) = CAST(ts.transaction_id AS TEXT)
+      INNER JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
       WHERE ts.user_id = ?
         AND CAST(ts.category_id AS TEXT) = CAST(? AS TEXT)
         AND strftime('%Y-%m', t.date) = ?
@@ -140,6 +142,8 @@ async function getCategoryTransactionTotals(db, userId, categoryId, monthYm, opt
         AND lower(IFNULL(a.type, '')) IN ('credit', 'credit card', 'charge card')
         AND strftime('%Y-%m', t.date) = ?
         AND IFNULL(t.is_deleted, 0) = 0
+        AND IFNULL(a.is_active, 1) != 0
+        AND IFNULL(a.account_status, 'active') = 'active'
         AND t.amount > 0
         AND (
           IFNULL(t.is_transfer, 0) = 1

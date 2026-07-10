@@ -2347,19 +2347,16 @@ const PropertyMapView = ({ onNavigate }) => {
       return;
     }
 
-    let activeCategories = null;
-    if (!useServerFundUnderfunded) {
-      const freshRows = await loadCategoriesFromDB(0, {
-        monthDate: monthKeyToLocalDate(monthKey),
-        suppressLoading: true,
-        skipStaleRestore: true,
-        forceFreshSnapshotOnly: true,
-      });
-      activeCategories = getActiveBudgetCategories(freshRows);
-      if (!activeCategories.length) {
-        alert('No budget categories are loaded for this month. Try Refresh categories, then try again.');
-        return;
-      }
+    const freshRows = await loadCategoriesFromDB(0, {
+      monthDate: monthKeyToLocalDate(monthKey),
+      suppressLoading: true,
+      skipStaleRestore: true,
+      forceFreshSnapshotOnly: true,
+    });
+    const activeCategories = getActiveBudgetCategories(freshRows);
+    if (!activeCategories.length) {
+      alert('No budget categories are loaded for this month. Try Refresh categories, then try again.');
+      return;
     }
 
     let allocations = [];
@@ -2403,6 +2400,7 @@ const PropertyMapView = ({ onNavigate }) => {
       }
 
       case 'underfunded': {
+        const clientPlan = computeFundUnderfundedPlan(activeCategories, { pool });
         if (useServerFundUnderfunded) {
           const preview = await window.electronAPI.fundUnderfundedMonthBudget(
             userId,
@@ -2418,10 +2416,22 @@ const PropertyMapView = ({ onNavigate }) => {
             amount: row.amount,
             reason: row.reason,
           }));
+          if (
+            allocations.length === 0 &&
+            (clientPlan.totalFundingNeed || 0) > 0.005 &&
+            clientPlan.allocations.length > 0
+          ) {
+            logFundUnderfunded('fallback:clientPlanAfterServerEmpty', {
+              monthKey,
+              clientNeed: clientPlan.totalFundingNeed,
+              clientAllocCount: clientPlan.allocations.length,
+            });
+            allocations = clientPlan.allocations;
+            underfundedPlanFromServer = clientPlan;
+          }
           break;
         }
-        const plan = computeFundUnderfundedPlan(activeCategories, { pool });
-        allocations = plan.allocations;
+        allocations = clientPlan.allocations;
         break;
       }
 
@@ -2632,11 +2642,26 @@ const PropertyMapView = ({ onNavigate }) => {
         budgetMutationInFlightRef.current = false;
       }
     } else {
+      const monthLabel = (selectedMonthRef.current || selectedMonth).toLocaleString('default', {
+        month: 'long',
+        year: 'numeric',
+      });
+      const syncedNeed = roundMoney(getFundUnderfundedSummary(activeCategories).totalFundingNeed || 0);
+      const emptyFundMessage =
+        method === 'underfunded' && syncedNeed <= 0.005
+          ? `All categories are fully funded for ${monthLabel} based on current goals and assignments.`
+          : 'No categories need funding based on current criteria for this month.';
+      if (method === 'underfunded') {
+        await reloadBudgetAfterMoneyMutation(monthKey, {
+          suppressLoading: true,
+          retainInFlight: true,
+        });
+      }
       await showIntentFlowDialog({
         id: method === 'underfunded' ? 'fund-underfunded-complete' : 'smart-assign-complete',
         type: 'info',
         title: method === 'underfunded' ? 'Fund Underfunded' : 'Smart Assign',
-        message: 'No categories need funding based on current criteria for this month.',
+        message: emptyFundMessage,
       });
     }
     } finally {

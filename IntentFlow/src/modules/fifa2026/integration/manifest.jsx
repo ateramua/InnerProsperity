@@ -10,7 +10,7 @@
  */
 export const FIFA_2026_INTEGRATION = {
   route: '/fifa-2026',
-  storageKey: 'intentflow:fifa2026:v3',
+  storageKey: 'intentflow:fifa2026:v7',
   touchpoints: [
     'src/modules/fifa2026/',
     'src/pages/fifa-2026.jsx',

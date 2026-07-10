@@ -3,9 +3,10 @@ import { loadAllAccountsViaApi } from '../utils/cashAccountUtils';
 import useRealtimeUpdates from './useRealtimeUpdates';
 import { subscribeAccountsChanged } from '../utils/accountRefreshEvents.jsx';
 import { applyTransactionPatch } from '../utils/transactionPatchUtils.jsx';
+import { isAccountListedInUi } from '../shared/accountVisibilityUtils.cjs';
 
-function isActiveAccount(account) {
-  return account?.is_active !== 0 && String(account?.account_status || 'active') === 'active';
+function isListedAccount(account) {
+  return isAccountListedInUi(account);
 }
 
 /**
@@ -47,7 +48,7 @@ export default function useConsolidatedTransactions({ activeOnly = true } = {}) 
 
       const accountsResult = await loadAllAccountsViaApi();
       const acctList = accountsResult.success ? accountsResult.data || [] : [];
-      const filteredAccounts = activeOnly ? acctList.filter(isActiveAccount) : acctList;
+      const filteredAccounts = activeOnly ? acctList.filter(isListedAccount) : acctList;
       setAccounts(acctList);
 
       const nameMap = new Map(
@@ -181,7 +182,7 @@ export default function useConsolidatedTransactions({ activeOnly = true } = {}) 
   );
 
   const activeAccounts = useMemo(
-    () => (activeOnly ? accounts.filter(isActiveAccount) : accounts),
+    () => (activeOnly ? accounts.filter(isListedAccount) : accounts),
     [accounts, activeOnly]
   );
 

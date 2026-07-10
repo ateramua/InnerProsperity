@@ -41,6 +41,7 @@ import {
     normalizeTransactionId,
     pruneTransactionSelection,
 } from '../../utils/transactionSelectionUtils.jsx';
+import { formatBulkDeleteResultMessage } from '../../utils/bulkDeleteFeedback.jsx';
 import AccountRoutingPayeeOptions from '../../components/transactions/AccountRoutingPayeeOptions.jsx';
 import {
     buildAccountPayeeOptions,
@@ -1555,7 +1556,11 @@ const AccountDetailPage = () => {
                 throw new Error(deleteResult?.error || 'Bulk delete failed');
             }
 
-            const deletedCount = deleteResult.data?.deleted ?? selectedIds.length;
+            const feedback = formatBulkDeleteResultMessage(deleteResult.data);
+            if (!feedback.ok) {
+                alert(feedback.message);
+                return;
+            }
 
             await loadAccountData(account.id);
 
@@ -1571,7 +1576,7 @@ const AccountDetailPage = () => {
             window.dispatchEvent(new CustomEvent('accounts-updated'));
             window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
 
-            alert(`✅ Successfully deleted ${deletedCount} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`);
+            alert(`${feedback.message}\nNew balance: ${formatCurrency(newBalance)}`);
         } catch (error) {
             console.error('Error deleting transactions:', error);
             alert('Error deleting transactions: ' + error.message);

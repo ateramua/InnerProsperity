@@ -1,15 +1,56 @@
 /**
  * Shared sorting for transaction lists/tables across register views.
+ *
+ * Default date ↓: newest dates at the top, oldest at the bottom. Within the same
+ * date, rows follow ledger chronology bottom → top (matches running balance).
  */
 
 export const DEFAULT_TRANSACTION_SORT = Object.freeze({ key: 'date', dir: 'desc' });
 
+/** Same as default date sort — newest at top, oldest at bottom, chron within each day. */
+export const REGISTER_DISPLAY_SORT = DEFAULT_TRANSACTION_SORT;
+
+/**
+ * Register table order for balance walk: oldest row at the bottom, newer rows above.
+ * Matches running-balance computation order (reversed for display).
+ */
+export function sortRegisterDisplayOrder(list) {
+  return [...(list || [])].sort((a, b) => {
+    const cmp = String(a.date || '').localeCompare(String(b.date || ''));
+    if (cmp !== 0) return -cmp;
+    return -compareTransactionsChronologically(a, b);
+  });
+}
+
+/**
+ * Ledger chronological order (oldest → newest). Matches running-balance computation.
+ */
+export function compareTransactionsChronologically(a, b) {
+  const da = String(a?.date || '');
+  const db = String(b?.date || '');
+  if (da !== db) return da.localeCompare(db);
+
+  const ca = String(a?.created_at || '');
+  const cb = String(b?.created_at || '');
+  if (ca !== cb) return ca.localeCompare(cb);
+
+  const aId = Number(a?.id);
+  const bId = Number(b?.id);
+  if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) {
+    return aId - bId;
+  }
+  return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), undefined, { numeric: true });
+}
+
 export function getNextSortState(current, key) {
   const prev = current || DEFAULT_TRANSACTION_SORT;
+  if (key === 'date') {
+    return { key: 'date', dir: 'desc' };
+  }
   if (prev.key === key) {
     return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
   }
-  return { key, dir: key === 'date' ? 'desc' : 'asc' };
+  return { key, dir: 'asc' };
 }
 
 function categoryLabel(tx, categoryNameById) {
@@ -24,6 +65,10 @@ function categoryLabel(tx, categoryNameById) {
  */
 export function sortTransactions(list, sort, opts = {}) {
   const { key, dir } = sort || DEFAULT_TRANSACTION_SORT;
+  if (key === 'date') {
+    return sortRegisterDisplayOrder(list);
+  }
+
   const mult = dir === 'asc' ? 1 : -1;
   const categoryNameById = new Map(
     (opts.categories || [])
@@ -34,9 +79,6 @@ export function sortTransactions(list, sort, opts = {}) {
   return [...(list || [])].sort((a, b) => {
     let cmp = 0;
     switch (key) {
-      case 'date':
-        cmp = String(a.date || '').localeCompare(String(b.date || ''));
-        break;
       case 'payee':
       case 'description':
         cmp = String(a.payee || a.description || '').localeCompare(
@@ -78,11 +120,12 @@ export function sortTransactions(list, sort, opts = {}) {
         cmp = 0;
     }
     if (cmp !== 0) return cmp * mult;
-    return String(a.id ?? '').localeCompare(String(b.id ?? ''));
+    return String(a.id ?? '').localeCompare(String(b.id ?? ''), undefined, { numeric: true });
   });
 }
 
 export function sortIndicator(sort, key) {
   if (!sort || sort.key !== key) return '';
+  if (key === 'date') return ' ↓';
   return sort.dir === 'asc' ? ' ↑' : ' ↓';
 }

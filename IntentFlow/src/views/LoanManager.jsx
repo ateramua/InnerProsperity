@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import EditAccountModal from './EditAccountModal';
 import PlaidLinkedBadge from '../components/PlaidLinkedBadge';
 import PlaidManageConnectionLink from '../components/PlaidManageConnectionLink';
+import InactiveAccountBadge from '../components/accounts/InactiveAccountBadge';
 import ConnectBankCTA from '../components/ConnectBankCTA';
 import {
   confirmNoDuplicateAccount,
@@ -770,6 +771,7 @@ function LoanManager({
                     <h3 style={styles.loanName}>
                       {loan.name}
                       <PlaidLinkedBadge account={loan} />
+                      <InactiveAccountBadge account={loan} />
                       <PlaidManageConnectionLink account={loan} onNavigate={onNavigate} />
                     </h3>
                     <div style={styles.loanLender}>{loan.lender || loan.institution || 'Lender'}</div>

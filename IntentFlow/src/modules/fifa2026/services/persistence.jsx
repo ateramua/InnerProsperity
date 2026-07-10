@@ -11,7 +11,14 @@ export function loadTournamentState() {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return recalculateTournament(createInitialTournamentState());
     const parsed = JSON.parse(raw);
-    return recalculateTournament({ ...createInitialTournamentState(), ...parsed });
+    const resultOverrides = Object.fromEntries(
+      Object.entries(parsed.resultOverrides ?? {}).filter(([id]) => id.startsWith('ko-')),
+    );
+    return recalculateTournament({
+      ...createInitialTournamentState(),
+      ...parsed,
+      resultOverrides,
+    });
   } catch {
     return recalculateTournament(createInitialTournamentState());
   }

@@ -1,11 +1,16 @@
 /**
- * Budget integrity — IntentFlow accounting identity:
- *   ON_BUDGET_CASH = RTA + SUM(CATEGORY_AVAILABLE)
+ * Budget integrity — IntentFlow accounting identity.
+ *
+ * Global identity (month-independent):
+ *   ON_BUDGET_CASH = RTA + categoryAvailable(anchorMonth) + futureAssignedAfter(anchorMonth)
+ *
+ * Legacy month-scoped identity retained for diagnostics only.
  */
 
 const { roundMoney } = require('../../shared/readyToAssignEngine.cjs');
 const { isOnBudgetCashAccount, isAccountActive } = require('../../utils/cashAccountUtils.cjs');
 const readyToAssignPoolService = require('./readyToAssignPoolService.cjs');
+const rtaLedgerService = require('./rtaLedgerService.cjs');
 
 function monthlyBudgetService() {
   return require('./monthlyBudgetService.cjs');
@@ -18,10 +23,12 @@ function accountWorkingBalance(account) {
   return Number(account.balance) || 0;
 }
 
+async function readReadyToAssign(db, userId) {
+  return rtaLedgerService.getAuthoritativeRta(db, userId);
+}
+
 /**
  * Sum on-budget checking + savings working balances (active accounts only).
- * @param {import('sqlite').Database} db
- * @param {string} userId
  */
 async function computeOnBudgetCash(db, userId) {
   const accounts = await db.all(
@@ -41,12 +48,6 @@ async function computeOnBudgetCash(db, userId) {
   );
 }
 
-/**
- * Sum current-month category available (includes CC payment categories).
- * @param {import('sqlite').Database} db
- * @param {string} userId
- * @param {string} [monthKey]
- */
 async function computeCategoryAvailableTotal(db, userId, monthKey) {
   const mbs = monthlyBudgetService();
   const normalizedMonth = mbs.toLocalMonthKey(monthKey || new Date());
@@ -73,11 +74,41 @@ async function computeMultiMonthCategoryAvailableTotal(db, userId, centerMonthKe
 }
 
 /**
- * Pool identity when RTA is global but category envelopes are month-scoped (cross-month assigns).
+ * Global budget identity — anchor is always the current calendar month (not UI month picker).
  */
+async function evaluateGlobalBudgetIdentity(db, userId, opts = {}) {
+  const mbs = monthlyBudgetService();
+  const anchorMonth = mbs.toLocalMonthKey(opts.anchorMonth || new Date());
+  const onBudgetCash = await computeOnBudgetCash(db, userId);
+  const readyToAssign = await readReadyToAssign(db, userId);
+  const categoryTotal = await computeCategoryAvailableTotal(db, userId, anchorMonth);
+
+  const { rows } = await mbs.getGlobalAssignmentTotals(db, userId);
+  const importedCashReconciliationService = require('./importedCashReconciliationService.cjs');
+  const futureAssignedAfterAnchor = importedCashReconciliationService.computeFutureAssignedAfterMonth(
+    rows,
+    anchorMonth
+  );
+  const reservedBudget = roundMoney(categoryTotal + futureAssignedAfterAnchor);
+  const budgetInvariantDelta = roundMoney(onBudgetCash - (readyToAssign + reservedBudget));
+
+  return {
+    onBudgetCash,
+    readyToAssign,
+    categoryTotal,
+    futureAssignedAfterAnchor,
+    reservedBudget,
+    totalCash: onBudgetCash,
+    invariantValid: Math.abs(budgetInvariantDelta) < 0.02,
+    budgetInvariantDelta,
+    anchorMonth,
+    identityMode: 'global',
+  };
+}
+
 async function evaluateMultiMonthBudgetIdentity(db, userId, centerMonthKey) {
   const onBudgetCash = await computeOnBudgetCash(db, userId);
-  const readyToAssign = await readyToAssignPoolService.getPoolBalance(db, userId);
+  const readyToAssign = await readReadyToAssign(db, userId);
   const categoryTotal = await computeMultiMonthCategoryAvailableTotal(db, userId, centerMonthKey);
   const budgetInvariantDelta = roundMoney(
     onBudgetCash - (readyToAssign + categoryTotal)
@@ -94,20 +125,12 @@ async function evaluateMultiMonthBudgetIdentity(db, userId, centerMonthKey) {
 }
 
 /**
- * @returns {Promise<{
- *   onBudgetCash: number,
- *   readyToAssign: number,
- *   categoryTotal: number,
- *   totalCash: number,
- *   invariantValid: boolean,
- *   budgetInvariantDelta: number,
- *   monthKey: string,
- * }>}
+ * Legacy month-scoped identity (selected month only — may vary with month picker).
  */
 async function evaluateBudgetIdentity(db, userId, opts = {}) {
   const monthKey = monthlyBudgetService().toLocalMonthKey(opts.monthKey || new Date());
   const onBudgetCash = await computeOnBudgetCash(db, userId);
-  const readyToAssign = await readyToAssignPoolService.getPoolBalance(db, userId);
+  const readyToAssign = await readReadyToAssign(db, userId);
   const categoryTotal = await computeCategoryAvailableTotal(db, userId, monthKey);
   const budgetInvariantDelta = roundMoney(
     onBudgetCash - (readyToAssign + categoryTotal)
@@ -120,34 +143,33 @@ async function evaluateBudgetIdentity(db, userId, opts = {}) {
     invariantValid: Math.abs(budgetInvariantDelta) < 0.02,
     budgetInvariantDelta,
     monthKey,
+    identityMode: 'month_scoped',
   };
 }
 
 /**
- * Align RTA pool so cash = RTA + category available.
+ * Sync RTA pool from ledger-derived balance (no cash − category administrative repair).
  */
 async function reconcileBudgetIdentity(db, userId, opts = {}) {
-  const state = await evaluateBudgetIdentity(db, userId, opts);
-  if (state.invariantValid) return { ...state, reconciled: false };
+  const state = await evaluateGlobalBudgetIdentity(db, userId, opts);
+  if (state.invariantValid) {
+    return { ...state, reconciled: false };
+  }
 
-  const targetRta = roundMoney(state.onBudgetCash - state.categoryTotal);
-  await readyToAssignPoolService.setPoolBalance(db, userId, targetRta);
-  await db.run(
-    `UPDATE user_budget_pool
-     SET pool_backfilled = 1, updated_at = datetime('now')
-     WHERE user_id = ?`,
-    [userId]
-  );
-
-  const after = await evaluateBudgetIdentity(db, userId, opts);
-  return { ...after, reconciled: true, previousDelta: state.budgetInvariantDelta };
+  const sync = await rtaLedgerService.syncPoolFromLedger(db, userId, {
+    source: 'ledger_sync',
+  });
+  const after = await evaluateGlobalBudgetIdentity(db, userId, opts);
+  return {
+    ...after,
+    reconciled: true,
+    previousDelta: state.budgetInvariantDelta,
+    readyToAssign: sync.readyToAssign,
+  };
 }
 
-/**
- * Enforce identity; auto-reconcile by default unless opts.hardFail is true.
- */
 async function assertBudgetIdentity(db, userId, opts = {}) {
-  const state = await evaluateBudgetIdentity(db, userId, opts);
+  const state = await evaluateGlobalBudgetIdentity(db, userId, opts);
   if (state.invariantValid) return state;
 
   if (opts.autoReconcile !== false) {
@@ -155,17 +177,14 @@ async function assertBudgetIdentity(db, userId, opts = {}) {
   }
 
   const err = new Error(
-    `Budget identity violation: on-budget cash ${state.onBudgetCash} != RTA ${state.readyToAssign} + category available ${state.categoryTotal} (delta ${state.budgetInvariantDelta})`
+    `Budget identity violation: on-budget cash ${state.onBudgetCash} != RTA ${state.readyToAssign} + ` +
+      `reserved budget ${state.reservedBudget} (delta ${state.budgetInvariantDelta})`
   );
   err.code = 'BUDGET_INTEGRITY_VIOLATION';
   err.breakdown = state;
   throw err;
 }
 
-/**
- * Restrict active on-budget accounts to a scenario scope (test isolation).
- * @param {string[]} keepAccountNames
- */
 function rankScopedAccount(account, nameInKeepSet) {
   let score = 0;
   if (nameInKeepSet) score += 20;
@@ -246,6 +265,7 @@ module.exports = {
   computeCategoryAvailableTotal,
   computeMultiMonthCategoryAvailableTotal,
   evaluateBudgetIdentity,
+  evaluateGlobalBudgetIdentity,
   evaluateMultiMonthBudgetIdentity,
   reconcileBudgetIdentity,
   assertBudgetIdentity,

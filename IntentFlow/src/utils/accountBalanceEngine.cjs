@@ -4,6 +4,8 @@
  * Direction + positive amount is preferred; legacy signed amounts remain supported.
  */
 
+const { CREDIT_OPENING_BALANCE_TYPE } = require('../shared/openingBalanceConstants.cjs');
+
 const CREDIT_TYPES = new Set(['credit', 'credit_card', 'loan']);
 
 function isDeleted(tx) {
@@ -29,6 +31,7 @@ function isCreditCardAccountType(type) {
 
 function isStartingBalanceTransaction(tx) {
   if (!tx || isDeleted(tx)) return false;
+  if (String(tx.transaction_type || '') === CREDIT_OPENING_BALANCE_TYPE) return true;
   const payee = String(tx.payee || '').trim().toLowerCase();
   const description = String(tx.description || '').trim().toLowerCase();
   return (
@@ -217,18 +220,28 @@ function computeAccountBalances(account, transactions) {
 /**
  * Running balance after each transaction (ascending date order).
  */
+function compareTransactionsChronologically(a, b) {
+  const da = String(a?.date || '');
+  const db = String(b?.date || '');
+  if (da !== db) return da.localeCompare(db);
+
+  const ca = String(a?.created_at || '');
+  const cb = String(b?.created_at || '');
+  if (ca !== cb) return ca.localeCompare(cb);
+
+  const aId = Number(a?.id);
+  const bId = Number(b?.id);
+  if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) {
+    return aId - bId;
+  }
+  return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), undefined, { numeric: true });
+}
+
 function computeTransactionsWithRunningBalance(account, transactions) {
   const active = (transactions || [])
     .filter((tx) => !isDeleted(tx))
     .slice()
-    .sort((a, b) => {
-      const da = String(a.date || '');
-      const db = String(b.date || '');
-      if (da !== db) return da.localeCompare(db);
-      const ca = String(a.created_at || a.id || '');
-      const cb = String(b.created_at || b.id || '');
-      return ca.localeCompare(cb);
-    });
+    .sort(compareTransactionsChronologically);
 
   let running = getInitialBalanceBase(account, active);
 

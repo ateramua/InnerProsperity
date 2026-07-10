@@ -36,6 +36,8 @@
     "test:imported-cash": "node scripts/test-imported-cash-reconciliation.cjs",
     "test:duplicate-resolution": "node scripts/test-account-duplicate-resolution.cjs",
     "test:cash-forecast": "node scripts/test-cash-forecast-engine.mjs",
+    "test:fifa-standings": "npx tsx scripts/test-fifa-standings.mjs",
+    "test:fifa-knockout": "npx tsx scripts/test-fifa-knockout.mjs",
     "test:transaction-import": "node scripts/test-transaction-import-banks.cjs",
     "test:category-ml": "node scripts/test-category-ml.cjs",
     "test:transaction-categorization": "node scripts/test-transaction-categorization.cjs && node scripts/test-transfer-pairing.cjs && node scripts/test-category-ml.cjs",
@@ -43,6 +45,7 @@
     "check:db-single-writer": "node scripts/check-db-single-writer.cjs",
     "check:ipc-write-broker": "node scripts/check-ipc-write-broker.cjs",
     "test:db-broker": "node scripts/test-db-broker.cjs",
+    "test:backup": "node scripts/test-backup-roundtrip.cjs",
     "check:db-architecture": "npm run check:db-single-writer && npm run check:ipc-write-broker && npm run test:db-broker",
     "check:db-isolation": "node scripts/test-db-environment-isolation.cjs && npm run generate:empty-schema && npm run seed:db && npm run verify:release-db-policy",
     "plaid:sync-env": "node scripts/sync-plaid-env-to-userdata.cjs",
@@ -54,6 +57,7 @@
   "build": {
     "appId": "com.intentflow.moneymanager",
     "productName": "IntentFlow",
+    "icon": "assets/icon.icns",
     "directories": {
       "output": "release"
     },
@@ -103,9 +107,14 @@
       {
         "from": "src/db/data/production-seed.db",
         "to": "db/data/production-seed.db"
+      },
+      {
+        "from": "assets/icon.png",
+        "to": "assets/icon.png"
       }
     ],
     "mac": {
+      "icon": "assets/icon.icns",
       "target": [
         {
           "target": "dmg",

@@ -287,8 +287,20 @@ try {
     reconcileImportedCash: (userId, options) =>
       ipcRenderer.invoke('budget:reconcileImportedCash', userId, options || {}),
 
+    reverseImportedCashOpeningBalance: (userId, transactionId) =>
+      ipcRenderer.invoke('budget:reverseImportedCashOpeningBalance', userId, transactionId),
+
     getBudgetIdentityDiagnostics: (userId, monthKey) =>
       ipcRenderer.invoke('budget:getIdentityDiagnostics', userId, monthKey),
+
+    getBudgetConsistencyReport: (userId, monthKey) =>
+      ipcRenderer.invoke('budget:getConsistencyReport', userId, monthKey),
+
+    applyBudgetConsistencyRepairs: (userId, repairIds, options) =>
+      ipcRenderer.invoke('budget:applyConsistencyRepairs', userId, repairIds, options || {}),
+
+    backfillAssignmentLedger: (userId) =>
+      ipcRenderer.invoke('budget:backfillAssignmentLedger', userId),
 
     suppressBudgetIntegrityWarning: (userId, options) =>
       ipcRenderer.invoke('budget:suppressIntegrityWarning', userId, options || {}),
@@ -308,6 +320,9 @@ try {
 
     softDeleteMonthTransactions: (payload) =>
       ipcRenderer.invoke('harness:softDeleteMonthTransactions', payload || {}),
+
+    harnessImportedCash: (payload) =>
+      ipcRenderer.invoke('harness:importedCash', payload || {}),
 
     unassignMonthBudget: (userId, monthKey) =>
       ipcRenderer.invoke('budget:unassignMonth', userId, monthKey),

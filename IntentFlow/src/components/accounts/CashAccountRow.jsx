@@ -1,6 +1,7 @@
 import React from 'react';
 import PlaidLinkedBadge from '../PlaidLinkedBadge';
 import PlaidManageConnectionLink from '../PlaidManageConnectionLink';
+import InactiveAccountBadge from './InactiveAccountBadge';
 import { normalizeAccountId } from '../../utils/cashAccountUtils';
 
 /**
@@ -38,6 +39,7 @@ const CashAccountRow = ({
           <div style={styles.accountName}>
             {account.name}
             <PlaidLinkedBadge account={account} />
+            <InactiveAccountBadge account={account} />
             <PlaidManageConnectionLink account={account} />
           </div>
           <div style={styles.accountMeta}>

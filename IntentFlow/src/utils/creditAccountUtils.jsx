@@ -12,6 +12,7 @@ export {
 } from './accountTypeUtils.cjs';
 
 import { resolveDisplayAccountType } from './accountTypeUtils.cjs';
+import { isAccountListedInUi } from '../shared/accountVisibilityUtils.cjs';
 
 export function isCreditAccountType(account) {
   return resolveDisplayAccountType(account) === 'credit';
@@ -19,7 +20,7 @@ export function isCreditAccountType(account) {
 
 export function filterCreditAccounts(list) {
   if (!Array.isArray(list)) return [];
-  return list.filter((account) => account && isCreditAccountType(account));
+  return list.filter((account) => account && isCreditAccountType(account) && isAccountListedInUi(account));
 }
 
 export async function loadCreditCardsViaApi() {

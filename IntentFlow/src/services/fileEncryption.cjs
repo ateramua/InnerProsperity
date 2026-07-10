@@ -4,10 +4,22 @@ const crypto = require('crypto');
 const CryptoJS = require('crypto-js');
 const { app, dialog } = require('electron');
 
+const MIN_SQLITE_DB_BYTES = 100;
+const SQLITE_FILE_HEADER = 'SQLite format 3';
+const EMPTY_ENCRYPTED_PAYLOAD_ERROR =
+  'Backup file has an empty encrypted payload (no database data). This file cannot be restored. Export a new backup to a disk with free space, then try again.';
+
 class FileEncryption {
   constructor() {
     this.currentFile = null;
     this.currentPassword = null;
+  }
+
+  hasSqliteHeader(buffer) {
+    if (!buffer || buffer.length < MIN_SQLITE_DB_BYTES) {
+      return false;
+    }
+    return buffer.slice(0, 15).toString('utf8').startsWith(SQLITE_FILE_HEADER);
   }
 
   generateRandomBytes(length = 16) {
@@ -58,8 +70,14 @@ class FileEncryption {
     if (!container || typeof container !== 'object') {
       throw new Error('Invalid backup file format');
     }
-    if (!container.encryptionMetadata || !container.encryptedPayload || !container.checksum) {
+    if (!container.encryptionMetadata || !container.checksum) {
       throw new Error('Missing backup metadata');
+    }
+    if (
+      typeof container.encryptedPayload !== 'string' ||
+      container.encryptedPayload.trim().length === 0
+    ) {
+      throw new Error(EMPTY_ENCRYPTED_PAYLOAD_ERROR);
     }
     if (container.encryptionMetadata.algorithm !== 'AES-256-GCM') {
       throw new Error('Unsupported encryption algorithm');
@@ -67,6 +85,29 @@ class FileEncryption {
     if (!container.encryptionMetadata.salt || !container.encryptionMetadata.iv || !container.encryptionMetadata.authTag) {
       throw new Error('Incomplete backup encryption metadata');
     }
+  }
+
+  readBackupContainer(encryptedPath) {
+    const fileContent = fs.readFileSync(encryptedPath, 'utf8');
+    if (!fileContent || fileContent.trim().length === 0) {
+      throw new Error('Backup file is empty');
+    }
+    let container;
+    try {
+      container = JSON.parse(fileContent);
+    } catch (parseError) {
+      throw new Error('Backup file is not valid JSON');
+    }
+    this.validateBackupContainer(container);
+    return container;
+  }
+
+  verifyWrittenBackupFile(filePath, expectedChecksum) {
+    const container = this.readBackupContainer(filePath);
+    if (expectedChecksum && container.checksum !== expectedChecksum) {
+      throw new Error('Backup file verification failed after write (checksum mismatch)');
+    }
+    return container;
   }
 
   async openEncryptedBackupDialog() {
@@ -285,7 +326,28 @@ class FileEncryption {
         filePath = result.filePath;
       }
 
+      const sourceStats = fs.statSync(sourcePath);
+      if (sourceStats.size <= 0) {
+        return {
+          success: false,
+          error: 'Source database is empty. Cannot create a backup without database data.',
+        };
+      }
+
       const fileBuffer = fs.readFileSync(sourcePath);
+      if (!fileBuffer.length) {
+        return {
+          success: false,
+          error: 'Source database could not be read. Export was aborted before writing a backup file.',
+        };
+      }
+      if (!this.hasSqliteHeader(fileBuffer)) {
+        return {
+          success: false,
+          error: 'Source database does not contain a valid SQLite header. Export was aborted.',
+        };
+      }
+
       const salt = this.generateRandomBytes(16);
       const iv = this.generateRandomBytes(12);
       const key = this.deriveKey(password, salt, options);
@@ -293,8 +355,47 @@ class FileEncryption {
       const encryptedBuffer = Buffer.concat([cipher.update(fileBuffer), cipher.final()]);
       const authTag = cipher.getAuthTag();
 
+      if (!encryptedBuffer.length) {
+        if (Buffer.isBuffer(key)) {
+          key.fill(0);
+        }
+        fileBuffer.fill(0);
+        return {
+          success: false,
+          error: 'Encryption produced an empty payload. Export was aborted before writing a backup file.',
+        };
+      }
+
       const backupContainer = this.createBackupContainer(encryptedBuffer, salt, iv, authTag, options);
-      fs.writeFileSync(filePath, JSON.stringify(backupContainer, null, 2), 'utf8');
+      if (!backupContainer.encryptedPayload || backupContainer.encryptedPayload.trim().length === 0) {
+        if (Buffer.isBuffer(key)) {
+          key.fill(0);
+        }
+        fileBuffer.fill(0);
+        return {
+          success: false,
+          error: 'Backup container is missing encrypted database data. Export was aborted.',
+        };
+      }
+
+      const serialized = JSON.stringify(backupContainer, null, 2);
+      fs.writeFileSync(filePath, serialized, 'utf8');
+      this.verifyWrittenBackupFile(filePath, backupContainer.checksum);
+
+      const writtenStats = fs.statSync(filePath);
+      if (!writtenStats.size) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (_) {}
+        return {
+          success: false,
+          error: 'Backup file write failed (0 bytes written). Check disk space and permissions, then try again.',
+        };
+      }
+
+      console.log(
+        `🔐 Encrypted backup written (${writtenStats.size} bytes, source ${sourceStats.size} bytes): ${filePath}`
+      );
 
       if (Buffer.isBuffer(key)) {
         key.fill(0);
@@ -330,9 +431,7 @@ class FileEncryption {
         return { success: false, error: 'Backup file not found' };
       }
 
-      const fileContent = fs.readFileSync(encryptedPath, 'utf8');
-      const container = JSON.parse(fileContent);
-      this.validateBackupContainer(container);
+      const container = this.readBackupContainer(encryptedPath);
 
       const backupVersion = container.appVersion || 'unknown';
       const currentVersion = this.getAppVersion();
@@ -368,6 +467,16 @@ class FileEncryption {
       const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
       decipher.setAuthTag(authTag);
       decryptedBuffer = Buffer.concat([decipher.update(encryptedPayload), decipher.final()]);
+
+      if (!decryptedBuffer.length) {
+        return { success: false, error: EMPTY_ENCRYPTED_PAYLOAD_ERROR };
+      }
+      if (!this.hasSqliteHeader(decryptedBuffer)) {
+        return {
+          success: false,
+          error: 'Decrypted backup does not contain a valid SQLite database. The backup file may be corrupted.',
+        };
+      }
 
       if (!destinationPath) {
         return { success: false, error: 'Destination path is required' };

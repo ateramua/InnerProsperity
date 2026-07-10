@@ -21,6 +21,8 @@ const BudgetIdentityDiagnosticsView = ({ userId: userIdProp, monthKey: monthKeyP
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState(null);
+  const [selectedRepairs, setSelectedRepairs] = useState(new Set());
+  const [applying, setApplying] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -60,6 +62,53 @@ const BudgetIdentityDiagnosticsView = ({ userId: userIdProp, monthKey: monthKeyP
 
   const status = data?.status;
   const analysis = data?.analysis;
+  const consistency = data?.consistencyReport;
+
+  useEffect(() => {
+    if (!consistency?.proposals?.length) {
+      setSelectedRepairs(new Set());
+      return;
+    }
+    const defaultIds = consistency.proposals
+      .filter((p) => p.recommendedAction === 'CREATE_SYNTHETIC_AUDIT')
+      .map((p) => p.repairId);
+    setSelectedRepairs(new Set(defaultIds));
+  }, [consistency?.generatedAt]);
+
+  const toggleRepair = (repairId) => {
+    setSelectedRepairs((prev) => {
+      const next = new Set(prev);
+      if (next.has(repairId)) next.delete(repairId);
+      else next.add(repairId);
+      return next;
+    });
+  };
+
+  const applySelectedRepairs = async () => {
+    if (!userId || !selectedRepairs.size || !window.electronAPI?.applyBudgetConsistencyRepairs) return;
+    const confirmed = window.confirm(
+      `Apply ${selectedRepairs.size} approved assignment audit repair(s)? ` +
+        'This creates synthetic audit events for verified historical assignments only.'
+    );
+    if (!confirmed) return;
+    setApplying(true);
+    setMessage(null);
+    try {
+      const res = await window.electronAPI.applyBudgetConsistencyRepairs(
+        userId,
+        Array.from(selectedRepairs),
+        { userApproved: true, monthKey }
+      );
+      if (res?.success) {
+        setMessage(`Applied ${res.data?.applied?.length || 0} repair(s).`);
+        await load();
+      } else {
+        setMessage(res?.error || 'Repair failed.');
+      }
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const runAnalysisRefresh = async () => {
     setMessage(null);
@@ -132,6 +181,103 @@ const BudgetIdentityDiagnosticsView = ({ userId: userIdProp, monthKey: monthKeyP
               <dd className="font-medium">{status.identityIssueType || 'none'}</dd>
             </div>
           </dl>
+        </section>
+      )}
+
+      {consistency?.warnings?.length > 0 && (
+        <section className="rounded-2xl border border-amber-300/30 bg-amber-950/20 p-5">
+          <h2 className="text-lg font-semibold">Consistency warnings</h2>
+          <ul className="mt-3 space-y-2 text-sm">
+            {consistency.warnings.map((w) => (
+              <li key={w.code}>
+                <span className="font-medium">{w.code}</span>: {w.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {consistency?.summary && (
+        <section className="rounded-2xl border border-white/20 bg-[#0047AB]/80 p-5">
+          <h2 className="text-lg font-semibold">Assignment reconciliation</h2>
+          <p className="mt-1 text-sm text-[#F0F9FF]/75">
+            Read-only classification of assignments missing audit coverage. Repairs require explicit approval.
+          </p>
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <dt className="text-xs opacity-70">Unaudited rows</dt>
+              <dd className="font-medium">{consistency.summary.unauditedRowCount}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-70">Unaudited gap</dt>
+              <dd className="font-medium">{formatMoney(consistency.summary.totalUnauditedGap)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-70">Ledger gap</dt>
+              <dd className="font-medium">{formatMoney(consistency.summary.ledgerGap)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-70">Proposals</dt>
+              <dd className="font-medium">{consistency.summary.proposalCount}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
+
+      {consistency?.unauditedAssignments?.length > 0 && (
+        <section className="rounded-2xl border border-white/20 bg-[#0047AB]/60 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Unaudited assignments</h2>
+            {consistency.proposals?.some((p) => p.recommendedAction === 'CREATE_SYNTHETIC_AUDIT') && (
+              <Button variant="pmSecondary" disabled={applying || !selectedRepairs.size} onClick={applySelectedRepairs}>
+                {applying ? 'Applying…' : `Apply selected (${selectedRepairs.size})`}
+              </Button>
+            )}
+          </div>
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead>
+                <tr className="opacity-70">
+                  <th className="py-2 pr-3">Apply</th>
+                  <th className="py-2 pr-3">Month</th>
+                  <th className="py-2 pr-3">Category</th>
+                  <th className="py-2 pr-3">Budgeted</th>
+                  <th className="py-2 pr-3">Audited</th>
+                  <th className="py-2 pr-3">Gap</th>
+                  <th className="py-2 pr-3">Classification</th>
+                  <th className="py-2">Origin</th>
+                </tr>
+              </thead>
+              <tbody>
+                {consistency.unauditedAssignments.map((row) => {
+                  const proposal = consistency.proposals?.find((p) => p.id === row.id);
+                  const canSelect = proposal?.recommendedAction === 'CREATE_SYNTHETIC_AUDIT';
+                  return (
+                    <tr key={row.id} className="border-t border-white/10">
+                      <td className="py-2 pr-3">
+                        {canSelect ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedRepairs.has(proposal.repairId)}
+                            onChange={() => toggleRepair(proposal.repairId)}
+                          />
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">{row.month?.slice(0, 7)}</td>
+                      <td className="py-2 pr-3">{row.categoryName}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.budgeted)}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.auditedPositive)}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.unauditedGap)}</td>
+                      <td className="py-2 pr-3">{row.classification}</td>
+                      <td className="py-2">{row.origin}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 

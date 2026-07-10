@@ -154,7 +154,8 @@ class AccountService {
         try {
             const accounts = await db.all(`
                 SELECT * FROM accounts 
-                WHERE user_id = ? AND is_active = 1
+                WHERE user_id = ?
+                  AND IFNULL(account_status, 'active') != 'archived'
                 ORDER BY type, name
             `, [userId]);
             return accounts;
@@ -308,7 +309,15 @@ class AccountService {
             }
 
             const { computeAccountBalances } = require('../../utils/accountBalanceEngine.cjs');
-            const txs = await db.all(
+            const importedCashReconciliationService = require('../budget/importedCashReconciliationService.cjs');
+            let txs = await db.all(
+                `SELECT * FROM transactions
+                 WHERE CAST(account_id AS TEXT) = CAST(? AS TEXT) AND user_id = ?
+                   AND (is_deleted IS NULL OR is_deleted = 0)`,
+                [id, userId]
+            );
+            await importedCashReconciliationService.reverseOpeningBalanceForAccount(db, userId, id);
+            txs = await db.all(
                 `SELECT * FROM transactions
                  WHERE CAST(account_id AS TEXT) = CAST(? AS TEXT) AND user_id = ?
                    AND (is_deleted IS NULL OR is_deleted = 0)`,
@@ -492,11 +501,10 @@ class AccountService {
             const accounts = await db.all(
                 `SELECT * FROM accounts
                  WHERE user_id = ?
-                   AND IFNULL(is_active, 1) = 1
-                   AND IFNULL(account_status, 'active') IN ('active')`,
+                   AND IFNULL(account_status, 'active') != 'archived'`,
                 [userId]
             );
-            console.log(`🔵 Found ${accounts.length} accounts`);
+            console.log(`🔵 Found ${accounts.length} listed accounts (non-archived)`);
 
             // 🔍 Debug: log first account's interest_rate
             if (accounts.length > 0) {

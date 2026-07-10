@@ -20,6 +20,7 @@ const {
   validateReadyToAssignSelection,
   learnRuleCategoryId,
 } = require('../../shared/readyToAssignCategory.cjs');
+const { isOpeningBalanceCategoryBlocked } = require('../accounts/creditAccountOpeningBalanceService.cjs');
 
 const ruleService = new CategoryRuleService();
 const { PAYEE_CATEGORY_MODES, getPayeeCategoryMode } = require('./payeeCategoryMode.cjs');
@@ -185,12 +186,21 @@ class TransactionCategorizationService {
     const { payeeId, displayName } = await this.resolvePayee(db, userId, raw, { importSource });
 
     const transactionRow = await db.get(
-      `SELECT t.amount, t.description, t.raw_description, t.plaid_category_key, a.type AS account_type
+      `SELECT t.*, a.type AS account_type
        FROM transactions t
        JOIN accounts a ON CAST(a.id AS TEXT) = CAST(t.account_id AS TEXT)
        WHERE t.id = ? AND t.user_id = ?`,
       [transactionId, userId]
     );
+
+    if (transactionRow && isOpeningBalanceCategoryBlocked(transactionRow)) {
+      await db.run(
+        `UPDATE transactions SET mapping_status = 'not_applicable', import_source = ?, updated_at = datetime('now')
+         WHERE id = ? AND user_id = ?`,
+        [importSource, transactionId, userId]
+      );
+      return { categoryId: null, mappingStatus: 'not_applicable' };
+    }
 
     const resolved = await this.resolveCategorySuggestions(db, userId, {
       payeeId,
@@ -274,6 +284,11 @@ class TransactionCategorizationService {
       [transactionId, userId]
     );
     if (!tx) throw new Error('Transaction not found');
+    if (isOpeningBalanceCategoryBlocked(tx)) {
+      const err = new Error('Opening balance transactions cannot be categorized');
+      err.code = 'OPENING_BALANCE_CATEGORY_BLOCKED';
+      throw err;
+    }
     if (tx.is_transfer === 1) {
       throw new Error('Transfers cannot be categorized');
     }
@@ -377,6 +392,9 @@ class TransactionCategorizationService {
       [transactionId, userId]
     );
     if (!tx || tx.is_transfer === 1) throw new Error('Invalid transaction for split');
+    if (isOpeningBalanceCategoryBlocked(tx)) {
+      throw new Error('Opening balance transactions cannot be categorized');
+    }
 
     const totalAmount = Math.abs(Number(tx.amount));
     const splitSum = splits.reduce((s, line) => s + Math.abs(Number(line.amount) || 0), 0);

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import PlaidAccountSyncBanner from '../components/PlaidAccountSyncBanner';
 import PlaidTxnBadge from '../components/PlaidTxnBadge';
 import { isPlaidImportedTransaction } from '../utils/plaidTransactionUtils';
+import { formatBulkDeleteResultMessage } from '../utils/bulkDeleteFeedback.jsx';
 import {
   computeRegisterBalanceFromTransactions,
   computeRegisterBalances,
@@ -1615,6 +1616,12 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
         throw new Error(deleteResult?.error || 'Bulk delete failed');
       }
 
+      const feedback = formatBulkDeleteResultMessage(deleteResult.data);
+      if (!feedback.ok) {
+        alert(feedback.message);
+        return;
+      }
+
       const newBalance = await syncAccountDisplayAfterMutation(account.id, userId);
 
       setSelectedTransactions(new Set());
@@ -1624,7 +1631,7 @@ function AccountDetailView({ account: propAccount, accountId, onBack, onMakePaym
       window.dispatchEvent(new CustomEvent('refresh-prosperity-map'));
 
       alert(
-        `✅ Successfully deleted ${deleteResult.data?.deleted ?? selectedCount} transaction(s)!\nNew balance: ${formatCurrency(newBalance)}`,
+        `${feedback.message}\nNew balance: ${formatCurrency(newBalance)}`,
       );
     } catch (error) {
       console.error('Error deleting transactions:', error);

@@ -2,11 +2,14 @@ import { useMemo, useState } from 'react';
 import { KNOCKOUT_ROUNDS } from '../config';
 import { useTournamentStore } from '../hooks/useTournamentStore';
 import { FixtureRow } from './MatchScoreEditor';
+import { KnockoutFixtureRow } from './KnockoutMatchEditor';
+import QualificationBanner from './QualificationBanner';
 
 const GROUPS = 'ABCDEFGHIJKL'.split('');
 
 export default function FixturesTab() {
-  const { state, submitResult } = useTournamentStore();
+  const { state, derived, submitResult } = useTournamentStore();
+  const { groupStageComplete, completedGroup, totalGroup } = derived;
   const [phase, setPhase] = useState('group');
   const [filterGroup, setFilterGroup] = useState('all');
   const [filterMatchday, setFilterMatchday] = useState('all');
@@ -26,7 +29,7 @@ export default function FixturesTab() {
       const roundOrder = KNOCKOUT_ROUNDS.map((r) => r.id);
       const rd = roundOrder.indexOf(a.roundId) - roundOrder.indexOf(b.roundId);
       if (rd !== 0) return rd;
-      return a.slot - b.slot;
+      return new Date(a.kickoff) - new Date(b.kickoff);
     });
   }, [state.knockoutMatches, filterRound]);
 
@@ -39,6 +42,13 @@ export default function FixturesTab() {
 
       {phase === 'group' && (
         <>
+          <p className="fifa2026-meta" style={{ marginBottom: '1rem' }}>
+            Group results feed Standings, Rankings, and Round of 32 seeding.
+            Top two per group qualify automatically; the eight best third-place teams join them.
+            {` (${completedGroup}/${totalGroup} matches played`}
+            {!groupStageComplete && ', standings provisional'}
+            ).
+          </p>
           <div className="fifa2026-filter-bar">
             <span className="fifa2026-meta" style={{ alignSelf: 'center' }}>Group:</span>
             <button type="button" className={`fifa2026-chip ${filterGroup === 'all' ? 'active' : ''}`} onClick={() => setFilterGroup('all')}>All</button>
@@ -63,6 +73,11 @@ export default function FixturesTab() {
 
       {phase === 'knockout' && (
         <>
+          <QualificationBanner compact />
+          <p className="fifa2026-meta" style={{ marginBottom: '1rem' }}>
+            Knockout fixtures populate from group standings. Third-place slots use the global
+            best-third table and FIFA&apos;s eligible-group pairings for each Round of 32 tie.
+          </p>
           <div className="fifa2026-filter-bar">
             <span className="fifa2026-meta" style={{ alignSelf: 'center' }}>Round:</span>
             <button type="button" className={`fifa2026-chip ${filterRound === 'all' ? 'active' : ''}`} onClick={() => setFilterRound('all')}>All</button>
@@ -73,8 +88,12 @@ export default function FixturesTab() {
           <div className="fifa2026-fixture-list">
             {knockoutFixtures.map((match) => (
               <div key={match.id}>
-                <div className="fifa2026-fixture-round-label">{match.label}</div>
-                <FixtureRow match={match} onSubmit={submitResult} phase="knockout" />
+                <div className="fifa2026-fixture-round-label">
+                  {match.label}
+                  {match.matchNumber != null ? ` · Match ${match.matchNumber}` : ''}
+                  {match.venue ? ` · ${match.venue}` : ''}
+                </div>
+                <KnockoutFixtureRow match={match} onSubmit={submitResult} showSeeds />
               </div>
             ))}
           </div>
