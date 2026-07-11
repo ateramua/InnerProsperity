@@ -108,9 +108,36 @@ async function main() {
     const containerCheck = validator.validateBackupContainer(container);
     assert(containerCheck.ok, containerCheck.reason || 'Container validation failed');
     assert(container.encryptedPayload.length > 0, 'encryptedPayload must not be empty');
+    assert(
+      container.encryptionMetadata.iterations === 600000,
+      `Expected canonical PBKDF2 iterations (600000), got ${container.encryptionMetadata.iterations}`
+    );
 
     const importResult = await fileEncryption.decryptFile(encPath, password, restoredPath);
     assert(importResult.success, importResult.error || 'Import failed');
+
+    // Legacy export path: UI encryption settings once passed Argon2 iteration counts into PBKDF2.
+    const legacyEncPath = path.join(workDir, 'legacy-ui-settings.enc');
+    const legacyRestoredPath = path.join(workDir, 'legacy-restored.db');
+    const legacyExport = await fileEncryption.encryptFile(snapshotPath, password, legacyEncPath, {
+      backupPbkdf2Iterations: 3,
+    });
+    assert(legacyExport.success, legacyExport.error || 'Legacy export failed');
+    const legacyImport = await fileEncryption.decryptFile(legacyEncPath, password, legacyRestoredPath);
+    assert(legacyImport.success, legacyImport.error || 'Legacy import failed');
+
+    // Metadata mismatch regression: encrypted with 3 iterations, metadata claims 600000.
+    const mismatchEncPath = path.join(workDir, 'mismatch-metadata.enc');
+    const mismatchRestoredPath = path.join(workDir, 'mismatch-restored.db');
+    const mismatchContainer = JSON.parse(fs.readFileSync(legacyEncPath, 'utf8'));
+    mismatchContainer.encryptionMetadata.iterations = 600000;
+    fs.writeFileSync(mismatchEncPath, JSON.stringify(mismatchContainer, null, 2));
+    const mismatchImport = await fileEncryption.decryptFile(
+      mismatchEncPath,
+      password,
+      mismatchRestoredPath
+    );
+    assert(mismatchImport.success, mismatchImport.error || 'Mismatch metadata import failed');
 
     const restoredSize = fs.statSync(restoredPath).size;
     assert(restoredSize > 0, 'Restored database must not be empty');

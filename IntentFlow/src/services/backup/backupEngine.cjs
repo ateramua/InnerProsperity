@@ -98,7 +98,16 @@ class BackupEngine {
         appVersion: this.getAppVersion()
       });
 
-      const result = await this.fileEncryption.backupDatabase(password, snapshotPath, null, options);
+      const result = await this.fileEncryption.backupDatabase(
+        password,
+        snapshotPath,
+        null,
+        {
+          mode: options.mode,
+          target: options.target,
+          sourceDeviceId: options.sourceDeviceId,
+        }
+      );
       if (!result.success) {
         return result;
       }

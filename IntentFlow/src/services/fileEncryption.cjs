@@ -3,6 +3,13 @@ const path = require('path');
 const crypto = require('crypto');
 const CryptoJS = require('crypto-js');
 const { app, dialog } = require('electron');
+const {
+  BACKUP_PBKDF2_ITERATIONS,
+  normalizeBackupPassword,
+  resolveBackupEncryptionOptions,
+  collectBackupIterationCandidates,
+  isAuthenticationFailure,
+} = require('./backup/backupCrypto.cjs');
 
 const MIN_SQLITE_DB_BYTES = 100;
 const SQLITE_FILE_HEADER = 'SQLite format 3';
@@ -27,10 +34,16 @@ class FileEncryption {
   }
 
   deriveKey(password, salt, options = {}) {
-    const iterations = Number(options.iterations) || 600000;
-    const digest = 'sha256';
+    const normalizedPassword = normalizeBackupPassword(password);
+    const resolved = resolveBackupEncryptionOptions(options);
     const saltBuffer = Buffer.isBuffer(salt) ? salt : Buffer.from(salt, 'base64');
-    return crypto.pbkdf2Sync(Buffer.from(password, 'utf8'), saltBuffer, iterations, 32, digest);
+    return crypto.pbkdf2Sync(
+      Buffer.from(normalizedPassword, 'utf8'),
+      saltBuffer,
+      resolved.iterations,
+      resolved.keyLength,
+      resolved.digest
+    );
   }
 
   getAppVersion() {
@@ -45,8 +58,7 @@ class FileEncryption {
   createBackupContainer(encryptedPayloadBuffer, salt, iv, authTag, options = {}) {
     const encryptedPayloadBase64 = encryptedPayloadBuffer.toString('base64');
     const checksum = crypto.createHash('sha256').update(encryptedPayloadBase64).digest('hex');
-    const kdf = 'PBKDF2';
-    const iterations = Number(options.iterations) || 600000;
+    const resolved = resolveBackupEncryptionOptions(options);
 
     return {
       version: '1.0.0',
@@ -54,16 +66,56 @@ class FileEncryption {
       appVersion: this.getAppVersion(),
       encryptionMetadata: {
         algorithm: 'AES-256-GCM',
-        kdf,
+        kdf: resolved.kdf,
         salt: salt.toString('base64'),
         iv: iv.toString('base64'),
         authTag: authTag.toString('base64'),
-        iterations,
+        iterations: resolved.iterations,
         hash: 'SHA256'
       },
       checksum,
       encryptedPayload: encryptedPayloadBase64
     };
+  }
+
+  decryptBackupPayload({ password, container, encryptedPayload, authTag, iv, salt }) {
+    const iterationCandidates = collectBackupIterationCandidates(container.encryptionMetadata);
+    let lastError = null;
+
+    for (const iterations of iterationCandidates) {
+      let key = null;
+      try {
+        key = this.deriveKey(password, salt, { iterations });
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAuthTag(authTag);
+        const decryptedBuffer = Buffer.concat([
+          decipher.update(encryptedPayload),
+          decipher.final(),
+        ]);
+
+        if (!decryptedBuffer.length) {
+          lastError = new Error(EMPTY_ENCRYPTED_PAYLOAD_ERROR);
+          continue;
+        }
+        if (!this.hasSqliteHeader(decryptedBuffer)) {
+          lastError = new Error('Decrypted payload is not a valid SQLite database');
+          continue;
+        }
+
+        return { decryptedBuffer, iterationsUsed: iterations };
+      } catch (error) {
+        lastError = error;
+        if (!isAuthenticationFailure(error)) {
+          throw error;
+        }
+      } finally {
+        if (key && Buffer.isBuffer(key)) {
+          key.fill(0);
+        }
+      }
+    }
+
+    throw lastError || new Error('Invalid password or corrupted backup file');
   }
 
   validateBackupContainer(container) {
@@ -350,7 +402,8 @@ class FileEncryption {
 
       const salt = this.generateRandomBytes(16);
       const iv = this.generateRandomBytes(12);
-      const key = this.deriveKey(password, salt, options);
+      const backupCryptoOptions = resolveBackupEncryptionOptions(options);
+      const key = this.deriveKey(password, salt, backupCryptoOptions);
       const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
       const encryptedBuffer = Buffer.concat([cipher.update(fileBuffer), cipher.final()]);
       const authTag = cipher.getAuthTag();
@@ -366,7 +419,7 @@ class FileEncryption {
         };
       }
 
-      const backupContainer = this.createBackupContainer(encryptedBuffer, salt, iv, authTag, options);
+      const backupContainer = this.createBackupContainer(encryptedBuffer, salt, iv, authTag, backupCryptoOptions);
       if (!backupContainer.encryptedPayload || backupContainer.encryptedPayload.trim().length === 0) {
         if (Buffer.isBuffer(key)) {
           key.fill(0);
@@ -424,7 +477,6 @@ class FileEncryption {
   async decryptFile(encryptedPath, password, destinationPath = null) {
     let tempDestination = null;
     let decryptedBuffer = null;
-    let key = null;
 
     try {
       if (!fs.existsSync(encryptedPath)) {
@@ -436,19 +488,10 @@ class FileEncryption {
       const backupVersion = container.appVersion || 'unknown';
       const currentVersion = this.getAppVersion();
       if (backupVersion !== currentVersion) {
-        const message = `This backup was created with a different version of IntentFlow (v${backupVersion}). Current version is v${currentVersion}. Restoration may not work correctly. Continue anyway?`;
-        const choice = await dialog.showMessageBox({
-          type: 'warning',
-          buttons: ['Cancel', 'Continue'],
-          defaultId: 1,
-          cancelId: 0,
-          title: 'Version mismatch',
-          message
-        });
-
-        if (choice.response !== 1) {
-          return { success: false, canceled: true, error: 'Restore canceled due to version mismatch' };
-        }
+        console.warn(
+          `⚠️ Backup version mismatch (backup v${backupVersion}, app v${currentVersion}). ` +
+            'Proceeding with restore — database format is portable across machines.'
+        );
       }
 
       const encryptedPayload = Buffer.from(container.encryptedPayload, 'base64');
@@ -457,25 +500,24 @@ class FileEncryption {
         return { success: false, error: 'Backup file is corrupted or has been tampered with (checksum mismatch). Restoration aborted.' };
       }
 
-      const kdf = container.encryptionMetadata.kdf || 'PBKDF2';
       const salt = Buffer.from(container.encryptionMetadata.salt, 'base64');
       const iv = Buffer.from(container.encryptionMetadata.iv, 'base64');
       const authTag = Buffer.from(container.encryptionMetadata.authTag, 'base64');
-      const iterations = Number(container.encryptionMetadata.iterations) || 600000;
-      key = this.deriveKey(password, salt, { iterations, kdf });
 
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-      decipher.setAuthTag(authTag);
-      decryptedBuffer = Buffer.concat([decipher.update(encryptedPayload), decipher.final()]);
+      const { decryptedBuffer, iterationsUsed } = this.decryptBackupPayload({
+        password,
+        container,
+        encryptedPayload,
+        authTag,
+        iv,
+        salt,
+      });
 
-      if (!decryptedBuffer.length) {
-        return { success: false, error: EMPTY_ENCRYPTED_PAYLOAD_ERROR };
-      }
-      if (!this.hasSqliteHeader(decryptedBuffer)) {
-        return {
-          success: false,
-          error: 'Decrypted backup does not contain a valid SQLite database. The backup file may be corrupted.',
-        };
+      if (iterationsUsed !== Number(container.encryptionMetadata.iterations)) {
+        console.warn(
+          `⚠️ Backup decrypted using legacy PBKDF2 iterations (${iterationsUsed}); ` +
+            `metadata listed ${container.encryptionMetadata.iterations}.`
+        );
       }
 
       if (!destinationPath) {
@@ -488,9 +530,6 @@ class FileEncryption {
       fs.copyFileSync(tempDestination, destinationPath);
       fs.unlinkSync(tempDestination);
 
-      if (Buffer.isBuffer(key)) {
-        key.fill(0);
-      }
       if (Buffer.isBuffer(decryptedBuffer)) {
         decryptedBuffer.fill(0);
       }
@@ -505,11 +544,11 @@ class FileEncryption {
       if (tempDestination && fs.existsSync(tempDestination)) {
         try { fs.unlinkSync(tempDestination); } catch (_) {}
       }
-      if (key && Buffer.isBuffer(key)) {
-        key.fill(0);
-      }
-      if (error.message && error.message.includes('Unsupported state or unable to authenticate data')) {
+      if (isAuthenticationFailure(error)) {
         return { success: false, error: 'Invalid password. Please try again.' };
+      }
+      if (error.message === EMPTY_ENCRYPTED_PAYLOAD_ERROR) {
+        return { success: false, error: EMPTY_ENCRYPTED_PAYLOAD_ERROR };
       }
       return {
         success: false,

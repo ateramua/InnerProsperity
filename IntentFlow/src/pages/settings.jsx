@@ -423,7 +423,7 @@ export default function Settings() {
 
     try {
       const result = await invokeIpcWithTimeout(
-        window.electronAPI.backupDatabase(backupPassword, encryptionSettings),
+        window.electronAPI.backupDatabase(backupPassword),
         120000,
         'Backup export',
       );
