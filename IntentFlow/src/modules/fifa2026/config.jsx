@@ -2,7 +2,7 @@
 export const FIFA_2026_MODULE_ENABLED = true;
 
 export const TOURNAMENT_ID = 'fifa-wc-2026';
-export const STORAGE_KEY = 'intentflow:fifa2026:v9';
+export const STORAGE_KEY = 'intentflow:fifa2026:v10';
 
 export const POINTS = { WIN: 3, DRAW: 1, LOSS: 0 };
 

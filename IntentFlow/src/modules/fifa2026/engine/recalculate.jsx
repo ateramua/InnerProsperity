@@ -1,8 +1,27 @@
 import { MATCH_STATUS } from '../config';
 import { createInitialTournamentState, R32_CONFIRMED_TEAMS } from '../data/wc2026Seed';
 import { GROUP_STAGE_SCORES } from '../data/groupStageResults';
+import { KNOCKOUT_STAGE_RESULTS } from '../data/knockoutStageResults';
 import { populateKnockoutFromGroups, propagateKnockoutWinners } from './knockout';
 import { applyKnockoutMatchResult, normalizeKnockoutMatch, pickKnockoutResultOverride } from './knockoutResolution';
+
+const KNOCKOUT_ROUND_SEED_ORDER = ['r32', 'r16', 'qf', 'sf', 'third', 'final'];
+
+function applyKnockoutStageSeeds(matches) {
+  let next = matches;
+  for (const roundId of KNOCKOUT_ROUND_SEED_ORDER) {
+    const hasSeeds = next.some((m) => m.roundId === roundId && KNOCKOUT_STAGE_RESULTS[m.id]);
+    if (!hasSeeds) continue;
+
+    next = next.map((match) => {
+      const seed = KNOCKOUT_STAGE_RESULTS[match.id];
+      if (!seed || match.roundId !== roundId) return match;
+      return applyKnockoutMatchResult(normalizeKnockoutMatch(match), seed);
+    });
+    next = propagateKnockoutWinners(next);
+  }
+  return next;
+}
 
 function applySeedGroupScore(fixture) {
   const preset = GROUP_STAGE_SCORES[fixture.id];
@@ -51,6 +70,8 @@ export function recalculateTournament(state) {
     if (!confirmed) return m;
     return { ...m, ...confirmed };
   });
+
+  knockoutMatches = applyKnockoutStageSeeds(knockoutMatches);
 
   const koOverrides = Object.entries(state.resultOverrides)
     .filter(([id]) => id.startsWith('ko-'))

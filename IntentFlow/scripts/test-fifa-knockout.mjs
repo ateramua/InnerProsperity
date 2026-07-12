@@ -259,4 +259,54 @@ expectedR32.forEach(([home, away], i) => {
   assert.equal(r32Chrono[i].awayTeamId, away, `R32 chrono ${i + 1} away`);
 });
 
+// Round of 16 — seeded production results
+const r16State = recalculateTournament(createInitialTournamentState());
+const r16Matches = r16State.knockoutMatches
+  .filter((m) => m.roundId === 'r16')
+  .sort((a, b) => a.matchNumber - b.matchNumber);
+
+const expectedR16 = [
+  { id: 'ko-r16-1', home: 'PAR', away: 'FRA', homeScore: 0, awayScore: 1, winner: 'FRA' },
+  { id: 'ko-r16-2', home: 'CAN', away: 'MAR', homeScore: 0, awayScore: 3, winner: 'MAR' },
+  { id: 'ko-r16-3', home: 'POR', away: 'ESP', homeScore: 0, awayScore: 1, winner: 'ESP' },
+  { id: 'ko-r16-4', home: 'USA', away: 'BEL', homeScore: 1, awayScore: 4, winner: 'BEL' },
+  { id: 'ko-r16-5', home: 'BRA', away: 'NOR', homeScore: 1, awayScore: 2, winner: 'NOR' },
+  { id: 'ko-r16-6', home: 'MEX', away: 'ENG', homeScore: 2, awayScore: 3, winner: 'ENG' },
+  { id: 'ko-r16-7', home: 'ARG', away: 'EGY', homeScore: 3, awayScore: 2, winner: 'ARG' },
+  {
+    id: 'ko-r16-8',
+    home: 'SUI',
+    away: 'COL',
+    homeScore: 0,
+    awayScore: 0,
+    winner: 'SUI',
+    penalties: { home: 4, away: 3 },
+  },
+];
+
+assert.equal(r16Matches.length, 8);
+expectedR16.forEach((exp) => {
+  const match = r16Matches.find((m) => m.id === exp.id);
+  assert.ok(match, `Missing ${exp.id}`);
+  assert.equal(match.status, MATCH_STATUS.COMPLETED, `${exp.id} status`);
+  assert.equal(match.homeTeamId, exp.home, `${exp.id} home team`);
+  assert.equal(match.awayTeamId, exp.away, `${exp.id} away team`);
+  assert.equal(match.score.home, exp.homeScore, `${exp.id} home score`);
+  assert.equal(match.score.away, exp.awayScore, `${exp.id} away score`);
+  assert.equal(match.winnerTeamId, exp.winner, `${exp.id} winner`);
+  if (exp.penalties) {
+    assert.deepEqual(match.penalties, exp.penalties, `${exp.id} penalties`);
+  }
+});
+
+// QF slots populated from R16 winners
+const qfTeams = r16State.knockoutMatches
+  .filter((m) => m.roundId === 'qf')
+  .flatMap((m) => [m.homeTeamId, m.awayTeamId])
+  .filter((id) => id && id !== 'TBD');
+assert.ok(qfTeams.includes('FRA'));
+assert.ok(qfTeams.includes('ESP'));
+assert.ok(qfTeams.includes('ENG'));
+assert.ok(qfTeams.includes('ARG'));
+
 console.log('✓ FIFA knockout bracket engine tests passed');
