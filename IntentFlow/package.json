@@ -46,6 +46,7 @@
     "check:ipc-write-broker": "node scripts/check-ipc-write-broker.cjs",
     "test:db-broker": "node scripts/test-db-broker.cjs",
     "test:backup": "node scripts/test-backup-roundtrip.cjs",
+    "test:backup:engine": "node scripts/test-backup-engine-roundtrip.cjs",
     "check:db-architecture": "npm run check:db-single-writer && npm run check:ipc-write-broker && npm run test:db-broker",
     "check:db-isolation": "node scripts/test-db-environment-isolation.cjs && npm run generate:empty-schema && npm run seed:db && npm run verify:release-db-policy",
     "plaid:sync-env": "node scripts/sync-plaid-env-to-userdata.cjs",

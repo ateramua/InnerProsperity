@@ -904,6 +904,20 @@ function getDatabasePath() {
 const MIN_SQLITE_SNAPSHOT_BYTES = 100;
 const SQLITE_FILE_HEADER = 'SQLite format 3';
 
+function removeSqliteSidecarFiles(dbPath) {
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+        const sidecarPath = `${dbPath}${suffix}`;
+        if (fs.existsSync(sidecarPath)) {
+            try {
+                fs.unlinkSync(sidecarPath);
+                console.log(`🧹 Removed SQLite sidecar before restore: ${sidecarPath}`);
+            } catch (sidecarError) {
+                console.warn(`⚠️ Could not remove SQLite sidecar ${sidecarPath}:`, sidecarError.message);
+            }
+        }
+    }
+}
+
 function assertValidDatabaseSnapshot(snapshotPath, sourcePath) {
     if (!fs.existsSync(snapshotPath)) {
         throw new Error('Database snapshot was not created');
@@ -1050,6 +1064,10 @@ async function restoreEncryptedBackup({ password, backupFilePath, mode = 'in-pla
                 console.warn('⚠️ Failed closing DB before restore:', closeError.message);
             }
             db = null;
+        }
+
+        if (mode === 'in-place') {
+            removeSqliteSidecarFiles(dbPath);
         }
 
         const result = await fileEncryption.decryptFile(backupFilePath, password, destinationPath);

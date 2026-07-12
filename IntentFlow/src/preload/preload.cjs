@@ -447,6 +447,9 @@ try {
     restoreDatabase: (password, mode = 'in-place') =>
       ipcRenderer.invoke('restore-database', password, mode),
 
+    getBackupStatus: () =>
+      ipcRenderer.invoke('backup-get-status'),
+
     getBackupHistory: () =>
       ipcRenderer.invoke('backup-get-history'),
 

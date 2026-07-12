@@ -149,6 +149,7 @@ function useInitializeElectronAPI() {
         getNetworkStatus: async () => ({ success: true, data: { isOnline: true } }),
         backupDatabase: async (password) => ({ success: false, error: 'Not available in browser' }),
         restoreDatabase: async (password) => ({ success: false, error: 'Not available in browser' }),
+        getBackupStatus: async () => ({ success: true, data: { fileEncryptionAvailable: false, historyCount: 0 } }),
         ping: async () => ({ success: true, message: 'pong' }),
       };
     }

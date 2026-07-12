@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const CryptoJS = require('crypto-js');
-const { app, dialog } = require('electron');
+const { app, dialog, BrowserWindow } = require('electron');
 const {
   BACKUP_PBKDF2_ITERATIONS,
   normalizeBackupPassword,
@@ -139,16 +139,53 @@ class FileEncryption {
     }
   }
 
+  describeInvalidBackupFileContent(rawContent) {
+    const trimmed = String(rawContent || '').trim();
+    if (!trimmed.length) {
+      return 'Backup file is empty';
+    }
+    if (trimmed.startsWith(SQLITE_FILE_HEADER)) {
+      return (
+        'This file looks like an unencrypted SQLite database, not an IntentFlow .enc backup. ' +
+        'Use Export Backup in Settings to create a valid encrypted backup file.'
+      );
+    }
+    if (trimmed.startsWith('U2FsdGVkX1')) {
+      return (
+        'This file uses an older budget encryption format, not an IntentFlow database backup. ' +
+        'Use Export Backup in Settings to create a valid .enc database backup.'
+      );
+    }
+    if (!trimmed.startsWith('{')) {
+      return (
+        'Backup file is not a valid IntentFlow .enc backup (expected JSON starting with "{"). ' +
+        'Export a new backup from Settings and import that file.'
+      );
+    }
+    return (
+      'Backup file is not valid JSON. Export a new backup from Settings and import that .enc file.'
+    );
+  }
+
   readBackupContainer(encryptedPath) {
-    const fileContent = fs.readFileSync(encryptedPath, 'utf8');
-    if (!fileContent || fileContent.trim().length === 0) {
+    const rawBuffer = fs.readFileSync(encryptedPath);
+    if (!rawBuffer.length) {
       throw new Error('Backup file is empty');
     }
+
+    let fileContent = rawBuffer.toString('utf8');
+    if (fileContent.charCodeAt(0) === 0xfeff) {
+      fileContent = fileContent.slice(1);
+    }
+    if (!fileContent.trim().length) {
+      throw new Error('Backup file is empty');
+    }
+
     let container;
     try {
       container = JSON.parse(fileContent);
     } catch (parseError) {
-      throw new Error('Backup file is not valid JSON');
+      throw new Error(this.describeInvalidBackupFileContent(fileContent));
     }
     this.validateBackupContainer(container);
     return container;
@@ -162,21 +199,94 @@ class FileEncryption {
     return container;
   }
 
-  async openEncryptedBackupDialog() {
-    const result = await dialog.showOpenDialog({
+  resolveDialogParent(parentWindow = null) {
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      return parentWindow;
+    }
+    return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+  }
+
+  focusDialogParent(parentWindow = null) {
+    const parent = this.resolveDialogParent(parentWindow);
+    if (parent && !parent.isDestroyed()) {
+      if (parent.isMinimized()) {
+        parent.restore();
+      }
+      parent.show();
+      parent.focus();
+    }
+    return parent;
+  }
+
+  ensureBackupFileExtension(filePath) {
+    if (!filePath || typeof filePath !== 'string') {
+      return filePath;
+    }
+    const normalized = filePath.trim();
+    if (!normalized.length) {
+      return filePath;
+    }
+    if (normalized.toLowerCase().endsWith('.enc')) {
+      return normalized;
+    }
+    return `${normalized}.enc`;
+  }
+
+  async pickBackupSavePath(defaultPath = null, parentWindow = null) {
+    const parent = this.focusDialogParent(parentWindow);
+    const dialogOptions = {
+      title: 'Save Encrypted Backup',
+      defaultPath: defaultPath || this.getBackupDestinationPath(),
+      filters: [
+        { name: 'IntentFlow Backup', extensions: ['enc'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    };
+
+    const result = parent
+      ? await dialog.showSaveDialog(parent, dialogOptions)
+      : await dialog.showSaveDialog(dialogOptions);
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    return {
+      success: true,
+      filePath: this.ensureBackupFileExtension(result.filePath),
+    };
+  }
+
+  async openEncryptedBackupDialog(parentWindow = null) {
+    const parent = this.focusDialogParent(parentWindow);
+    const dialogOptions = {
       title: 'Open Encrypted Backup',
       filters: [
         { name: 'IntentFlow Backup', extensions: ['enc'] },
-        { name: 'All Files', extensions: ['*'] }
+        { name: 'All Files', extensions: ['*'] },
       ],
-      properties: ['openFile']
-    });
+      properties: ['openFile'],
+    };
+
+    const result = parent
+      ? await dialog.showOpenDialog(parent, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
 
     if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
       return { success: false, canceled: true };
     }
 
-    return { success: true, filePath: result.filePaths[0] };
+    const filePath = result.filePaths[0];
+    try {
+      this.readBackupContainer(filePath);
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message || 'Selected file is not a valid IntentFlow backup',
+      };
+    }
+
+    return { success: true, filePath };
   }
 
   getBackupDestinationPath(defaultPath = null) {
@@ -363,19 +473,13 @@ class FileEncryption {
       }
 
       if (!filePath) {
-        const result = await dialog.showSaveDialog({
-          title: 'Save Encrypted Backup',
-          defaultPath: this.getBackupDestinationPath(),
-          filters: [
-            { name: 'IntentFlow Backup', extensions: ['enc'] },
-            { name: 'All Files', extensions: ['*'] }
-          ]
-        });
-
-        if (result.canceled) {
-          return { success: false, canceled: true };
+        const picked = await this.pickBackupSavePath();
+        if (!picked.success) {
+          return picked;
         }
-        filePath = result.filePath;
+        filePath = picked.filePath;
+      } else {
+        filePath = this.ensureBackupFileExtension(filePath);
       }
 
       const sourceStats = fs.statSync(sourcePath);
@@ -432,6 +536,12 @@ class FileEncryption {
       }
 
       const serialized = JSON.stringify(backupContainer, null, 2);
+      if (!serialized.startsWith('{')) {
+        return {
+          success: false,
+          error: 'Backup serialization failed before writing the .enc file.',
+        };
+      }
       fs.writeFileSync(filePath, serialized, 'utf8');
       this.verifyWrittenBackupFile(filePath, backupContainer.checksum);
 

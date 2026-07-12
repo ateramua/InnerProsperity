@@ -54,6 +54,7 @@ export default function Settings() {
   const [compareResult, setCompareResult] = useState(null);
   const [recoveryKitStatus, setRecoveryKitStatus] = useState({ exists: false, kit: null });
   const [restoreMode, setRestoreMode] = useState('in-place');
+  const [backupDesktopReady, setBackupDesktopReady] = useState(null);
   const [prosperityMonthKey, setProsperityMonthKey] = useState(() => formatBudgetMonthKey(new Date()));
   const [prosperityMessage, setProsperityMessage] = useState('');
   const [prosperityPreview, setProsperityPreview] = useState(null);
@@ -166,6 +167,50 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    let cancelled = false;
+
+    const checkBackupDesktopReady = async () => {
+      const hasBackupApi =
+        typeof window.electronAPI?.backupDatabase === 'function' &&
+        typeof window.electronAPI?.restoreDatabase === 'function' &&
+        !window.electronAPI?.__isBrowserMock;
+
+      if (!hasBackupApi) {
+        if (!cancelled) {
+          setBackupDesktopReady(false);
+        }
+        return;
+      }
+
+      try {
+        if (window.electronAPI.getBackupStatus) {
+          const status = await window.electronAPI.getBackupStatus();
+          if (!cancelled) {
+            setBackupDesktopReady(Boolean(status?.success && status?.data?.fileEncryptionAvailable));
+          }
+          return;
+        }
+        const ping = await window.electronAPI.ping?.();
+        if (!cancelled) {
+          setBackupDesktopReady(Boolean(ping?.success));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBackupDesktopReady(false);
+        }
+      }
+    };
+
+    void checkBackupDesktopReady();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!user && activeTab === 'categories') {
       setActiveTab('general');
     }
@@ -235,7 +280,12 @@ export default function Settings() {
       const now = new Date().toISOString();
       setBackupStatus('Available');
       setLastBackup(now);
-      setBackupMessage(result.message || 'Backup complete.');
+      const savedPath = result.filePath || result.version?.backupFilePath;
+      setBackupMessage(
+        savedPath
+          ? `${result.message || 'Backup complete.'} You can import this same file to restore.`
+          : result.message || 'Backup complete.',
+      );
       persistBackupMeta(now);
       return;
     }
@@ -401,6 +451,8 @@ export default function Settings() {
   };
 
   const handleExportBackup = async () => {
+    setBackupMessage('Starting backup export...');
+
     if (!backupPassword.trim()) {
       setBackupMessage('Password is required to export a backup.');
       return;
@@ -411,20 +463,20 @@ export default function Settings() {
       return;
     }
 
-    if (!window.electronAPI?.backupDatabase) {
+    if (backupDesktopReady === false || !window.electronAPI?.backupDatabase) {
       setBackupMessage(
-        'Backup is only available in the IntentFlow desktop app. If you are already in the app, fully quit and reopen it, then try again.',
+        'Backup is only available in the IntentFlow desktop app. Fully quit and reopen IntentFlow, then try again.',
       );
       return;
     }
 
     setIsBackingUp(true);
-    setBackupMessage('Preparing backup file… A save dialog will open when ready.');
+    setBackupMessage('Choose where to save your backup file…');
 
     try {
       const result = await invokeIpcWithTimeout(
         window.electronAPI.backupDatabase(backupPassword),
-        120000,
+        180000,
         'Backup export',
       );
       handleBackupResult(result);
@@ -437,29 +489,29 @@ export default function Settings() {
   };
 
   const handleImportBackup = async () => {
+    setBackupMessage('Starting backup restore...');
+
     if (!backupPassword.trim()) {
       setBackupMessage('Password is required to restore a backup.');
       return;
     }
 
-    const confirmed = window.confirm(
-      'Restoring a backup will replace all current data. A rollback snapshot will be created automatically. Continue?'
-    );
-    if (!confirmed) {
-      setBackupMessage('Restore canceled.');
+    if (backupDesktopReady === false || !window.electronAPI?.restoreDatabase) {
+      setBackupMessage(
+        'Restore is only available in the IntentFlow desktop app. Fully quit and reopen IntentFlow, then try again.',
+      );
       return;
     }
 
     setIsRestoring(true);
-    setBackupMessage('Restoring backup...');
+    setBackupMessage('Confirm restore, then choose your backup file…');
 
     try {
-      if (!window.electronAPI?.restoreDatabase) {
-        setBackupMessage('Restore API is unavailable.');
-        return;
-      }
-
-      const result = await window.electronAPI.restoreDatabase(backupPassword, restoreMode);
+      const result = await invokeIpcWithTimeout(
+        window.electronAPI.restoreDatabase(backupPassword, restoreMode),
+        180000,
+        'Backup restore',
+      );
       if (result?.success) {
         const now = new Date().toISOString();
         setBackupStatus('Available');
@@ -484,9 +536,13 @@ export default function Settings() {
       return;
     }
     setIsSimulating(true);
-    setBackupMessage('Running restore simulation...');
+    setBackupMessage('Running restore simulation... This may take up to a minute.');
     try {
-      const result = await window.electronAPI.simulateRestore(backupPassword);
+      const result = await invokeIpcWithTimeout(
+        window.electronAPI.simulateRestore(backupPassword),
+        180000,
+        'Restore simulation',
+      );
       if (result?.success) {
         setBackupMessage(result.message || 'Simulation complete. No data changed.');
       } else {
@@ -542,11 +598,16 @@ export default function Settings() {
       setBackupMessage('Password is required to rewind to a version.');
       return;
     }
-    const confirmed = window.confirm('Rewind will perform an in-place restore from the selected backup version. Continue?');
-    if (!confirmed) return;
-    const result = await window.electronAPI.rewindBackupVersion(backupPassword, versionId);
+    setBackupMessage('Starting rewind restore...');
+    const result = await invokeIpcWithTimeout(
+      window.electronAPI.rewindBackupVersion(backupPassword, versionId),
+      180000,
+      'Backup rewind',
+    );
     if (result?.success) {
       setBackupMessage(result.message || 'Rewind started.');
+    } else if (result?.canceled) {
+      setBackupMessage('Restore canceled.');
     } else {
       setBackupMessage(result?.error || 'Rewind failed.');
     }
@@ -687,6 +748,11 @@ export default function Settings() {
 
           {activeTab === 'backup' && (
             <div className="space-y-6 rounded-[2rem] border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/30">
+              {backupDesktopReady === false && (
+                <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                  Backup controls require the IntentFlow desktop app. If you are already in the app, fully quit and reopen it, then return here.
+                </div>
+              )}
               <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
                 <div className="space-y-4">
                   <div>

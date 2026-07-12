@@ -74,6 +74,19 @@ class BackupEngine {
       return { success: false, error: 'Database is empty and cannot be backed up' };
     }
 
+    let backupFilePath =
+      typeof options.backupFilePath === 'string' && options.backupFilePath.trim().length > 0
+        ? this.fileEncryption.ensureBackupFileExtension(options.backupFilePath)
+        : null;
+
+      if (!backupFilePath) {
+      const picked = await this.fileEncryption.pickBackupSavePath(null, options.parentWindow);
+      if (!picked.success) {
+        return picked;
+      }
+      backupFilePath = picked.filePath;
+    }
+
     let snapshotPath;
     try {
       snapshotPath = await this.createDbSnapshot();
@@ -97,11 +110,18 @@ class BackupEngine {
         sourceDeviceId: options.sourceDeviceId || 'desktop',
         appVersion: this.getAppVersion()
       });
+      if (!metadata.fileSizeBytes || metadata.fileSizeBytes <= 0) {
+        return {
+          success: false,
+          error:
+            'Database snapshot is empty. Export was aborted before writing a backup file.',
+        };
+      }
 
       const result = await this.fileEncryption.backupDatabase(
         password,
         snapshotPath,
-        null,
+        backupFilePath,
         {
           mode: options.mode,
           target: options.target,
@@ -142,7 +162,8 @@ class BackupEngine {
       this.appendVersion(version);
       return {
         success: true,
-        message: result.message || 'Backup completed',
+        message: `Backup saved to ${result.filePath}`,
+        filePath: result.filePath,
         version
       };
     } finally {
@@ -268,6 +289,13 @@ class BackupEngine {
     const version = this.listVersions().find((item) => item.id === versionId);
     if (!version) {
       return { success: false, error: 'Backup version not found for rewind' };
+    }
+    if (!version.backupFilePath || !fs.existsSync(version.backupFilePath)) {
+      return {
+        success: false,
+        error:
+          'Backup file for this version is missing. Reconnect the storage drive or export a new backup.',
+      };
     }
     return this.restore({
       password,
